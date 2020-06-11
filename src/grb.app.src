@@ -1,0 +1,17 @@
+%% -*- erlang -*-
+{application, grb,
+ [
+  {description, "A Riak Core Lite Application"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  sasl,
+                  riak_core,
+                  riak_core_lite_util,
+                  ranch
+                 ]},
+  {mod, { grb_app, []}},
+  {env, [{auto_start_background_processes, true}]}
+ ]}.

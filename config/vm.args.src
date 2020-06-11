@@ -1,0 +1,12 @@
+## Name of the node
+-name ${NODE_NAME}
+
+## Cookie for distributed erlang
+-setcookie ${COOKIE}
+
+## todo(borja): for now, check grb_time:timestamp/0 for more info
++C no_time_warp
+
+## Configuration for GRB coming form the command line
+## The port to listen for client commands (default is 7878)
+-grb tcp_port ${TCP_LIST_PORT}

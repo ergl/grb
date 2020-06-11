@@ -1,0 +1,29 @@
+#!/bin/bash
+
+# Handoff port.
+if [ -z "$HANDOFF_PORT" ]; then
+  export HANDOFF_PORT=8099
+fi
+
+if [ -z "$IP" ]; then
+  export IP=127.0.0.1
+fi
+
+if [ -z "$INSTANCE_NAME" ]; then
+  export INSTANCE_NAME=grb
+fi
+
+if [ -z "$NODE_NAME" ]; then
+  export NODE_NAME=${INSTANCE_NAME}@${IP}
+fi
+
+if [ -z "$TCP_LIST_PORT" ]; then
+  export TCP_LIST_PORT=7878
+fi
+
+if [ -z "$COOKIE" ]; then
+  export COOKIE=grb-cookie
+fi
+
+RELNAME="`dirname \"$0\"`"/${INSTANCE_NAME}
+exec ${RELNAME} "$@"
