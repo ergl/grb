@@ -188,9 +188,12 @@ perform_op_internal_continue(Promise, Key, VC, Val, State) ->
             %% should introduce lamport clock to updates to totally order them
             %% Right now, return the first (lower in the snapshot)
             %% fixme(borja): Revisit redTS once red transactions are implemented
-            [{_, FirstVal, FirstVC} | _] = grb_version_log:get_lower(VC, Log),
-            RedTS = grb_vclock:get_time(red, FirstVC),
-            grb_promise:resolve({ok, FirstVal, RedTS}, Promise)
+            case grb_version_log:get_lower(VC, Log) of
+                [] -> grb_promise:resolve({ok, <<>>, 0}, Promise);
+                [{_, FirstVal, FirstVC} | _] ->
+                    RedTS = grb_vclock:get_time(red, FirstVC),
+                    grb_promise:resolve({ok, FirstVal, RedTS}, Promise)
+            end
     end.
 
 -spec decide_blue_internal(partition_id(), _, vclock()) -> ok.
