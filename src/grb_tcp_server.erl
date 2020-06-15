@@ -23,7 +23,11 @@
 -define(TCP_ACC_POOL, (1 * erlang:system_info(schedulers_online))).
 -record(state, {
     socket :: inet:socket(),
-    transport :: module()
+    transport :: module(),
+    %% The lenght (in bits) of the message identifier
+    %% Identifiers are supposed to be opaque, and are ignored by the server,
+    %% and simply forwarded back to the client
+    id_len :: non_neg_integer()
 }).
 
 start_server() ->
@@ -48,7 +52,8 @@ init({Ref, Transport, _Opts}) ->
     {ok, Socket} = ranch:handshake(Ref),
     ok = ranch:remove_connection(Ref),
     ok = Transport:setopts(Socket, [{active, once}, {packet, 4}]),
-    State = #state{socket=Socket, transport=Transport},
+    IDLen = application:get_env(grb, tcp_id_len_bits, 16),
+    State = #state{socket=Socket, transport=Transport, id_len=IDLen},
     gen_server:enter_loop(?MODULE, [], State).
 
 handle_call(E, From, S) ->
@@ -65,9 +70,13 @@ terminate(_Reason, #state{socket=Socket, transport=Transport}) ->
     ok.
 
 handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
+                                                id_len=IDLen,
                                                 transport=Transport}) ->
-    ?LOG_INFO("got request"),
-    Transport:send(Socket, Data),
+    <<MessageID:IDLen, Request/binary>> = Data,
+    {Module, Type, Msg} = pvc_proto:decode_client_req(Request),
+    ?LOG_INFO("request id=~b, type=~p, msg=~w", [MessageID, Type, Msg]),
+    Promise = grb_promise:new(self(), {MessageID, Module, Type}),
+    ok = grb_tcp_handler:process(Promise, Type, Msg),
     Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
@@ -81,6 +90,14 @@ handle_info({tcp_error, _Socket, Reason}, S) ->
 handle_info(timeout, State) ->
     ?LOG_INFO("server got timeout"),
     {stop, normal, State};
+
+handle_info({'$grb_promise_resolve', Result, {Id, Mod, Type}}, S=#state{socket=Socket,
+                                                                        id_len=IDLen,
+                                                                        transport=Transport}) ->
+    ?LOG_INFO("response id=~b, msg=~w", [Id, Result]),
+    Reply = pvc_proto:encode_serv_reply(Mod, Type, Result),
+    Transport:send(Socket, <<Id:IDLen, Reply/binary>>),
+    {noreply, S};
 
 handle_info(E, S) ->
     ?LOG_WARNING("server got unexpected info with msg ~w", [E]),

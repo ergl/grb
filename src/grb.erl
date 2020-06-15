@@ -6,7 +6,8 @@
          stop/0]).
 
 %% API for applications
--export([start_transaction/1,
+-export([connect/0,
+         start_transaction/1,
          perform_op/5,
          prepare_blue/4,
          decide_blue/3]).
@@ -22,6 +23,10 @@ start() ->
 -spec stop() -> ok | {error, term()}.
 stop() ->
     application:stop(grb).
+
+-spec connect() -> {ok, replica_id(), non_neg_integer(), [index_node()]}.
+connect() ->
+    grb_dc_utils:cluster_info().
 
 %% todo(borja): Update uniform_vc
 %% have to update everywhere but the current replica

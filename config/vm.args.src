@@ -10,3 +10,4 @@
 ## Configuration for GRB coming form the command line
 ## The port to listen for client commands (default is 7878)
 -grb tcp_port ${TCP_LIST_PORT}
+-grb tcp_id_len_bits ${TCP_ID_LEN}

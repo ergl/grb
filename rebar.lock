@@ -1,12 +1,20 @@
 {"1.1.0",
 [{<<"poolboy">>,{pkg,<<"poolboy">>,<<"1.5.2">>},1},
+ {<<"pvc_proto">>,
+  {git,"https://github.com/ergl/pvc_proto.git",
+       {ref,"eff6f2fb1c423be5ebf36db5fb24be90ba1d818f"}},
+  0},
  {<<"ranch">>,{pkg,<<"ranch">>,<<"1.7.1">>},0},
- {<<"riak_core">>,{pkg,<<"riak_core_lite">>,<<"0.10.0">>},0},
- {<<"riak_core_lite_util">>,{pkg,<<"riak_core_lite_util">>,<<"0.1.0">>},0}]}.
+ {<<"riak_core">>,
+  {git,"https://github.com/riak-core-lite/riak_core_lite",
+       {ref,"d3bd607a8cf309a67b7fe3f1165c92a1e47646aa"}},
+  0},
+ {<<"riak_core_lite_util">>,
+  {git,"https://github.com/riak-core-lite/riak_core_lite_util.git",
+       {ref,"92e6fc43902bf7f0145b6afb9311eb58ab9234cd"}},
+  0}]}.
 [
 {pkg_hash,[
  {<<"poolboy">>, <<"392B007A1693A64540CEAD79830443ABF5762F5D30CF50BC95CB2C1AAAFA006B">>},
- {<<"ranch">>, <<"6B1FAB51B49196860B733A49C07604465A47BDB78AA10C1C16A3D199F7F8C881">>},
- {<<"riak_core">>, <<"52864992CBD2331F7C5E7753374D8F1655A2046B64A6DF3E5184B6D42E936963">>},
- {<<"riak_core_lite_util">>, <<"B0FF95B2782B5C1E546E39A0910A5A9F0BBF8AB8B6F0A4256986707B552F7FA9">>}]}
+ {<<"ranch">>, <<"6B1FAB51B49196860B733A49C07604465A47BDB78AA10C1C16A3D199F7F8C881">>}]}
 ].

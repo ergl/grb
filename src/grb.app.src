@@ -10,7 +10,8 @@
                   sasl,
                   riak_core,
                   riak_core_lite_util,
-                  ranch
+                  ranch,
+                  pvc_proto
                  ]},
   {mod, { grb_app, []}},
   {env, [{auto_start_background_processes, true}]}

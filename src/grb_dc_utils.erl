@@ -2,6 +2,7 @@
 -include("grb.hrl").
 
 -export([replica_id/0,
+         cluster_info/0,
          key_location/1,
          bcast_vnode_sync/2,
          bcast_vnode_local_sync/2]).
@@ -9,9 +10,17 @@
 -define(BUCKET, <<"grb">>).
 
 %% todo(borja): Should persist this, Antidote says it can change
+-spec replica_id() -> replica_id().
 replica_id() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     riak_core_ring:cluster_name(Ring).
+
+-spec cluster_info() -> {ok, replica_id(), non_neg_integer(), [index_node()]}.
+cluster_info() ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    ReplicaID = riak_core_ring:cluster_name(Ring),
+    {NumPartitions, Nodes} = riak_core_ring:chash(Ring),
+    {ok, ReplicaID, NumPartitions, Nodes}.
 
 -spec key_location(key()) -> index_node().
 key_location(Key) ->

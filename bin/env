@@ -21,6 +21,10 @@ if [ -z "$TCP_LIST_PORT" ]; then
   export TCP_LIST_PORT=7878
 fi
 
+if [ -z "$TCP_ID_LEN" ]; then
+  export TCP_ID_LEN=16
+fi
+
 if [ -z "$COOKIE" ]; then
   export COOKIE=grb-cookie
 fi
