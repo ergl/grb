@@ -177,16 +177,20 @@ check_known_vc(VC) ->
             {not_ready, ?OP_WAIT_MS}
     end.
 
-%% todo(borja): Actually read from correct snapshot
 -spec perform_op_internal_continue(grb_promise:t(), key(), vclock(), val(), #state{}) -> ok.
-perform_op_internal_continue(Promise, Key, _VC, Val, State) ->
+perform_op_internal_continue(Promise, Key, VC, Val, State) ->
     case ets:lookup(State#state.oplog_replica, Key) of
         [] ->
+            %% todo(borja): Check soundness
             grb_promise:resolve({ok, Val, 0}, Promise);
         [{Key, Log}] ->
-            [{FirstVC, FirstVal} | _] = Log,
-            ResTs = grb_vclock:get_time(red, FirstVC),
-            grb_promise:resolve({ok, FirstVal, ResTs}, Promise)
+            %% todo(borja): Matches are not totally ordered
+            %% should introduce lamport clock to updates to totally order them
+            %% Right now, return the first (lower in the snapshot)
+            %% fixme(borja): Revisit redTS once red transactions are implemented
+            [{_, FirstVal, FirstVC} | _] = grb_version_log:get_lower(VC, Log),
+            RedTS = grb_vclock:get_time(red, FirstVC),
+            grb_promise:resolve({ok, FirstVal, RedTS}, Promise)
     end.
 
 -spec decide_blue_internal(partition_id(), _, vclock()) -> ok.

@@ -115,13 +115,12 @@ decide_blue_internal(TxId, VC, #state{op_log=OpLog,
                                       prepared_blue=PreparedBlue}) ->
 
     {{WS, _}, PreparedBlue1} = maps:take(TxId, PreparedBlue),
-    %% todo(borja): Append version
     Objects = maps:fold(fun(Key, Value, Acc) ->
         Log = case ets:lookup(OpLog, Key) of
             [{Key, PrevLog}] -> PrevLog;
-            [] -> []
+            [] -> grb_version_log:new()
         end,
-        NewLog = [{VC, Value} | Log],
+        NewLog = grb_version_log:append({blue, Value, VC}, Log),
         [{Key, NewLog} | Acc]
     end, [], WS),
     true = ets:insert(OpLog, Objects),
