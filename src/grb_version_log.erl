@@ -1,5 +1,6 @@
 -module(grb_version_log).
 -include("grb.hrl").
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
@@ -105,15 +106,14 @@ to_list(_B, End, End, _Size, Acc) -> lists:reverse(Acc);
 to_list(Buff, Start, End, Size, Acc) ->
     to_list(Buff, (Start + 1) rem Size, End, Size, [array:get(Start, Buff) | Acc]).
 
+-ifdef(TEST).
+
 from_list(List, Limit) ->
     from_list_inner(List, new(Limit)).
 
 from_list_inner([], Log) -> Log;
 from_list_inner([H | Rest], Log) ->
     from_list_inner(Rest, append(H, Log)).
-
-
--ifdef(TEST).
 
 grb_version_log_to_list_test() ->
     Log0 = grb_version_log:new(10),
