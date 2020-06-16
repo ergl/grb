@@ -88,8 +88,12 @@ handle_command(is_ready, _Sender, State) ->
     {reply, Ready, State};
 
 handle_command(start_replicas, _From, S = #state{partition=P, replicas_n=N}) ->
-    ok = grb_partition_replica:start_replicas(P, N),
-    Result = grb_partition_replica:replica_ready(P, N),
+    Result = case grb_partition_replica:replica_ready(P, N) of
+        true -> true;
+        false ->
+            ok = grb_partition_replica:start_replicas(P, N),
+            grb_partition_replica:replica_ready(P, N)
+    end,
     {reply, Result, S};
 
 handle_command(stop_replicas, _From, S = #state{partition=P, replicas_n=N}) ->

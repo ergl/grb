@@ -79,12 +79,14 @@ replica_ready(_Partition, 0) ->
     true;
 
 replica_ready(Partition, N) ->
-    case gen_server:call(generate_replica_name(Partition, N), ready) of
-        ready ->
-            replica_ready(Partition, N - 1);
-        _ ->
-            false
-    end.
+    try
+        case gen_server:call(generate_replica_name(Partition, N), ready) of
+            ready ->
+                replica_ready(Partition, N - 1);
+            _ ->
+                false
+        end
+    catch _:_ -> false end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Protocol API
