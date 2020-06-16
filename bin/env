@@ -34,7 +34,7 @@ if [ -z "$NODE_NAME" ]; then
 fi
 
 if [ -z "$COOKIE" ]; then
-  export COOKIE=grb-cookie
+  export COOKIE=grb_cookie
 fi
 
 RELNAME="`dirname \"$0\"`"/${INSTANCE_NAME}

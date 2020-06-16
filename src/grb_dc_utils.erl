@@ -7,6 +7,16 @@
          bcast_vnode_sync/2,
          bcast_vnode_local_sync/2]).
 
+%% For external script
+-export([is_ring_owner/0,
+         pending_ring_changes/0,
+         ready_ring_members/0]).
+
+%% Called via `erpc`
+-ignore_xref([is_ring_owner/0,
+              pending_ring_changes/0,
+              ready_ring_members/0]).
+
 -define(BUCKET, <<"grb">>).
 
 %% todo(borja): Should persist this, Antidote says it can change
@@ -14,6 +24,22 @@
 replica_id() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     riak_core_ring:cluster_name(Ring).
+
+-spec is_ring_owner() -> boolean().
+is_ring_owner() ->
+    SelfNode = node(),
+    {ok, Ring} = riak_core_ring_manager:get_raw_ring(),
+    lists:all(fun({_, N}) -> N =:= SelfNode end, riak_core_ring:all_owners(Ring)).
+
+-spec pending_ring_changes() -> boolean().
+pending_ring_changes() ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    [] =/= riak_core_ring:pending_changes(Ring).
+
+-spec ready_ring_members() -> [node()].
+ready_ring_members() ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    riak_core_ring:ready_members(Ring).
 
 -spec cluster_info() -> {ok, replica_id(), non_neg_integer(), [index_node()]}.
 cluster_info() ->
