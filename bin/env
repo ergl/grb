@@ -1,9 +1,25 @@
 #!/bin/bash
 
-# Handoff port.
-if [ -z "$HANDOFF_PORT" ]; then
-  export HANDOFF_PORT=8099
+# Riak config
+if [ -z "$RIAK_HANDOFF_PORT" ]; then
+  export RIAK_HANDOFF_PORT=8099
 fi
+
+if [ -z "$RIAK_RING_SIZE" ]; then
+  export RIAK_RING_SIZE=64
+fi
+
+# GRB config
+
+if [ -z "$TCP_LIST_PORT" ]; then
+  export TCP_LIST_PORT=7878
+fi
+
+if [ -z "$TCP_ID_LEN" ]; then
+  export TCP_ID_LEN=16
+fi
+
+# Node config
 
 if [ -z "$IP" ]; then
   export IP=127.0.0.1
@@ -15,14 +31,6 @@ fi
 
 if [ -z "$NODE_NAME" ]; then
   export NODE_NAME=${INSTANCE_NAME}@${IP}
-fi
-
-if [ -z "$TCP_LIST_PORT" ]; then
-  export TCP_LIST_PORT=7878
-fi
-
-if [ -z "$TCP_ID_LEN" ]; then
-  export TCP_ID_LEN=16
 fi
 
 if [ -z "$COOKIE" ]; then

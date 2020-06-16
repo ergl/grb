@@ -14,5 +14,5 @@
                   pvc_proto
                  ]},
   {mod, { grb_app, []}},
-  {env, [{auto_start_background_processes, true}]}
+  {env, []}
  ]}.
