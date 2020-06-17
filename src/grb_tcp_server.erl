@@ -74,7 +74,7 @@ handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
                                                 transport=Transport}) ->
     <<MessageID:IDLen, Request/binary>> = Data,
     {Module, Type, Msg} = pvc_proto:decode_client_req(Request),
-    ?LOG_INFO("request id=~b, type=~p, msg=~w", [MessageID, Type, Msg]),
+    ?LOG_DEBUG("request id=~b, type=~p, msg=~w", [MessageID, Type, Msg]),
     Promise = grb_promise:new(self(), {MessageID, Module, Type}),
     ok = grb_tcp_handler:process(Promise, Type, Msg),
     Transport:setopts(Socket, [{active, once}]),
@@ -94,7 +94,7 @@ handle_info(timeout, State) ->
 handle_info({'$grb_promise_resolve', Result, {Id, Mod, Type}}, S=#state{socket=Socket,
                                                                         id_len=IDLen,
                                                                         transport=Transport}) ->
-    ?LOG_INFO("response id=~b, msg=~w", [Id, Result]),
+    ?LOG_DEBUG("response id=~b, msg=~w", [Id, Result]),
     Reply = pvc_proto:encode_serv_reply(Mod, Type, Result),
     Transport:send(Socket, <<Id:IDLen, Reply/binary>>),
     {noreply, S};
