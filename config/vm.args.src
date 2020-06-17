@@ -6,3 +6,23 @@
 
 ## todo(borja): for now, check grb_time:timestamp/0 for more info
 +C no_time_warp
+
+## Enable kernel poll and a few async threads
++K true
++A 5
+
+## Increase number of concurrent ports/sockets
+-env ERL_MAX_PORTS 4096
+
+## Increase distribution port buffer size.
++zdbbl 32768
+
+## Set Max heap size to 100 MB (on 64-bit, 1 word = 8 bytes)
++hmax 12500000
+
+## Don't kill the process, just report
++hmaxk false
+
+## Pin to CPU cores, spread over hardware threads across NUMA nodes
+## If not supported, use the default unbound behavior
++stbt tnnps
