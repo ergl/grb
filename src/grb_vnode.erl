@@ -37,6 +37,10 @@
 
     prepared_blue :: #{any() => {#{}, vclock()}},
 
+    %% todo(borja): Maybe move this to other vnode when impl. replication
+    propagate_interval :: non_neg_integer(),
+    propagate_timer = undefined :: timer:tref() | undefined,
+
     %% todo(borja): for now
     op_log :: cache(key(), val())
 }).
@@ -71,9 +75,11 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
+    Interval = application:get_env(grb, propagate_interval, 5),
     State = #state{
         partition = Partition,
         prepared_blue = #{},
+        propagate_interval = Interval,
         op_log = new_cache(Partition, ?OP_LOG_TABLE)
     },
 
@@ -104,19 +110,42 @@ handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     Result = grb_partition_replica:replica_ready(P, N),
     {reply, Result, S};
 
+handle_command(start_propagate_timer, _From, S = #state{partition=P, propagate_interval=Int, propagate_timer=undefined}) ->
+    Args = [{P, node()}, propagate_event, grb_vnode_master],
+    {ok, TRef} = timer:apply_interval(Int, riak_core_vnode_master, command, Args),
+    {reply, ok, S#state{propagate_timer=TRef}};
+
+handle_command(start_propagate_timer, _From, S = #state{propagate_timer=_TRef}) ->
+    {reply, ok, S};
+
+handle_command(propagate_event, _From, State) ->
+    ok = propagate_internal(State#state.prepared_blue),
+    {noreply, State};
+
+handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=undefined}) ->
+    {reply, ok, S};
+
+handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=TRef}) ->
+    {ok, cancel} = timer:cancel(TRef),
+    {reply, ok, S#state{propagate_timer=undefined}};
+
 handle_command({prepare_blue, TxId, WS, Ts}, _From, S=#state{prepared_blue=PB}) ->
+    ?LOG_DEBUG("prepare_blue ~p wtih time ~p", [TxId, Ts]),
     {noreply, S#state{prepared_blue=PB#{TxId => {WS, Ts}}}};
 
 handle_command({decide_blue, TxId, VC}, _From, State) ->
-    ok = decide_blue_internal(TxId, VC, State),
-    {noreply, State};
+    NewState = decide_blue_internal(TxId, VC, State),
+    {noreply, NewState};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
 
-decide_blue_internal(TxId, VC, #state{op_log=OpLog,
-                                      prepared_blue=PreparedBlue}) ->
+-spec decide_blue_internal(term(), vclock(), #state{}) -> #state{}.
+decide_blue_internal(TxId, VC, S=#state{op_log=OpLog,
+                                        prepared_blue=PreparedBlue}) ->
+
+    ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
     {{WS, _}, PreparedBlue1} = maps:take(TxId, PreparedBlue),
     Objects = maps:fold(fun(Key, Value, Acc) ->
@@ -129,20 +158,21 @@ decide_blue_internal(TxId, VC, #state{op_log=OpLog,
     end, [], WS),
     true = ets:insert(OpLog, Objects),
 
-    %% todo(borja): Move this to replication once we're done
-    case maps:size(PreparedBlue1) of
-        0 -> grb_replica_state:set_known_vc(grb_time:timestamp());
-        _ ->
-            %% Get the min of the elements in the map
-            MinTimestamp = maps:fold(fun(_, {_, Ts}, Acc) ->
-                case Acc of
-                    ignore -> Ts;
-                    _ -> erlang:min(Ts, Acc)
-                end
-            end, ignore, PreparedBlue1),
-            grb_replica_state:set_known_vc(MinTimestamp - 1)
-    end.
+    S#state{prepared_blue=PreparedBlue1}.
 
+%% todo(borja): revisit with replication
+-spec propagate_internal(#{any() => {#{}, vclock()}}) -> ok.
+propagate_internal(PreparedBlue) when map_size(PreparedBlue) =:= 0 ->
+    Ts = grb_time:timestamp(),
+    grb_replica_state:set_known_vc(Ts);
+
+propagate_internal(PreparedBlue) ->
+    MinTS = maps:fold(fun
+        (_, {_, Ts}, ignore) -> Ts;
+        (_, {_, Ts}, Acc) -> erlang:min(Ts, Acc)
+    end, ignore, PreparedBlue),
+    ?LOG_DEBUG("knownVC[d] = min_prep (~p - 1)", [MinTS]),
+    grb_replica_state:set_known_vc(MinTS - 1).
 
 %%%===================================================================
 %%% Util Functions
