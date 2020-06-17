@@ -15,11 +15,20 @@ all: compile
 compile:
 	$(REBAR) compile
 
+debug:
+	$(REBAR) as debug_log compile
+
 clean:
 	$(REBAR) clean --all
 
 rel: compile
 	$(REBAR) release -n grb
+
+debugrel:
+	$(REBAR) as debug_log release -n grb
+
+debugrel-clean:
+	rm -rf _build/debug_log/rel
 
 console:
 	$(BASEDIR)/$(RELPATH)/bin/$(ENVFILE) console
