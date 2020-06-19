@@ -18,7 +18,7 @@
 -type transaction_type() :: red | blue.
 
 %% todo(borja): Swap for real replica value
--type replica_id() :: non_neg_integer().
+-type replica_id() :: term().
 -type vclock() :: grb_vclock:vc(replica_id()).
 
 %% Opaque types
@@ -30,11 +30,27 @@
 -define(OP_LOG_TABLE, op_log_table).
 
 %% Describes the current replica, consumed by other replicas (as a whole)
--type remote_replica_node() :: {[partition_id(), ...], inet:ip_address(), inet:port_number()}.
 -record(replica_descriptor, {
     replica_id :: replica_id(),
     num_partitions :: non_neg_integer(),
-    remote_addresses :: [remote_replica_node(), ...]
+    remote_addresses :: #{partition_id() => {inet:ip_address(), inet:port_number()} }
 }).
 
 -type replica_descriptor() :: #replica_descriptor{}.
+
+-define(INTER_DC_SOCK_OPTS, [binary,
+                             {active, once},
+                             {deliver, term},
+                             {packet, 4}]).
+
+-export_type([partition_id/0,
+              index_node/0,
+              cache_id/0,
+              op/0,
+              effect/0,
+              transaction_type/0,
+              replica_id/0,
+              vclock/0,
+              key/0,
+              val/0,
+              replica_descriptor/0]).
