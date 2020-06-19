@@ -44,6 +44,8 @@
     %% The port to listen for client commands (default is 7878)
     {tcp_port, ${TCP_LIST_PORT}},
     {tcp_id_len_bits, ${TCP_ID_LEN}},
+    %% The port to send/recv inter-dc communication (default is 8989)
+    {inter_dc_port, ${INTER_DC_PORT}},
     {auto_start_background_processes, false}
   ]}
 ].

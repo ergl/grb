@@ -19,6 +19,10 @@ if [ -z "$TCP_ID_LEN" ]; then
   export TCP_ID_LEN=16
 fi
 
+if [ -z "$INTER_DC_PORT" ]; then
+  export INTER_DC_PORT=8989
+fi
+
 # Node config
 
 if [ -z "$IP" ]; then

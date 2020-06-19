@@ -28,3 +28,13 @@
 
 %% Different ETS tables
 -define(OP_LOG_TABLE, op_log_table).
+
+%% Describes the current replica, consumed by other replicas (as a whole)
+-type remote_replica_node() :: {[partition_id(), ...], inet:ip_address(), inet:port_number()}.
+-record(replica_descriptor, {
+    replica_id :: replica_id(),
+    num_partitions :: non_neg_integer(),
+    remote_addresses :: [remote_replica_node(), ...]
+}).
+
+-type replica_descriptor() :: #replica_descriptor{}.
