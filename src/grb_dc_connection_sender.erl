@@ -59,6 +59,7 @@ handle_cast(E, S) ->
 
 handle_info({tcp, Socket, Data}, State=#state{socket=Socket}) ->
     ?LOG_INFO("got data ~p", [Data]),
+    inet:setopts(Socket, [{active, once}]),
     {noreply, State};
 
 handle_info({tcp_error, _Socket, Reason}, State) ->
