@@ -35,16 +35,15 @@ replica_descriptor() ->
     Id = riak_core_ring:cluster_name(Ring),
     {NumPartitions, PartitionList} = riak_core_ring:chash(Ring),
     %% Convert a list of [{partition_id(), node()}, ...] into
-    %% #{inet:ip_address() => {inet:port_address(), [partition_id()]}}
-    {NodesWithInfo, _} = lists:foldl(fun({P, Node}, {NodeInfo, IPMap}) ->
+    %% #{partition_id() => {inet:ip_address(), inet:port_number()}}
+    {PartitionsWithInfo, _} = lists:foldl(fun({P, Node}, {PartitionInfo, IPMap}) ->
         IP = maps:get(Node, IPMap, erpc:call(Node, grb_dc_utils, my_bounded_ip, [])),
-        InfoMap = maps:update_with(IP, fun({NodePort, Ps}) -> {NodePort, [P | Ps]} end, {Port, [P]}, NodeInfo),
-        {InfoMap, IPMap#{Node => IP}}
+        {PartitionInfo#{P => {IP, Port}}, IPMap#{Node => IP}}
     end, {#{}, #{}}, PartitionList),
     #replica_descriptor{
         replica_id=Id,
         num_partitions=NumPartitions,
-        remote_addresses=NodesWithInfo
+        remote_addresses=PartitionsWithInfo
     }.
 
 %% @doc Commands this cluster to join to all given descriptors

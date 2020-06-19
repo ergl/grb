@@ -20,10 +20,11 @@ start(_StartType, _StartArgs) ->
 
             ok = enable_debug_logs(),
             ok = grb_tcp_server:start_server(),
+            ok = grb_dc_connection_receiver:start_server(),
             case application:get_env(grb, auto_start_background_processes) of
                 {ok, true} ->
                     ?LOG_INFO("Starting background processes"),
-                    grb_vnode:start_replicas();
+                    grb_dc_manager:start_background_processes();
                 _ ->
                     ok
             end,

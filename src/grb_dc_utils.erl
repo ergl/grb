@@ -4,6 +4,7 @@
 -export([replica_id/0,
          cluster_info/0,
          my_bounded_ip/0,
+         my_partitions/0,
          key_location/1,
          bcast_vnode_sync/2,
          bcast_vnode_local_sync/2]).
@@ -55,6 +56,11 @@ my_bounded_ip() ->
     {ok, IPString} = application:get_env(grb, bounded_ip),
     {ok, IP} = inet:parse_address(IPString),
     IP.
+
+-spec my_partitions() -> [partition_id()].
+my_partitions() ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    riak_core_ring:my_indices(Ring).
 
 -spec key_location(key()) -> index_node().
 key_location(Key) ->
