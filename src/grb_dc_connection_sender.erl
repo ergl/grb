@@ -25,7 +25,8 @@ start_link(RemoteID, IP, Port) ->
     Ret = gen_server:start_link(?MODULE, [RemoteID, IP, Port], []),
     case Ret of
         {ok, Pid} ->
-            persistent_term:put({?MODULE, RemoteID}, Pid);
+            persistent_term:put({?MODULE, RemoteID}, Pid),
+            {ok, Pid};
         {error, {already_started, ChildPid}} ->
             {ok, ChildPid};
         Err ->
