@@ -22,7 +22,7 @@ fi
 # Node config
 
 if [ -z "$IP" ]; then
-  export IP=127.0.0.1
+  export IP="127.0.0.1"
 fi
 
 if [ -z "$INSTANCE_NAME" ]; then

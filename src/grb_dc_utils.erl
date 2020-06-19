@@ -3,6 +3,7 @@
 
 -export([replica_id/0,
          cluster_info/0,
+         my_bounded_ip/0,
          key_location/1,
          bcast_vnode_sync/2,
          bcast_vnode_local_sync/2]).
@@ -14,6 +15,7 @@
 
 %% Called via `erpc`
 -ignore_xref([is_ring_owner/0,
+              my_bounded_ip/0,
               pending_ring_changes/0,
               ready_ring_members/0]).
 
@@ -47,6 +49,12 @@ cluster_info() ->
     ReplicaID = riak_core_ring:cluster_name(Ring),
     {NumPartitions, Nodes} = riak_core_ring:chash(Ring),
     {ok, ReplicaID, NumPartitions, Nodes}.
+
+-spec my_bounded_ip() -> inet:ip_address().
+my_bounded_ip() ->
+    {ok, IPString} = application:get_env(grb, bounded_ip),
+    {ok, IP} = inet:parse_address(IPString),
+    IP.
 
 -spec key_location(key()) -> index_node().
 key_location(Key) ->
