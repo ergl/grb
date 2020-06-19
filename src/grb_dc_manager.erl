@@ -85,16 +85,20 @@ connect_to_replica([Desc | Rest], LocalId, LocalNodes, LocalNum) ->
 -spec connect_nodes_to_descriptor([node()], replica_descriptor()) -> ok | {error, term()}.
 connect_nodes_to_descriptor(Nodes, Desc=#replica_descriptor{replica_id=RemoteId}) ->
     Returns = erpc:multicall(Nodes, grb_dc_connection_manager, connect_to, [Desc]),
-    lists:foldl(fun({Resp, Node}) ->
-        case Resp of
-            {ok, ok} ->
-                ok;
-            {throw, Term} ->
-                ?LOG_ERROR("Remote node ~p threw ~p while connecting to DC ~p", [Node, Term, RemoteId]),
-                {error, Term};
-            {error, Reason} ->
-                ?LOG_ERROR("Remote node ~p errored with ~p while connecting to DC ~p", [Node, Reason, RemoteId]),
-                {error, Reason}
+    lists:foldl(fun({Resp, Node}, Acc) ->
+        case Acc of
+            {error, Reason} -> {error, Reason};
+            ok ->
+                case Resp of
+                    {ok, ok} ->
+                        ok;
+                    {throw, Term} ->
+                        ?LOG_ERROR("Remote node ~p threw ~p while connecting to DC ~p", [Node, Term, RemoteId]),
+                        {error, Term};
+                    {error, Reason} ->
+                        ?LOG_ERROR("Remote node ~p errored with ~p while connecting to DC ~p", [Node, Reason, RemoteId]),
+                        {error, Reason}
+                end
         end
     end, ok, lists:zip(Returns, Nodes)).
 
