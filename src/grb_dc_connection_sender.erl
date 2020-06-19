@@ -57,7 +57,7 @@ handle_cast(E, S) ->
     {noreply, S}.
 
 handle_info({tcp, Socket, Data}, State=#state{socket=Socket}) ->
-    ?LOG_DEBUG("got data ~p", [Data]),
+    ?LOG_INFO("got data ~p", [Data]),
     {noreply, State};
 
 handle_info({tcp_error, _Socket, Reason}, State) ->
@@ -71,6 +71,7 @@ handle_info(timeout, State) ->
 
 %% todo(borja): remove
 handle_info({test, Data}, State=#state{socket=S}) ->
+    ?LOG_INFO("Sending test data ~p", [Data]),
     ok = gen_tcp:send(S, Data),
     {noreply, State};
 

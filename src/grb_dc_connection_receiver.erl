@@ -66,7 +66,7 @@ terminate(_Reason, #state{socket=Socket, transport=Transport}) ->
 
 handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
                                                 transport=Transport}) ->
-    ?LOG_DEBUG("~p received ~p", [?MODULE, Data]),
+    ?LOG_INFO("~p received ~p", [?MODULE, Data]),
     Transport:send(Socket, Data),
     Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
