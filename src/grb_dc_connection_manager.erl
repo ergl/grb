@@ -10,7 +10,7 @@
 %% External API
 -export([connect_to/1,
          connected_replicas/0,
-         connection_for_replica/1,
+         connections_for_replica/1,
          add_replica_id/1,
          broadcast_msg/1,
          add_replica_connection/2]).
@@ -29,6 +29,15 @@
     connection_pids :: cache(replica_id(), pid())
 }).
 
+%% todo(borja): Right now connections are per node, maybe add info about partitions
+%%
+%%  Right now we're counting on a 1-to-1 correspondance between replica nodes and
+%%  partitions, in the sense that, if a node is responsible for partitions A and B
+%%  on one replica, then at all replicas, there's only a single node responsible
+%%  for A and B.
+%%
+%%  As such, when a partition wants to route a message to its replica, it is enough
+%%  to know the target replica id, since the partitioning is already implicit.
 -spec connect_to(replica_descriptor()) -> ok | {error, term()}.
 connect_to(#replica_descriptor{replica_id=ReplicaID, remote_addresses=RemoteNodes}) ->
     ?LOG_DEBUG("Node ~p connected succesfully to DC ~p", [ReplicaID]),
@@ -77,13 +86,13 @@ add_replica_connection(Id, Pid) ->
 connected_replicas() ->
     ets:lookup_element(?REPLICAS_TABLE, ?REPLICAS_TABLE_KEY, 2).
 
--spec connection_for_replica(replica_id()) -> pid().
-connection_for_replica(Id) ->
+-spec connections_for_replica(replica_id()) -> [pid()].
+connections_for_replica(Id) ->
     ets:lookup_element(?CONN_PIDS_TABLE, Id, 2).
 
 -spec broadcast_msg(any()) -> ok.
 broadcast_msg(Msg) ->
-    Pids = ets:select(?CONN_PIDS_TABLE, [{{'_', '$1'}, [], ['$1']}]),
+    Pids = lists:flatten(ets:select(?CONN_PIDS_TABLE, [{{'_', '$1'}, [], ['$1']}])),
     %% fixme(borja): Avoid going through gen_server, send through socket directly
     lists:foreach(fun(P) ->
         ok = gen_server:cast(P, {send, Msg})
@@ -108,7 +117,11 @@ handle_call({add_replica_id, ReplicaID}, _From, State) ->
 handle_call({add_connection_pid, ReplicaID, Pid}, _From, State) ->
     Replicas = connected_replicas(),
     true = ets:insert(?REPLICAS_TABLE, {?REPLICAS_TABLE_KEY, ordsets:add_element(ReplicaID, Replicas)}),
-    true = ets:insert(?CONN_PIDS_TABLE, {ReplicaID, Pid}),
+    PidSet = case ets:lookup(?CONN_PIDS_TABLE, ReplicaID) of
+        [] -> ordsets:new();
+        [{ReplicaID, Set}] -> Set
+    end,
+    true = ets:insert(?CONN_PIDS_TABLE, {ReplicaID, ordsets:add_element(Pid, PidSet)}),
     {reply, ok, State};
 
 handle_call(E, _From, S) ->
