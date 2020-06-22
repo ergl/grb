@@ -65,7 +65,7 @@ handle_call(_Request, _From, _State) ->
 
 handle_cast({set_known_vc, ReplicaID, Time}, State=#state{clock_cache=Cache}) ->
     Old = ets:lookup_element(Cache, known_vc, 2),
-    New = grb_vclock:set_time(ReplicaID, Time, Old),
+    New = grb_vclock:set_max_time(ReplicaID, Time, Old),
     true = ets:update_element(Cache, known_vc, {2, New}),
     {noreply, State};
 
