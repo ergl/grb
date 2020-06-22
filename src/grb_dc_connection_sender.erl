@@ -58,27 +58,30 @@ handle_cast(E, S) ->
     {noreply, S}.
 
 handle_info({tcp, Socket, Data}, State=#state{socket=Socket}) ->
-    ?LOG_INFO("got data ~p", [Data]),
+    ?LOG_INFO("replication client received ~p", [Data]),
     inet:setopts(Socket, [{active, once}]),
     {noreply, State};
 
+handle_info({tcp_closed, _Socket}, State) ->
+    ?LOG_INFO("replication client received tcp_closed"),
+    {stop, normal, State};
+
 handle_info({tcp_error, _Socket, Reason}, State) ->
+    ?LOG_INFO("replication client received tcp_error ~p", [Reason]),
     {stop, Reason, State};
 
-handle_info({tcp_closed, _Socket}, State) ->
-    {stop, normal, State};
-
 handle_info(timeout, State) ->
+    ?LOG_INFO("replication client received timeout"),
     {stop, normal, State};
 
-%% todo(borja): remove
+%% fixme(borja): remove
 handle_info({test, Data}, State=#state{socket=S}) ->
     ?LOG_INFO("Sending test data ~p", [Data]),
     ok = gen_tcp:send(S, Data),
     {noreply, State};
 
 handle_info(E, S) ->
-    logger:warning("unexpected info: ~p~n", [E]),
+    ?LOG_WARNING("replication client received unexpected info with msg ~w", [E]),
     {noreply, S}.
 
 terminate(_Reason, #state{socket=Socket}) ->

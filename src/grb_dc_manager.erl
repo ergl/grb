@@ -5,7 +5,7 @@
 %% API
 -export([start_background_processes/0,
          replica_descriptor/0,
-         connect_to_replica/1,
+         connect_to_replicas/1,
          stop_background_processes/0]).
 
 %% All functions are called through erpc
@@ -13,6 +13,10 @@
               replica_descriptor/0,
               connect_to_replica/1,
               stop_background_processes/0]).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% External API
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 start_background_processes() ->
     Res = grb_dc_utils:bcast_vnode_sync(grb_vnode_master, start_replicas),
@@ -53,20 +57,20 @@ replica_descriptor() ->
 %%      cluster, so it is enough to call this in a single node
 %%      per DC.
 %%
--spec connect_to_replica([replica_descriptor()]) -> ok.
-connect_to_replica(Descriptors) ->
+-spec connect_to_replicas([replica_descriptor()]) -> ok | {error, term()}.
+connect_to_replicas(Descriptors) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     LocalId = riak_core_ring:cluster_name(Ring),
     LocalNodes = riak_core_ring:all_members(Ring),
     {LocalNumPartitions, _} = riak_core_ring:chash(Ring),
-    connect_to_replica(Descriptors, LocalId, LocalNodes, LocalNumPartitions).
+    connect_to_replicas(Descriptors, LocalId, LocalNodes, LocalNumPartitions).
 
--spec connect_to_replica([replica_descriptor()], replica_id(), non_neg_integer(), [node()]) -> ok | {error, term()}.
-connect_to_replica([], _, _, _) -> ok;
-connect_to_replica([#replica_descriptor{replica_id=Id} | Rest], Id, Nodes, Num) ->
+-spec connect_to_replicas([replica_descriptor()], replica_id(), non_neg_integer(), [node()]) -> ok | {error, term()}.
+connect_to_replicas([], _, _, _) -> ok;
+connect_to_replicas([#replica_descriptor{replica_id=Id} | Rest], Id, Nodes, Num) ->
     %% Skip myself
-    connect_to_replica(Rest, Id, Nodes, Num);
-connect_to_replica([Desc | Rest], LocalId, LocalNodes, LocalNum) ->
+    connect_to_replicas(Rest, Id, Nodes, Num);
+connect_to_replicas([Desc | Rest], LocalId, LocalNodes, LocalNum) ->
     #replica_descriptor{replica_id=RemoteId, num_partitions=RemoteNum} = Desc,
     case RemoteNum =:= LocalNum of
         false ->
@@ -78,7 +82,7 @@ connect_to_replica([Desc | Rest], LocalId, LocalNodes, LocalNum) ->
                 {error, Reason} ->
                     {error, {bad_remote_connect, Reason}};
                 ok ->
-                    connect_to_replica(Rest, LocalId, LocalNodes, LocalNum)
+                    connect_to_replicas(Rest, LocalId, LocalNodes, LocalNum)
             end
     end.
 

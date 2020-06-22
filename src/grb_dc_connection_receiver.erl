@@ -66,22 +66,23 @@ terminate(_Reason, #state{socket=Socket, transport=Transport}) ->
 
 handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
                                                 transport=Transport}) ->
-    ?LOG_INFO("~p received ~p", [?MODULE, Data]),
+    ?LOG_INFO("replication server received ~p", [Data]),
     Transport:send(Socket, Data),
     Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
 handle_info({tcp_closed, _Socket}, S) ->
+    ?LOG_INFO("replication server received tcp_closed"),
     {stop, normal, S};
 
 handle_info({tcp_error, _Socket, Reason}, S) ->
-    ?LOG_INFO("server got tcp_error"),
+    ?LOG_INFO("replication server received tcp_error ~p", [Reason]),
     {stop, Reason, S};
 
 handle_info(timeout, State) ->
-    ?LOG_INFO("server got timeout"),
+    ?LOG_INFO("replication server received timeout"),
     {stop, normal, State};
 
 handle_info(E, S) ->
-    ?LOG_WARNING("server ~p got unexpected info with msg ~w", [?MODULE, E]),
+    ?LOG_WARNING("replication server received unexpected info with msg ~w", [E]),
     {noreply, S}.
