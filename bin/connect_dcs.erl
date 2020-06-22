@@ -87,7 +87,9 @@ prepare({ok, Nodes}) ->
                 {error, Reason} ->
                     io:fwrite(standard_error, "connect_to_replica error: ~p~n", [Reason]),
                     halt(1);
-                ok -> ok
+                ok ->
+                    io:format("succesfully joined dcs ~p~n", [Descriptors]),
+                    ok
             end
     end.
 
