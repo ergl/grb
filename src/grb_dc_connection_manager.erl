@@ -86,7 +86,7 @@ broadcast_msg(Msg) ->
     Pids = ets:select(?CONN_PIDS_TABLE, [{{'_', '$1'}, [], ['$1']}]),
     %% fixme(borja): Avoid going through gen_server, send through socket directly
     lists:foreach(fun(P) ->
-        ok = gen_server:cast(P, {test, Msg})
+        ok = gen_server:cast(P, {send, Msg})
     end, Pids).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

@@ -53,6 +53,12 @@ handle_call(E, _From, S) ->
     ?LOG_WARNING("unexpected call: ~p~n", [E]),
     {reply, ok, S}.
 
+%% fixme(borja): remove
+handle_cast({send, Data}, State=#state{socket=S}) ->
+    ?LOG_INFO("Sending test data ~p", [Data]),
+    ok = gen_tcp:send(S, Data),
+    {noreply, State};
+
 handle_cast(E, S) ->
     ?LOG_WARNING("unexpected cast: ~p~n", [E]),
     {noreply, S}.
@@ -73,12 +79,6 @@ handle_info({tcp_error, _Socket, Reason}, State) ->
 handle_info(timeout, State) ->
     ?LOG_INFO("replication client received timeout"),
     {stop, normal, State};
-
-%% fixme(borja): remove
-handle_info({test, Data}, State=#state{socket=S}) ->
-    ?LOG_INFO("Sending test data ~p", [Data]),
-    ok = gen_tcp:send(S, Data),
-    {noreply, State};
 
 handle_info(E, S) ->
     ?LOG_WARNING("replication client received unexpected info with msg ~w", [E]),
