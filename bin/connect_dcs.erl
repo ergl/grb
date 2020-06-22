@@ -3,7 +3,6 @@
 %%! -smp enable -name connect_dcs@127.0.0.1 -setcookie grb_cookie
 
 -mode(compile).
--include("grb.hrl").
 
 -export([main/1]).
 
@@ -89,7 +88,9 @@ prepare({ok, Nodes}) ->
                     io:fwrite(standard_error, "connect_to_replica error: ~p~n", [Reason]),
                     halt(1);
                 ok ->
-                    DescIds = [Id || {#replica_descriptor{replica_id=Id}} <- Descriptors],
+                    %% hack, don't include header file,
+                    %% but we know the id is the second elt after record name
+                    DescIds = [element(2, D) || D <- Descriptors],
                     io:format("succesfully joined dcs ~p~n", [DescIds]),
                     ok
             end
