@@ -13,6 +13,8 @@
          connections_for_replica/1,
          add_replica_id/1,
          broadcast_msg/1,
+         broadcast_tx/3,
+         broadcast_heartbeat/3,
          add_replica_connection/2]).
 
 %% Supervisor
@@ -97,6 +99,16 @@ broadcast_msg(Msg) ->
     lists:foreach(fun(P) ->
         ok = gen_server:cast(P, {send, Msg})
     end, Pids).
+
+-spec broadcast_heartbeat(replica_id(), partition_id(), grb_time:ts()) -> ok.
+broadcast_heartbeat(_FromId, _ToPartition, _Time) ->
+    %% todo(borja): Implement
+    ok.
+
+-spec broadcast_tx(replica_id(), partition_id(), {term(), #{}, vclock()}) -> ok.
+broadcast_tx(_FromId, _ToPartition, {_TxId, _WS, _CommitVC}) ->
+    %% todo(borja): Implement
+    ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks

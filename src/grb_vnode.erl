@@ -118,8 +118,8 @@ handle_command(start_propagate_timer, _From, S = #state{partition=P, propagate_i
 handle_command(start_propagate_timer, _From, S = #state{propagate_timer=_TRef}) ->
     {reply, ok, S};
 
-handle_command(propagate_event, _From, State) ->
-    ok = propagate_internal(State#state.prepared_blue),
+handle_command(propagate_event, _From, State=#state{partition=P, prepared_blue=PreparedBlue}) ->
+    ok = propagate_internal(P, PreparedBlue),
     {noreply, State};
 
 handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=undefined}) ->
@@ -142,7 +142,8 @@ handle_command(Message, _Sender, State) ->
     {noreply, State}.
 
 -spec decide_blue_internal(term(), vclock(), #state{}) -> #state{}.
-decide_blue_internal(TxId, VC, S=#state{op_log=OpLog,
+decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
+                                        op_log=OpLog,
                                         prepared_blue=PreparedBlue}) ->
 
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
@@ -157,22 +158,25 @@ decide_blue_internal(TxId, VC, S=#state{op_log=OpLog,
         [{Key, NewLog} | Acc]
     end, [], WS),
     true = ets:insert(OpLog, Objects),
+    SelfId = grb_dc_utils:replica_id(),
 
+    ok = grb_propagation_vnode:append_blue_commit(SelfId, SelfPartition, TxId, WS, VC),
     S#state{prepared_blue=PreparedBlue1}.
 
-%% todo(borja): revisit with replication
--spec propagate_internal(#{any() => {#{}, vclock()}}) -> ok.
-propagate_internal(PreparedBlue) when map_size(PreparedBlue) =:= 0 ->
-    Ts = grb_time:timestamp(),
-    grb_replica_state:set_known_vc(Ts);
-
-propagate_internal(PreparedBlue) ->
-    MinTS = maps:fold(fun
-        (_, {_, Ts}, ignore) -> Ts;
-        (_, {_, Ts}, Acc) -> erlang:min(Ts, Acc)
-    end, ignore, PreparedBlue),
-    ?LOG_DEBUG("knownVC[d] = min_prep (~p - 1)", [MinTS]),
-    grb_replica_state:set_known_vc(MinTS - 1).
+-spec propagate_internal(partition_id(), #{any() => {#{}, vclock()}}) -> ok.
+propagate_internal(Partition, PreparedBlue) ->
+    Ts = case map_size(PreparedBlue) of
+        0 -> grb_time:timestamp();
+        _ ->
+            MinTS = maps:fold(fun
+                (_, {_, Ts}, ignore) -> Ts;
+                (_, {_, Ts}, Acc) -> erlang:min(Ts, Acc)
+            end, ignore, PreparedBlue),
+            ?LOG_DEBUG("knownVC[d] = min_prep (~p - 1)", [MinTS]),
+            MinTS - 1
+    end,
+    grb_replica_state:set_known_vc(Ts),
+    grb_propagation_vnode:propagate_transactions(Partition, Ts).
 
 %%%===================================================================
 %%% Util Functions

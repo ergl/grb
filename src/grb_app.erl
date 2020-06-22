@@ -18,6 +18,9 @@ start(_StartType, _StartArgs) ->
             ok = riak_core:register([{vnode_module, grb_vnode}]),
             ok = riak_core_node_watcher:service_up(grb, self()),
 
+            ok = riak_core:register([{vnode_module, grb_propagation_vnode}]),
+            ok = riak_core_node_watcher:service_up(grb_propagation, self()),
+
             ok = enable_debug_logs(),
             ok = grb_tcp_server:start_server(),
             ok = grb_dc_connection_receiver:start_server(),
