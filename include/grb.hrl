@@ -17,7 +17,7 @@
 -type effect() :: atom().
 -type transaction_type() :: red | blue.
 
-%% todo(borja): Swap for real replica value
+%% it's a tuple, really, but we don't want the application to know anything about it
 -type replica_id() :: term().
 -type vclock() :: grb_vclock:vc(replica_id()).
 

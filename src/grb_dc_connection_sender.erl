@@ -53,7 +53,7 @@ handle_call(E, _From, S) ->
     ?LOG_WARNING("unexpected call: ~p~n", [E]),
     {reply, ok, S}.
 
-%% fixme(borja): remove
+%% fixme(borja): remove, send the socket somewhere so parts can send without going through gen_server
 handle_cast({send, Data}, State=#state{socket=S}) ->
     ?LOG_INFO("Sending test data ~p", [Data]),
     ok = gen_tcp:send(S, Data),
