@@ -46,6 +46,7 @@
 -export_type([partition_id/0,
               index_node/0,
               cache_id/0,
+              cache/2,
               op/0,
               effect/0,
               transaction_type/0,
