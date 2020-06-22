@@ -69,6 +69,15 @@ handle_cast({set_known_vc, ReplicaID, Time}, State=#state{clock_cache=Cache}) ->
     true = ets:update_element(Cache, known_vc, {2, New}),
     {noreply, State};
 
+%%handle_cast({set_global_known_matrix, AtId, FromId, Time}, State=#state{clock_cache=Cache}) ->
+%%    Key = {AtId, FromId},
+%%    OldTime = case ets:lookup(Cache, Key) of
+%%        [] -> 0;
+%%        [{Key, Ts}] -> Ts
+%%    end,
+%%    true = ets:insert(Cache, {Key, erlang:max(OldTime, Time)}),
+%%    {noreply, State};
+
 handle_cast(_Request, _State) ->
     erlang:error(not_implemented).
 
