@@ -18,6 +18,10 @@
          broadcast_heartbeat/3,
          add_replica_connection/2]).
 
+%% Used through erpc or supervisor machinery
+-ignore_xref([start_link/0,
+              connect_to/1]).
+
 %% Supervisor
 -export([start_link/0]).
 

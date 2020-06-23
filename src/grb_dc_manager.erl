@@ -11,7 +11,7 @@
 %% All functions are called through erpc
 -ignore_xref([start_background_processes/0,
               replica_descriptor/0,
-              connect_to_replica/1,
+              connect_to_replicas/1,
               stop_background_processes/0]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

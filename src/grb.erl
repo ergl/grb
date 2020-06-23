@@ -12,7 +12,9 @@
          prepare_blue/4,
          decide_blue/3]).
 
--ignore_xref([ping/0]).
+%% Called by rel
+-ignore_xref([start/0,
+              stop/0]).
 
 %% Public API
 

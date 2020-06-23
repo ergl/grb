@@ -15,6 +15,12 @@ all: compile
 compile:
 	$(REBAR) compile
 
+xref:
+	$(REBAR) xref skip_deps=true
+
+dialyzer:
+	$(REBAR) dialyzer
+
 debug:
 	$(REBAR) as debug_log compile
 

@@ -4,8 +4,7 @@
 -include_lib("kernel/include/logger.hrl").
 
 %% Public API
--export([cache_name/2,
-         known_vc/1,
+-export([known_vc/1,
          stable_vc/1,
          uniform_vc/1,
          handle_blue_heartbeat/3,
@@ -155,7 +154,7 @@ new_cache(Partition, Name, Options) ->
         undefined ->
             ets:new(CacheName, Options);
         _ ->
-            lager:info("Unsable to create cache ~p at ~p, retrying", [Name, Partition]),
+            ?LOG_INFO("Unsable to create cache ~p at ~p, retrying", [Name, Partition]),
             timer:sleep(100),
             try ets:delete(CacheName) catch _:_ -> ok end,
             new_cache(Partition, Name, Options)

@@ -2,6 +2,9 @@
 -include("grb.hrl").
 -behavior(supervisor).
 
+%% Called by supervisor machinery
+-ignore_xref([start_link/0]).
+
 -export([start_connection/3,
          start_link/0]).
 

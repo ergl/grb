@@ -5,8 +5,6 @@
 
 %% Public API
 -export([cache_name/2,
-         start_replicas/0,
-         stop_replicas/0,
          prepare_blue/4,
          handle_replicate/5]).
 
@@ -52,14 +50,6 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
-
-start_replicas() ->
-    R = grb_dc_utils:bcast_vnode_local_sync(?master, start_replicas),
-    ok = lists:foreach(fun({_, true}) -> ok end, R).
-
-stop_replicas() ->
-    R = grb_dc_utils:bcast_vnode_local_sync(?master, stop_replicas),
-    ok = lists:foreach(fun({_, ok}) -> ok end, R).
 
 %% todo(borja): Update uniform_vc once replication is done
 -spec prepare_blue(partition_id(), _, _, vclock()) -> grb_time:ts().
@@ -231,7 +221,7 @@ new_cache(Partition, Name, Options) ->
         undefined ->
             ets:new(CacheName, Options);
         _ ->
-            lager:info("Unsable to create cache ~p at ~p, retrying", [Name, Partition]),
+            ?LOG_INFO("Unsable to create cache ~p at ~p, retrying", [Name, Partition]),
             timer:sleep(100),
             try ets:delete(CacheName) catch _:_ -> ok end,
             new_cache(Partition, Name, Options)

@@ -5,6 +5,9 @@
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
+%% Called by supervisor machinery
+-ignore_xref([start_link/3]).
+
 %% Supervisor
 -export([start_link/3]).
 
