@@ -3,6 +3,7 @@
 -behaviour(gen_server).
 -behavior(ranch_protocol).
 -include("grb.hrl").
+-include("dc_messages.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 %% Module API
@@ -64,10 +65,17 @@ terminate(_Reason, #state{socket=Socket, transport=Transport}) ->
     catch Transport:close(Socket),
     ok.
 
-handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
-                                                transport=Transport}) ->
-    ?LOG_INFO("replication server received ~p", [Data]),
-    Transport:send(Socket, Data),
+handle_info(
+    {tcp, Socket, <<?VERSION:?VERSION_BITS, P:?PARTITION_BITS/big-unsigned-integer, Msg/binary>>},
+    State = #state{socket=Socket, transport=Transport}
+) ->
+    #inter_dc_message{source_id=SourceReplica, payload=Request} = binary_to_term(Msg),
+    ?LOG_INFO("Received msg from ~p to ~p: ~p", [SourceReplica, P, Request]),
+    Transport:setopts(Socket, [{active, once}]),
+    {noreply, State};
+
+handle_info({tcp, Socket, Data}, State = #state{transport=Transport}) ->
+    ?LOG_WARNING("received unknown data ~p", [Data]),
     Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 

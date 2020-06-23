@@ -1,6 +1,7 @@
 -module(grb_dc_connection_manager).
 -behavior(gen_server).
 -include("grb.hrl").
+-include("dc_messages.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 -define(REPLICAS_TABLE, connected_replicas).
@@ -101,14 +102,12 @@ broadcast_msg(Msg) ->
     end, Pids).
 
 -spec broadcast_heartbeat(replica_id(), partition_id(), grb_time:ts()) -> ok.
-broadcast_heartbeat(_FromId, _ToPartition, _Time) ->
-    %% todo(borja): Implement
-    ok.
+broadcast_heartbeat(FromId, ToPartition, Time) ->
+    broadcast_msg(heartbeat(FromId, ToPartition, Time)).
 
 -spec broadcast_tx(replica_id(), partition_id(), {term(), #{}, vclock()}) -> ok.
-broadcast_tx(_FromId, _ToPartition, {_TxId, _WS, _CommitVC}) ->
-    %% todo(borja): Implement
-    ok.
+broadcast_tx(FromId, ToPartition, Transaction) ->
+    broadcast_msg(replicate_tx(FromId, ToPartition, Transaction)).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
@@ -147,3 +146,30 @@ handle_cast(E, S) ->
 handle_info(E, S) ->
     logger:warning("unexpected info: ~p~n", [E]),
     {noreply, S}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% internal
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+-spec heartbeat(replica_id(), partition_id(), grb_time:ts()) -> binary().
+heartbeat(FromId, ToPartition, Timestamp) ->
+    dc_message(FromId, ToPartition, #blue_heartbeat{timestamp=Timestamp}).
+
+-spec replicate_tx(replica_id(), partition_id(), {term(), #{}, vclock()}) -> binary().
+replicate_tx(FromId, ToPartition, {TxId, WS, CommitVC}) ->
+    dc_message(FromId, ToPartition, #replicate_tx{tx_id=TxId,
+                                                  writeset=WS,
+                                                  commit_vc=CommitVC}).
+
+-spec dc_message(replica_id(), partition_id(), term()) -> binary().
+dc_message(FromId, Partition, Payload) ->
+    PBin = pad(?PARTITION_BYTES, binary:encode_unsigned(Partition)),
+    Msg = #inter_dc_message{source_id=FromId, payload=Payload},
+    <<?VERSION:?VERSION_BITS, PBin/binary, (term_to_binary(Msg))/binary>>.
+
+-spec pad(non_neg_integer(), binary()) -> binary().
+pad(Width, Binary) ->
+    case Width - byte_size(Binary) of
+        0 -> Binary;
+        N when N > 0-> <<0:(N*8), Binary/binary>>
+    end.
