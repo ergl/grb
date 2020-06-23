@@ -1,5 +1,5 @@
 BASEDIR = $(shell pwd)
-REBAR = rebar3
+REBAR = $(BASEDIR)/rebar3
 RELPATH = _build/default/rel/grb
 DEV1RELPATH = _build/dev1/rel/grb
 DEV2RELPATH = _build/dev2/rel/grb
