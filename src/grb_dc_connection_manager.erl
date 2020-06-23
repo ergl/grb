@@ -95,6 +95,7 @@ connections_for_replica(Id) ->
 
 -spec broadcast_msg(any()) -> ok.
 broadcast_msg(Msg) ->
+    %% fixme(borja): Might misbehave during node shutdown
     Pids = lists:flatten(ets:select(?CONN_PIDS_TABLE, [{{'_', '$1'}, [], ['$1']}])),
     %% fixme(borja): Avoid going through gen_server, send through socket directly
     lists:foreach(fun(P) ->
