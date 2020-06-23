@@ -15,7 +15,11 @@
     commit_vc :: vclock()
 }).
 
+-type replica_message() :: #blue_heartbeat{} | #replicate_tx{}.
+
 -record(inter_dc_message, {
     source_id :: replica_id(),
-    payload :: #blue_heartbeat{} | #replicate_tx{}
+    payload :: replica_message()
 }).
+
+-export_type([replica_message/0]).

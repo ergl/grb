@@ -7,7 +7,8 @@
 -export([cache_name/2,
          start_replicas/0,
          stop_replicas/0,
-         prepare_blue/4]).
+         prepare_blue/4,
+         handle_replicate/5]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -29,6 +30,8 @@
 
 -ignore_xref([start_vnode/1]).
 
+-define(master, grb_main_vnode_master).
+
 -record(state, {
     partition :: partition_id(),
 
@@ -42,7 +45,7 @@
     propagate_timer = undefined :: timer:tref() | undefined,
 
     %% todo(borja): for now
-    op_log :: cache(key(), val())
+    op_log :: cache(key(), cache(key(), grb_version_log:t()))
 }).
 
 %%%===================================================================
@@ -50,11 +53,11 @@
 %%%===================================================================
 
 start_replicas() ->
-    R = grb_dc_utils:bcast_vnode_local_sync(grb_main_vnode_master, start_replicas),
+    R = grb_dc_utils:bcast_vnode_local_sync(?master, start_replicas),
     ok = lists:foreach(fun({_, true}) -> ok end, R).
 
 stop_replicas() ->
-    R = grb_dc_utils:bcast_vnode_local_sync(grb_main_vnode_master, stop_replicas),
+    R = grb_dc_utils:bcast_vnode_local_sync(?master, stop_replicas),
     ok = lists:foreach(fun({_, ok}) -> ok end, R).
 
 %% todo(borja): Update uniform_vc once replication is done
@@ -63,8 +66,15 @@ prepare_blue(Partition, TxId, WriteSet, _VC) ->
     Ts = grb_time:timestamp(),
     ok = riak_core_vnode_master:command({Partition, node()},
                                         {prepare_blue, TxId, WriteSet, Ts},
-                                        grb_main_vnode_master),
+                                        ?master),
     Ts.
+
+-spec handle_replicate(partition_id(), replica_id(), term(), #{}, vclock()) -> ok.
+handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {replicate_tx, SourceReplica, TxId, WS, VC},
+                                   ?master).
+
 
 %%%===================================================================
 %%% api riak_core callbacks
@@ -137,6 +147,13 @@ handle_command({decide_blue, TxId, VC}, _From, State) ->
     NewState = decide_blue_internal(TxId, VC, State),
     {noreply, NewState};
 
+handle_command({replicate_tx, SourceReplica, TxId, WS, VC}, _From, S=#state{partition=P,
+                                                                            op_log=OpLog}) ->
+    CommitTime = grb_vclock:get_time(SourceReplica, VC),
+    ok = update_partition_state(SourceReplica, P, TxId, WS, VC, OpLog),
+    ok = grb_propagation_vnode:handle_blue_heartbeat(P, SourceReplica, CommitTime),
+    {noreply, S};
+
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
@@ -149,19 +166,31 @@ decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
     {{WS, _}, PreparedBlue1} = maps:take(TxId, PreparedBlue),
+    ok = update_partition_state(grb_dc_utils:replica_id(), SelfPartition,
+                                TxId, WS, VC, OpLog),
+
+    S#state{prepared_blue=PreparedBlue1}.
+
+-spec update_partition_state(
+    ReplicaId :: replica_id(),
+    Partition :: partition_id(),
+    TxId :: term(),
+    WS :: #{},
+    CommitVC :: vclock(),
+    OpLog :: cache(key(), grb_version_log:t())
+) -> ok.
+
+update_partition_state(ReplicaId, Partition, TxId, WS, CommitVC, OpLog) ->
     Objects = maps:fold(fun(Key, Value, Acc) ->
         Log = case ets:lookup(OpLog, Key) of
             [{Key, PrevLog}] -> PrevLog;
             [] -> grb_version_log:new()
         end,
-        NewLog = grb_version_log:append({blue, Value, VC}, Log),
+        NewLog = grb_version_log:append({blue, Value, CommitVC}, Log),
         [{Key, NewLog} | Acc]
     end, [], WS),
     true = ets:insert(OpLog, Objects),
-    SelfId = grb_dc_utils:replica_id(),
-
-    ok = grb_propagation_vnode:append_blue_commit(SelfId, SelfPartition, TxId, WS, VC),
-    S#state{prepared_blue=PreparedBlue1}.
+    ok = grb_propagation_vnode:append_blue_commit(ReplicaId, Partition, TxId, WS, CommitVC).
 
 -spec propagate_internal(partition_id(), #{any() => {#{}, vclock()}}) -> ok.
 propagate_internal(Partition, PreparedBlue) ->

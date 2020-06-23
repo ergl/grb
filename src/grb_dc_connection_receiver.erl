@@ -70,7 +70,8 @@ handle_info(
     State = #state{socket=Socket, transport=Transport}
 ) ->
     #inter_dc_message{source_id=SourceReplica, payload=Request} = binary_to_term(Msg),
-    ?LOG_INFO("Received msg from ~p to ~p: ~p", [SourceReplica, P, Request]),
+    ?LOG_DEBUG("Received msg from ~p to ~p: ~p", [SourceReplica, P, Request]),
+    ok = handle_request(P, SourceReplica, Request),
     Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
@@ -94,3 +95,10 @@ handle_info(timeout, State) ->
 handle_info(E, S) ->
     ?LOG_WARNING("replication server received unexpected info with msg ~w", [E]),
     {noreply, S}.
+
+-spec handle_request(partition_id(), replica_id(), replica_message()) -> ok.
+handle_request(Partition, SourceReplica, #blue_heartbeat{timestamp=Ts}) ->
+    grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, Ts);
+
+handle_request(Partition, SourceReplica, #replicate_tx{tx_id=TxId, writeset=WS, commit_vc=VC}) ->
+    grb_main_vnode:handle_replicate(Partition, SourceReplica, TxId, WS, VC).

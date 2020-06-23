@@ -8,6 +8,7 @@
          known_vc/1,
          stable_vc/1,
          uniform_vc/1,
+         handle_blue_heartbeat/3,
          append_blue_commit/5,
          propagate_transactions/2]).
 
@@ -57,6 +58,10 @@ stable_vc(Partition) ->
 known_vc(Partition) ->
     ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), known_vc, 2).
 
+-spec handle_blue_heartbeat(partition_id(), replica_id(), grb_time:ts()) -> ok.
+handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
+    riak_core_vnode_master:command({Partition, node()}, {blue_hb, ReplicaId, Ts}, ?master).
+
 -spec propagate_transactions(partition_id(), grb_time:ts()) -> ok.
 propagate_transactions(Partition, KnownTime) ->
     riak_core_vnode_master:command({Partition, node()}, {propagate_tx, KnownTime}, ?master).
@@ -83,9 +88,12 @@ init([Partition]) ->
     {ok, #state{partition=Partition,
                 clock_cache=ClockTable}}.
 
-%% Sample command: respond to a ping
 handle_command(ping, _Sender, State) ->
     {reply, {pong, node(), State#state.partition}, State};
+
+handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
+    ok = update_known_vc(FromReplica, Ts, ClockTable),
+    {noreply, S};
 
 handle_command({append_blue, ReplicaId, TxId, WS, CommitVC}, _Sender, S=#state{logs=Logs}) ->
     ReplicaLog = maps:get(ReplicaId, Logs, grb_blue_commit_log:new(ReplicaId)),

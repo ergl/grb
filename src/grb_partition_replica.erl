@@ -211,8 +211,8 @@ decide_blue_internal(Partition, TxId, VC) ->
             ok;
         ready ->
             riak_core_vnode_master:command({Partition, node()},
-                {decide_blue, TxId, VC},
-                grb_main_vnode_master)
+                                           {decide_blue, TxId, VC},
+                                           grb_main_vnode_master)
     end.
 
 -spec check_current_clock(vclock()) -> ready | {not_rady, non_neg_integer()}.
