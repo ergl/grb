@@ -1,4 +1,4 @@
--module(grb_vnode).
+-module(grb_main_vnode).
 -behaviour(riak_core_vnode).
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
@@ -50,11 +50,11 @@
 %%%===================================================================
 
 start_replicas() ->
-    R = grb_dc_utils:bcast_vnode_local_sync(grb_vnode_master, start_replicas),
+    R = grb_dc_utils:bcast_vnode_local_sync(grb_main_vnode_master, start_replicas),
     ok = lists:foreach(fun({_, true}) -> ok end, R).
 
 stop_replicas() ->
-    R = grb_dc_utils:bcast_vnode_local_sync(grb_vnode_master, stop_replicas),
+    R = grb_dc_utils:bcast_vnode_local_sync(grb_main_vnode_master, stop_replicas),
     ok = lists:foreach(fun({_, ok}) -> ok end, R).
 
 %% todo(borja): Update uniform_vc once replication is done
@@ -63,7 +63,7 @@ prepare_blue(Partition, TxId, WriteSet, _VC) ->
     Ts = grb_time:timestamp(),
     ok = riak_core_vnode_master:command({Partition, node()},
                                         {prepare_blue, TxId, WriteSet, Ts},
-                                        grb_vnode_master),
+                                        grb_main_vnode_master),
     Ts.
 
 %%%===================================================================
@@ -111,7 +111,7 @@ handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     {reply, Result, S};
 
 handle_command(start_propagate_timer, _From, S = #state{partition=P, propagate_interval=Int, propagate_timer=undefined}) ->
-    Args = [{P, node()}, propagate_event, grb_vnode_master],
+    Args = [{P, node()}, propagate_event, grb_main_vnode_master],
     {ok, TRef} = timer:apply_interval(Int, riak_core_vnode_master, command, Args),
     {reply, ok, S#state{propagate_timer=TRef}};
 

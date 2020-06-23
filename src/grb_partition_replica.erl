@@ -108,7 +108,7 @@ decide_blue(Partition, TxId, VC) ->
 
 init([Partition, Id]) ->
     Self = generate_replica_name(Partition, Id),
-    OpLog = grb_vnode:cache_name(Partition, ?OP_LOG_TABLE),
+    OpLog = grb_main_vnode:cache_name(Partition, ?OP_LOG_TABLE),
     {ok, #state{self = Self,
                 partition = Partition,
                 oplog_replica = OpLog}}.

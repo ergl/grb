@@ -43,7 +43,7 @@ perform_op(Promise, Partition, Key, SnapshotVC, Val) ->
 
 -spec prepare_blue(partition_id(), any(), any(), vclock()) -> non_neg_integer().
 prepare_blue(Partition, TxId, WriteSet, VC) ->
-    grb_vnode:prepare_blue(Partition, TxId, WriteSet, VC).
+    grb_main_vnode:prepare_blue(Partition, TxId, WriteSet, VC).
 
 -spec decide_blue(partition_id(), any(), vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->

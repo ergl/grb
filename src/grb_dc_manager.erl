@@ -19,9 +19,9 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 start_background_processes() ->
-    Res = grb_dc_utils:bcast_vnode_sync(grb_vnode_master, start_replicas),
+    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_replicas),
     ok = lists:foreach(fun({_, true}) -> ok end, Res),
-    Res1 = grb_dc_utils:bcast_vnode_sync(grb_vnode_master, start_propagate_timer),
+    Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_propagate_timer),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
@@ -107,9 +107,9 @@ connect_nodes_to_descriptor(Nodes, Desc=#replica_descriptor{replica_id=RemoteId}
     end, ok, lists:zip(Returns, Nodes)).
 
 stop_background_processes() ->
-    Res = grb_dc_utils:bcast_vnode_sync(grb_vnode_master, stop_replicas),
+    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_replicas),
     ok = lists:foreach(fun({_, true}) -> ok end, Res),
-    Res1 = grb_dc_utils:bcast_vnode_sync(grb_vnode_master, start_propagate_timer),
+    Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_propagate_timer),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
