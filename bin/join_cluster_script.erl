@@ -406,8 +406,8 @@ wait_until_master_ready(MasterNode) ->
 check_ready(Node) ->
     io:format("[master ready] Checking ~p~n", [Node]),
 
-    Res0 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_vnode_master, is_ready]),
-    Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_vnode_master, replicas_ready]),
+    Res0 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, is_ready]),
+    Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, replicas_ready]),
     VNodeReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res0),
     ReadReplicasReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res1),
 
