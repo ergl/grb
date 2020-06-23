@@ -33,7 +33,6 @@ init(_Args) ->
     MainVNodeMaster = ?VNODE(grb_main_vnode_master, grb_main_vnode),
 
     ReplicaSup = ?CHILD(grb_partition_replica_sup, supervisor, []),
-    ReplicaState = ?CHILD(grb_replica_state, worker, []),
     InterDCConnManager = ?CHILD(grb_dc_connection_manager, worker, []),
     InterDCSenderSup = ?CHILD(grb_dc_connection_sender_sup, supervisor, []),
     {ok,
@@ -41,6 +40,5 @@ init(_Args) ->
          [BluePropMaster,
           MainVNodeMaster,
           ReplicaSup,
-          ReplicaState,
           InterDCConnManager,
           InterDCSenderSup]}}.

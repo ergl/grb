@@ -151,9 +151,14 @@ handle_info(Info, State) ->
 
 %% todo(borja): Update uniformVC here once we add replication
 %% update it before we check knownVC
--spec perform_op_internal(grb_promise:t(), key(), vclock(), val(), #state{}) -> ok.
-perform_op_internal(Promise, Key, VC, Val, State) ->
-    case check_known_vc(VC) of
+-spec perform_op_internal(
+    Promise :: grb_promise:t(),
+    Key :: key(),
+    VC :: vclock(),
+    Val :: val(),
+    State :: #state{}) -> ok.
+perform_op_internal(Promise, Key, VC, Val, State=#state{partition=Partition}) ->
+    case check_known_vc(Partition, VC) of
         {not_ready, WaitTime} ->
             erlang:send_after(WaitTime, self(), {retry_op, Promise, Key, VC, Val}),
             ok;
@@ -161,9 +166,9 @@ perform_op_internal(Promise, Key, VC, Val, State) ->
             perform_op_internal_continue(Promise, Key, VC, Val, State)
     end.
 
--spec check_known_vc(vclock()) -> ready | {not_ready, non_neg_integer()}.
-check_known_vc(VC) ->
-    KnownVC = grb_replica_state:known_vc(),
+-spec check_known_vc(partition_id(), vclock()) -> ready | {not_ready, non_neg_integer()}.
+check_known_vc(Partition, VC) ->
+    KnownVC = grb_propagation_vnode:known_vc(Partition),
     CurrentReplica = grb_dc_utils:replica_id(),
     SelfBlue = grb_vclock:get_time(CurrentReplica, VC),
     SelfRed = grb_vclock:get_time(red, VC),

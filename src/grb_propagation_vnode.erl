@@ -4,8 +4,12 @@
 -include_lib("kernel/include/logger.hrl").
 
 %% Public API
--export([propagate_transactions/2,
-         append_blue_commit/5]).
+-export([cache_name/2,
+         known_vc/1,
+         stable_vc/1,
+         uniform_vc/1,
+         append_blue_commit/5,
+         propagate_transactions/2]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -33,12 +37,25 @@
     partition :: partition_id(),
     %% fixme(borja): Only used for naive replication, use globalKnownMatrix when uniform
     last_sent = 0 :: grb_time:ts(),
-    logs = #{} :: #{replica_id() => grb_blue_commit_log:t()}
+    logs = #{} :: #{replica_id() => grb_blue_commit_log:t()},
+    clock_cache :: cache(atom(), vclock())
 }).
 
 %%%===================================================================
 %%% public api
 %%%===================================================================
+
+-spec uniform_vc(partition_id()) -> vclock().
+uniform_vc(Partition) ->
+    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), uniform_vc, 2).
+
+-spec stable_vc(partition_id()) -> vclock().
+stable_vc(Partition) ->
+    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), stable_vc, 2).
+
+-spec known_vc(partition_id()) -> vclock().
+known_vc(Partition) ->
+    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), known_vc, 2).
 
 -spec propagate_transactions(partition_id(), grb_time:ts()) -> ok.
 propagate_transactions(Partition, KnownTime) ->
@@ -58,8 +75,13 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
-    State = #state{partition=Partition},
-    {ok, State}.
+    ClockTable = new_cache(Partition, ?PARTITION_CLOCK_TABLE),
+    true = ets:insert(ClockTable, [{uniform_vc, grb_vclock:new()},
+                                   {stable_vc, grb_vclock:new()},
+                                   {known_vc, grb_vclock:new()}]),
+
+    {ok, #state{partition=Partition,
+                clock_cache=ClockTable}}.
 
 %% Sample command: respond to a ping
 handle_command(ping, _Sender, State) ->
@@ -71,6 +93,7 @@ handle_command({append_blue, ReplicaId, TxId, WS, CommitVC}, _Sender, S=#state{l
 
 handle_command({propagate_tx, KnownTime}, _Sender, State) ->
     ok = propagate_internal(KnownTime, State),
+    ok = update_known_vc(KnownTime, State),
     %% fixme(borja): Change once we add uniform replication
     %% last_send should change to globalKnownMatrix
     {noreply, State#state{last_sent=KnownTime}};
@@ -97,6 +120,52 @@ propagate_internal(LocalKnownTime, #state{partition=P, last_sent=LastSent, logs=
             lists:foreach(fun(Entry) ->
                 grb_dc_connection_manager:broadcast_tx(LocalId, P, Entry)
             end, Entries)
+    end.
+
+-spec update_known_vc(grb_time:ts(), cache(atom(), vclock())) -> ok.
+update_known_vc(Time, ClockTable) ->
+    update_known_vc(grb_dc_utils:replica_id(), Time, ClockTable).
+
+-spec update_known_vc(replica_id(), grb_time:ts(), cache(atom(), vclock())) -> ok.
+update_known_vc(ReplicaId, Time, ClockTable) ->
+    Old = ets:lookup_element(ClockTable, known_vc, 2),
+    New = grb_vclock:set_max_time(ReplicaId, Time, Old),
+    true = ets:update_element(ClockTable, known_vc, {2, New}),
+    ok.
+
+%%%===================================================================
+%%% Util Functions
+%%%===================================================================
+
+-spec new_cache(partition_id(), atom()) -> cache_id().
+new_cache(Partition, Name) ->
+    new_cache(Partition, Name, [set, protected, named_table, {read_concurrency, true}]).
+
+new_cache(Partition, Name, Options) ->
+    CacheName = cache_name(Partition, Name),
+    case ets:info(CacheName) of
+        undefined ->
+            ets:new(CacheName, Options);
+        _ ->
+            lager:info("Unsable to create cache ~p at ~p, retrying", [Name, Partition]),
+            timer:sleep(100),
+            try ets:delete(CacheName) catch _:_ -> ok end,
+            new_cache(Partition, Name, Options)
+    end.
+
+-spec cache_name(partition_id(), atom()) -> cache_id().
+cache_name(Partition, Name) ->
+    BinNode = atom_to_binary(node(), latin1),
+    BiName = atom_to_binary(Name, latin1),
+    BinPart = integer_to_binary(Partition),
+    TableName = <<BiName/binary, <<"-">>/binary, BinPart/binary, <<"@">>/binary, BinNode/binary>>,
+    safe_bin_to_atom(TableName).
+
+-spec safe_bin_to_atom(binary()) -> atom().
+safe_bin_to_atom(Bin) ->
+    case catch binary_to_existing_atom(Bin, latin1) of
+        {'EXIT', _} -> binary_to_atom(Bin, latin1);
+        Atom -> Atom
     end.
 
 %%%===================================================================

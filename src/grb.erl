@@ -7,7 +7,7 @@
 
 %% API for applications
 -export([connect/0,
-         start_transaction/1,
+         start_transaction/2,
          perform_op/5,
          prepare_blue/4,
          decide_blue/3]).
@@ -30,9 +30,9 @@ connect() ->
 
 %% todo(borja): Update uniform_vc
 %% have to update everywhere but the current replica
-start_transaction(ClientVC) ->
-    UniformVC   = grb_replica_state:uniform_vc(),
-    StableVC    = grb_replica_state:stable_vc(),
+start_transaction(Partition, ClientVC) ->
+    UniformVC   = grb_propagation_vnode:uniform_vc(Partition),
+    StableVC    = grb_propagation_vnode:stable_vc(Partition),
     SnapshotVC0 = grb_vclock:max(ClientVC, UniformVC),
     SnapshotVC1 = grb_vclock:max_at(red, SnapshotVC0, StableVC),
     SnapshotVC1.

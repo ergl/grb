@@ -175,7 +175,6 @@ propagate_internal(Partition, PreparedBlue) ->
             ?LOG_DEBUG("knownVC[d] = min_prep (~p - 1)", [MinTS]),
             MinTS - 1
     end,
-    grb_replica_state:set_known_vc(Ts),
     grb_propagation_vnode:propagate_transactions(Partition, Ts).
 
 %%%===================================================================

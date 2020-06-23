@@ -28,6 +28,7 @@
 
 %% Different ETS tables
 -define(OP_LOG_TABLE, op_log_table).
+-define(PARTITION_CLOCK_TABLE, partition_clock_table).
 
 %% Describes the current replica, consumed by other replicas (as a whole)
 -record(replica_descriptor, {

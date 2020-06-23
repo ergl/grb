@@ -4,15 +4,15 @@
 -export([process/3]).
 
 -spec process(grb_promise:t(), atom(), #{}) -> ok.
-process(Promise, 'UniformBarrier', _) ->
+process(Promise, 'UniformBarrier', #{client_vc := _CVC, partition := _Partition}) ->
     %% todo(borja): implement this when replication is done
     grb_promise:resolve(ok, Promise);
 
 process(Promise, 'ConnectRequest', _) ->
     grb_promise:resolve(grb:connect(), Promise);
 
-process(Promise, 'StartReq', #{client_vc := CVC}) ->
-    grb_promise:resolve(grb:start_transaction(CVC), Promise);
+process(Promise, 'StartReq', #{client_vc := CVC, partition := Partition}) ->
+    grb_promise:resolve(grb:start_transaction(Partition, CVC), Promise);
 
 process(Promise, 'OpRequest', Args) ->
     #{partition := P, key := K, value := V, snapshot_vc := VC} = Args,
