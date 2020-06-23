@@ -38,7 +38,6 @@
 
     prepared_blue :: #{any() => {#{}, vclock()}},
 
-    %% todo(borja): Maybe move this to other vnode when impl. replication
     propagate_interval :: non_neg_integer(),
     propagate_timer = undefined :: timer:tref() | undefined,
 

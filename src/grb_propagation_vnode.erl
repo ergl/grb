@@ -59,10 +59,14 @@ known_vc(Partition) ->
 
 -spec handle_blue_heartbeat(partition_id(), replica_id(), grb_time:ts()) -> ok.
 handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
+    %% fixme(borja): Node might not have this partition
+    %% see comment in grb_dc_connection_manager
     riak_core_vnode_master:command({Partition, node()}, {blue_hb, ReplicaId, Ts}, ?master).
 
 -spec propagate_transactions(partition_id(), grb_time:ts()) -> ok.
 propagate_transactions(Partition, KnownTime) ->
+    %% fixme(borja): Node might not have this partition
+    %% see comment in grb_dc_connection_manager
     riak_core_vnode_master:command({Partition, node()}, {propagate_tx, KnownTime}, ?master).
 
 -spec append_blue_commit(replica_id(), partition_id(), term(), #{}, vclock()) -> ok.
