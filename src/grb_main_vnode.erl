@@ -45,6 +45,7 @@
     propagate_timer = undefined :: timer:tref() | undefined,
 
     %% todo(borja): for now
+    op_log_size :: non_neg_integer(),
     op_log :: cache(key(), cache(key(), grb_version_log:t()))
 }).
 
@@ -86,16 +87,17 @@ start_vnode(I) ->
 
 init([Partition]) ->
     Interval = application:get_env(grb, propagate_interval, 5),
+    KeyLogSize = application:get_env(grb, version_log_size, 50),
     State = #state{
         partition = Partition,
         prepared_blue = #{},
         propagate_interval = Interval,
+        op_log_size = KeyLogSize,
         op_log = new_cache(Partition, ?OP_LOG_TABLE)
     },
 
     {ok, State}.
 
-%% Sample command: respond to a ping
 handle_command(ping, _Sender, State) ->
     {reply, {pong, node(), State#state.partition}, State};
 
@@ -148,9 +150,10 @@ handle_command({decide_blue, TxId, VC}, _From, State) ->
     {noreply, NewState};
 
 handle_command({replicate_tx, SourceReplica, TxId, WS, VC}, _From, S=#state{partition=P,
-                                                                            op_log=OpLog}) ->
+                                                                            op_log=OpLog,
+                                                                            op_log_size=LogSize}) ->
     CommitTime = grb_vclock:get_time(SourceReplica, VC),
-    ok = update_partition_state(SourceReplica, P, TxId, WS, VC, OpLog),
+    ok = update_partition_state(SourceReplica, P, TxId, WS, VC, OpLog, LogSize),
     ok = grb_propagation_vnode:handle_blue_heartbeat(P, SourceReplica, CommitTime),
     {noreply, S};
 
@@ -161,13 +164,14 @@ handle_command(Message, _Sender, State) ->
 -spec decide_blue_internal(term(), vclock(), #state{}) -> #state{}.
 decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
                                         op_log=OpLog,
+                                        op_log_size=LogSize,
                                         prepared_blue=PreparedBlue}) ->
 
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
     {{WS, _}, PreparedBlue1} = maps:take(TxId, PreparedBlue),
     ok = update_partition_state(grb_dc_utils:replica_id(), SelfPartition,
-                                TxId, WS, VC, OpLog),
+                                TxId, WS, VC, OpLog, LogSize),
 
     S#state{prepared_blue=PreparedBlue1}.
 
@@ -177,14 +181,14 @@ decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
     TxId :: term(),
     WS :: #{},
     CommitVC :: vclock(),
-    OpLog :: cache(key(), grb_version_log:t())
+    OpLog :: cache(key(), grb_version_log:t()),
+    DefaultSize :: non_neg_integer()
 ) -> ok.
-
-update_partition_state(ReplicaId, Partition, TxId, WS, CommitVC, OpLog) ->
+update_partition_state(ReplicaId, Partition, TxId, WS, CommitVC, OpLog, DefaultSize) ->
     Objects = maps:fold(fun(Key, Value, Acc) ->
         Log = case ets:lookup(OpLog, Key) of
             [{Key, PrevLog}] -> PrevLog;
-            [] -> grb_version_log:new()
+            [] -> grb_version_log:new(DefaultSize)
         end,
         NewLog = grb_version_log:append({blue, Value, CommitVC}, Log),
         [{Key, NewLog} | Acc]

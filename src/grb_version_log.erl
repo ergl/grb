@@ -5,7 +5,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--define(BUFFER_SIZE, 50).
 -define(DEFAULT, '$vlog_bottom').
 
 -type entry() :: {transaction_type(), val(), vclock()}.
@@ -26,8 +25,7 @@
 -export_type([entry/0, t/0]).
 
 %% API
--export([new/0,
-         new/1,
+-export([new/1,
          append/2,
          get_lower/2,
          to_list/1]).
@@ -35,10 +33,6 @@
 -ifdef(TEST).
 -export([from_list/2]).
 -endif.
-
--spec new() -> t().
-new() ->
-    new(?BUFFER_SIZE).
 
 -spec new(non_neg_integer()) -> t().
 new(Size) ->
