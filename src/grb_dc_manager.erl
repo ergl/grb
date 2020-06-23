@@ -65,7 +65,7 @@ connect_to_replicas(Descriptors) ->
     {LocalNumPartitions, _} = riak_core_ring:chash(Ring),
     connect_to_replicas(Descriptors, LocalId, LocalNodes, LocalNumPartitions).
 
--spec connect_to_replicas([replica_descriptor()], replica_id(), non_neg_integer(), [node()]) -> ok | {error, term()}.
+-spec connect_to_replicas([replica_descriptor()], replica_id(), [node()], non_neg_integer()) -> ok | {error, term()}.
 connect_to_replicas([], _, _, _) -> ok;
 connect_to_replicas([#replica_descriptor{replica_id=Id} | Rest], Id, Nodes, Num) ->
     %% Skip myself

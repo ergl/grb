@@ -14,7 +14,7 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
--spec start_connection(replica_id(), inet:ip_address(), inet:port_number()) -> ok.
+-spec start_connection(replica_id(), inet:ip_address(), inet:port_number()) -> {ok, pid()} | {error, term()}.
 start_connection(ReplicaId, IP, Port) ->
     supervisor:start_child(?MODULE, [ReplicaId, IP, Port]).
 

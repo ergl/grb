@@ -64,7 +64,6 @@ handle_cast(E, S) ->
     ?LOG_WARNING("server got unexpected cast with msg ~w", [E]),
     {noreply, S}.
 
-terminate(_, #state{socket=undefined, transport=undefined}) ->  ok;
 terminate(_Reason, #state{socket=Socket, transport=Transport}) ->
     catch Transport:close(Socket),
     ok.

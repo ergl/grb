@@ -109,7 +109,7 @@ convert_key(Key) when is_binary(Key) ->
         false ->
             HashKey = riak_core_util:chash_key({?BUCKET, Key}),
             abs(crypto:bytes_to_integer(HashKey));
-        true -> abs(Key)
+        true -> abs(AsInt)
     end;
 convert_key(Key) ->
     HashKey = riak_core_util:chash_key({?BUCKET, term_to_binary(Key)}),

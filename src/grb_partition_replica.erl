@@ -215,7 +215,7 @@ decide_blue_internal(Partition, TxId, VC) ->
                                            grb_main_vnode_master)
     end.
 
--spec check_current_clock(vclock()) -> ready | {not_rady, non_neg_integer()}.
+-spec check_current_clock(vclock()) -> ready | {not_ready, non_neg_integer()}.
 check_current_clock(VC) ->
     CurrentReplica = grb_dc_utils:replica_id(),
     SelfBlue = grb_vclock:get_time(CurrentReplica, VC),

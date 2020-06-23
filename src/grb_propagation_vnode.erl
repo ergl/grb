@@ -98,12 +98,12 @@ handle_command({append_blue, ReplicaId, TxId, WS, CommitVC}, _Sender, S=#state{l
     ReplicaLog = maps:get(ReplicaId, Logs, grb_blue_commit_log:new(ReplicaId)),
     {noreply, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
 
-handle_command({propagate_tx, KnownTime}, _Sender, State) ->
-    ok = propagate_internal(KnownTime, State),
-    ok = update_known_vc(KnownTime, State),
+handle_command({propagate_tx, KnownTime}, _Sender, S=#state{clock_cache=ClockTable}) ->
+    ok = propagate_internal(KnownTime, S),
+    ok = update_known_vc(KnownTime, ClockTable),
     %% fixme(borja): Change once we add uniform replication
     %% last_send should change to globalKnownMatrix
-    {noreply, State#state{last_sent=KnownTime}};
+    {noreply, S#state{last_sent=KnownTime}};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
