@@ -50,9 +50,12 @@
 %%% API
 %%%===================================================================
 
-%% todo(borja): Update uniform_vc once replication is done
--spec prepare_blue(partition_id(), _, _, vclock()) -> grb_time:ts().
-prepare_blue(Partition, TxId, WriteSet, _VC) ->
+-spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
+prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
+    %% todo(borja): This should be uniform_vc once we add uniformity
+    StableVC0 = grb_propagation_vnode:stable_vc(Partition),
+    StableVC1 = grb_vclock:max_except(grb_dc_utils:replica_id(), StableVC0, SnapshotVC),
+    ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC1),
     Ts = grb_time:timestamp(),
     ok = riak_core_vnode_master:command({Partition, node()},
                                         {prepare_blue, TxId, WriteSet, Ts},
@@ -164,15 +167,14 @@ decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
 
     S#state{prepared_blue=PreparedBlue1}.
 
--spec update_partition_state(
-    ReplicaId :: replica_id(),
-    Partition :: partition_id(),
-    TxId :: term(),
-    WS :: #{},
-    CommitVC :: vclock(),
-    OpLog :: cache(key(), grb_version_log:t()),
-    DefaultSize :: non_neg_integer()
-) -> ok.
+-spec update_partition_state(ReplicaId :: replica_id(),
+                             Partition :: partition_id(),
+                             TxId :: term(),
+                             WS :: #{},
+                             CommitVC :: vclock(),
+                             OpLog :: cache(key(), grb_version_log:t()),
+                             DefaultSize :: non_neg_integer()) -> ok.
+
 update_partition_state(ReplicaId, Partition, TxId, WS, CommitVC, OpLog, DefaultSize) ->
     Objects = maps:fold(fun(Key, Value, Acc) ->
         Log = case ets:lookup(OpLog, Key) of
