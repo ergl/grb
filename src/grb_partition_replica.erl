@@ -133,8 +133,8 @@ handle_cast({decide_blue, TxId, VC}, State) ->
 handle_cast(_Request, _State) ->
     erlang:error(not_implemented).
 
-handle_info({retry_op, Promise, Key, VC, Val}, State) ->
-    ok = perform_op_internal(Promise, Key, VC, Val, State),
+handle_info({retry_op_wait, Promise, Key, VC, Val}, State) ->
+    ok = perform_op_wait(Promise, Key, VC, Val, State),
     {noreply, State};
 
 handle_info({retry_decide, TxId, VC}, State) ->
@@ -149,21 +149,32 @@ handle_info(Info, State) ->
 %% Internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-%% todo(borja): Update uniformVC here once we add replication
-%% update it before we check knownVC
--spec perform_op_internal(
-    Promise :: grb_promise:t(),
-    Key :: key(),
-    VC :: vclock(),
-    Val :: val(),
-    State :: #state{}) -> ok.
-perform_op_internal(Promise, Key, VC, Val, State=#state{partition=Partition}) ->
-    case check_known_vc(Partition, VC) of
+-spec perform_op_internal(Promise :: grb_promise:t(),
+                          Key :: key(),
+                          SnapshotVC :: vclock(),
+                          Val :: val(),
+                          State :: #state{}) -> ok.
+
+perform_op_internal(Promise, Key, SnapshotVC, Val, State=#state{partition=Partition}) ->
+    %% todo(borja): This should be uniform_vc once we add uniformity
+    StableVC0 = grb_propagation_vnode:stable_vc(Partition),
+    StableVC1 = grb_vclock:max_except(grb_dc_utils:replica_id(), StableVC0, SnapshotVC),
+    ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC1),
+    perform_op_wait(Promise, Key, SnapshotVC, Val, State).
+
+-spec perform_op_wait(Promise :: grb_promise:t(),
+                      Key :: key(),
+                      SnapshotVC :: vclock(),
+                      Val :: val(),
+                      State :: #state{}) -> ok.
+
+perform_op_wait(Promise, Key, SnapshotVC, Val, S=#state{partition=Partition}) ->
+    case check_known_vc(Partition, SnapshotVC) of
         {not_ready, WaitTime} ->
-            erlang:send_after(WaitTime, self(), {retry_op, Promise, Key, VC, Val}),
+            erlang:send_after(WaitTime, self(), {retry_op_wait, Promise, Key, SnapshotVC, Val}),
             ok;
         ready ->
-            perform_op_internal_continue(Promise, Key, VC, Val, State)
+            perform_op_continue(Promise, Key, SnapshotVC, Val, S)
     end.
 
 -spec check_known_vc(partition_id(), vclock()) -> ready | {not_ready, non_neg_integer()}.
@@ -184,8 +195,8 @@ check_known_vc(Partition, VC) ->
             {not_ready, ?OP_WAIT_MS}
     end.
 
--spec perform_op_internal_continue(grb_promise:t(), key(), vclock(), val(), #state{}) -> ok.
-perform_op_internal_continue(Promise, Key, VC, Val, State) ->
+-spec perform_op_continue(grb_promise:t(), key(), vclock(), val(), #state{}) -> ok.
+perform_op_continue(Promise, Key, VC, Val, State) ->
     case ets:lookup(State#state.oplog_replica, Key) of
         [] ->
             %% todo(borja): Check soundness
