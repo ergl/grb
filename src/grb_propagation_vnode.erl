@@ -111,11 +111,11 @@ handle_command({append_blue, ReplicaId, TxId, WS, CommitVC}, _Sender, S=#state{l
     {noreply, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
 
 handle_command({propagate_tx, KnownTime}, _Sender, S=#state{clock_cache=ClockTable}) ->
-    ok = propagate_internal(KnownTime, S),
+    NewLogs = propagate_internal(KnownTime, S),
     ok = update_known_vc(KnownTime, ClockTable),
     %% fixme(borja): Change once we add uniform replication
     %% last_send should change to globalKnownMatrix
-    {noreply, S#state{last_sent=KnownTime}};
+    {noreply, S#state{last_sent=KnownTime, logs=NewLogs}};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
@@ -126,11 +126,11 @@ handle_command(Message, _Sender, State) ->
 %%%===================================================================
 
 %% todo(borja): Relay transactions from other replicas when we add uniformity
--spec propagate_internal(grb_time:ts(), #state{}) -> ok.
+-spec propagate_internal(grb_time:ts(), #state{}) -> #{replica_id() => grb_blue_commit_log:t()}.
 propagate_internal(LocalKnownTime, #state{partition=P, last_sent=LastSent, logs=Logs}) ->
     LocalId = grb_dc_utils:replica_id(),
     LocalLog = maps:get(LocalId, Logs, grb_blue_commit_log:new(LocalId)),
-    ToSend = grb_blue_commit_log:get_bigger(LastSent, LocalLog),
+    {ToSend, NewLog} = grb_blue_commit_log:remove_bigger(LastSent, LocalLog),
     case ToSend of
         [] ->
             grb_dc_connection_manager:broadcast_heartbeat(LocalId, P, LocalKnownTime);
@@ -139,7 +139,8 @@ propagate_internal(LocalKnownTime, #state{partition=P, last_sent=LastSent, logs=
             lists:foreach(fun(Tx) ->
                 grb_dc_connection_manager:broadcast_tx(LocalId, P, Tx)
             end, Txs)
-    end.
+    end,
+    Logs#{LocalId => NewLog}.
 
 -spec update_known_vc(grb_time:ts(), cache(atom(), vclock())) -> ok.
 update_known_vc(Time, ClockTable) ->
