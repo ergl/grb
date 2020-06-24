@@ -28,7 +28,6 @@ start_link(RemoteID, IP, Port) ->
     Ret = gen_server:start_link(?MODULE, [RemoteID, IP, Port], []),
     case Ret of
         {ok, Pid} ->
-            ok = grb_dc_connection_manager:add_replica_connection(RemoteID, Pid),
             {ok, Pid};
         {error, {already_started, ChildPid}} ->
             {ok, ChildPid};
@@ -46,6 +45,7 @@ init([RemoteID, IP, Port]) ->
             ?LOG_ERROR("~p ~p failed to start connection with ~p: ~p", [?MODULE, self(), RemoteID, Reason]),
             {stop, Reason};
         {ok, Socket} ->
+            %% todo(borja): Send the socket to grb_dc_connection_manager to avoid going through gen_server?
             {ok, {LocalIP, LocalPort}} = inet:sockname(Socket),
             ?LOG_INFO("~p ~p started connection with ~p on ~p:~p", [?MODULE, self(), RemoteID, LocalIP, LocalPort]),
             {ok, #state{connected_dc=RemoteID,
