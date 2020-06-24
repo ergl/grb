@@ -115,7 +115,7 @@ handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     {reply, Result, S};
 
 handle_command(start_propagate_timer, _From, S = #state{partition=P, propagate_interval=Int, propagate_timer=undefined}) ->
-    Args = [{P, node()}, propagate_event, grb_main_vnode_master],
+    Args = [{P, node()}, propagate_event, ?master],
     {ok, TRef} = timer:apply_interval(Int, riak_core_vnode_master, command, Args),
     {reply, ok, S#state{propagate_timer=TRef}};
 

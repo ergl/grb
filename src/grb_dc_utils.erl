@@ -5,8 +5,10 @@
          cluster_info/0,
          my_bounded_ip/0,
          my_partitions/0,
+         all_partitions/0,
          key_location/1,
          bcast_vnode_sync/2,
+         bcast_vnode_async/2,
          bcast_vnode_local_sync/2]).
 
 %% For external script
@@ -62,6 +64,12 @@ my_partitions() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     riak_core_ring:my_indices(Ring).
 
+-spec all_partitions() -> [partition_id()].
+all_partitions() ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    Chash = riak_core_ring:chash(Ring),
+    [ P || {P, _} <- chash:nodes(Chash)].
+
 -spec key_location(key()) -> index_node().
 key_location(Key) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
@@ -76,6 +84,12 @@ bcast_vnode_sync(Master, Request) ->
     [begin
          {P, riak_core_vnode_master:sync_command(N, Request, Master)}
      end || {P, _} =  N <- get_index_nodes()].
+
+-spec bcast_vnode_async(atom(), any()) -> ok.
+bcast_vnode_async(Master, Request) ->
+    lists:foreach(fun(IndexNode) ->
+        riak_core_vnode_master:command(IndexNode, Request, Master)
+    end, get_index_nodes()).
 
 %% @doc Broadcast a message to all vnodes of the given type
 %%      in the current physical node.

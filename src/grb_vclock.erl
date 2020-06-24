@@ -7,7 +7,9 @@
          set_max_time/3,
          eq/2,
          leq/2,
+         min/2,
          max/2,
+         min_at/3,
          max_at/3,
          max_except/3]).
 
@@ -38,6 +40,26 @@ set_max_time(Key, Value, VectorClock) ->
 -spec eq(vc(T), vc(T)) -> boolean().
 eq(VC, VC) -> true;
 eq(Left, Right) -> Left =:= Right.
+
+-spec min(vc(T), vc(T)) -> vc(T).
+min(Left, _Right) when map_size(Left) == 0 -> Left;
+min(_Left, Right) when map_size(Right) == 0 -> Right;
+min(Left, Right) ->
+    LeftKeys = maps:keys(Left),
+    RigthKeys = maps:keys(Right),
+    lists:foldl(fun(Key, AccMap) ->
+        LeftV = get_time(Key, Left),
+        RigthV = get_time(Key, Right),
+        AccMap#{Key => erlang:min(LeftV, RigthV)}
+    end, #{}, LeftKeys ++ RigthKeys). %% :^(
+
+-spec min_at([T], vc(T), vc(T)) -> vc(T).
+min_at(Keys, Left, Right) ->
+    lists:foldl(fun(Key, AccMap) ->
+        LeftV = get_time(Key, Left),
+        RigthV = get_time(Key, Right),
+        AccMap#{Key => erlang:min(LeftV, RigthV)}
+    end, #{}, Keys).
 
 -spec max(vc(T), vc(T)) -> vc(T).
 max(Left, Right) when map_size(Left) == 0 -> Right;
@@ -73,6 +95,46 @@ leq(Left, Right) ->
     lists:all(F, maps:keys(maps:merge(Left, Right))).
 
 -ifdef(TEST).
+
+grb_vclock_min_test() ->
+    A = #{c => 10},
+    B = #{a => 5, b => 3, c => 2},
+    C = #{a => 3, b => 4, c => 7},
+    D = #{a => 0, b => 2, c => 3},
+
+    Result = lists:foldl(fun
+        (V, ignore) -> V;
+        (V, Acc) -> grb_vclock:min(V, Acc)
+    end, ignore, [A, B, C, D]),
+
+    ShouldBe = #{a => 0, b => 0, c => 2},
+    ?assertEqual(ShouldBe, Result).
+
+grb_vclock_min_at_test() ->
+    A = #{c => 10},
+    B = #{a => 5, b => 3, c => 2},
+    C = #{a => 3, b => 4, c => 7},
+    D = #{a => 0, b => 2, c => 3},
+
+    Result = lists:foldl(fun
+        (V, ignore) -> V;
+        (V, Acc) -> grb_vclock:min_at([a,b,c], V, Acc)
+    end, ignore, [A, B, C, D]),
+
+    ShouldBe = #{a => 0, b => 0, c => 2},
+    ?assertEqual(ShouldBe, Result).
+
+grb_vclock_max_test() ->
+    A = #{c => 10},
+    B = #{a => 5, c => 2},
+    C = #{a => 3, b => 4, c => 7},
+    D = #{b => 2},
+
+    Result = lists:foldl(fun(V, Acc) ->
+        grb_vclock:max(V, Acc)
+    end, #{}, [A, B, C, D]),
+    ShouldBe = #{a => 5, b => 4, c => 10},
+    ?assertEqual(ShouldBe, Result).
 
 grb_vclock_max_at_test() ->
     A = #{a => 0, b => 10},
