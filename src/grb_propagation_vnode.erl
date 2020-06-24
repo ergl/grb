@@ -134,11 +134,11 @@ propagate_internal(LocalKnownTime, #state{partition=P, last_sent=LastSent, logs=
     case ToSend of
         [] ->
             grb_dc_connection_manager:broadcast_heartbeat(LocalId, P, LocalKnownTime);
-        Entries ->
+        Txs ->
             %% Entries are already ordered according to local commit time at this replica
-            lists:foreach(fun(Entry) ->
-                grb_dc_connection_manager:broadcast_tx(LocalId, P, Entry)
-            end, Entries)
+            lists:foreach(fun(Tx) ->
+                grb_dc_connection_manager:broadcast_tx(LocalId, P, Tx)
+            end, Txs)
     end.
 
 -spec update_known_vc(grb_time:ts(), cache(atom(), vclock())) -> ok.

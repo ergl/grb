@@ -12,7 +12,6 @@
 -export([connect_to/1,
          connected_replicas/0,
          send_msg/3,
-         broadcast_msg/2,
          broadcast_tx/3,
          broadcast_heartbeat/3]).
 
