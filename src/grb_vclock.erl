@@ -8,10 +8,12 @@
          eq/2,
          leq/2,
          max/2,
-         max_at/3]).
+         max_at/3,
+         max_except/3]).
 
-%% Debug API
--export([from_list/1]).
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-endif.
 
 -type vc() :: vc(term()).
 -opaque vc(T) :: #{T => grb_time:ts()}.
@@ -48,6 +50,17 @@ max(Left, Right) ->
         end
     end, Right)).
 
+-spec max_except(T, vc(T), vc(T)) -> vc(T).
+max_except(Key, Left, Right) ->
+    maps:merge(Left, maps:map(fun
+        (InnerKey, _) when InnerKey =:= Key -> get_time(Key, Left);
+        (InnerKey, Value) ->
+            case maps:find(InnerKey, Left) of
+                {ok, V} -> erlang:max(V, Value);
+                error -> Value
+            end
+    end, Right)).
+
 -spec max_at(T, vc(T), vc(T)) -> vc(T).
 max_at(Key, Left, Right) ->
     Left#{Key => erlang:max(maps:get(Key, Left, 0), maps:get(Key, Right, 0))}.
@@ -59,5 +72,38 @@ leq(Left, Right) ->
     end,
     lists:all(F, maps:keys(maps:merge(Left, Right))).
 
-from_list(List) ->
-    maps:from_list(List).
+-ifdef(TEST).
+
+grb_vclock_max_at_test() ->
+    A = #{a => 0, b => 10},
+    B = #{b => 20},
+
+    C = grb_vclock:max_at(b, B, A),
+    ?assertEqual(B, C),
+
+    D = grb_vclock:max_at(a, B, A),
+    ?assertEqual(#{a => 0, b => 20}, D),
+
+    E = grb_vclock:max_at(b, A, B),
+    ?assertEqual(D, E),
+
+    F = grb_vclock:max_at(a, A, B),
+    ?assertEqual(A, F).
+
+grb_vclock_max_except_test() ->
+    A = #{a => 1,  b => 10},
+    B = #{b => 20},
+
+    C = grb_vclock:max_except(b, B, A),
+    ?assertEqual(grb_vclock:max(B, A), C),
+
+    D = grb_vclock:max_except(a, B, A),
+    ?assertEqual(#{a => 0, b => 20}, D),
+
+    E = grb_vclock:max_except(b, A, B),
+    ?assertEqual(A, E),
+
+    F = grb_vclock:max_except(a, A, B),
+    ?assertEqual(grb_vclock:max(A, B), F).
+
+-endif.

@@ -30,14 +30,12 @@ stop() ->
 connect() ->
     grb_dc_utils:cluster_info().
 
-%% todo(borja): Update uniform_vc
-%% have to update everywhere but the current replica
+%% todo(borja): Use uniformVC when uniformity is added
 start_transaction(Partition, ClientVC) ->
-    UniformVC   = grb_propagation_vnode:uniform_vc(Partition),
-    StableVC    = grb_propagation_vnode:stable_vc(Partition),
-    SnapshotVC0 = grb_vclock:max(ClientVC, UniformVC),
-    SnapshotVC1 = grb_vclock:max_at(red, SnapshotVC0, StableVC),
-    SnapshotVC1.
+    StableVC0 = grb_propagation_vnode:stable_vc(Partition),
+    StableVC1 = grb_vclock:max_except(grb_dc_utils:replica_id(), StableVC0, ClientVC),
+    ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC1),
+    grb_vclock:max(ClientVC, StableVC1).
 
 -spec perform_op(grb_promise:t(), partition_id(), key(), vclock(), val()) -> ok.
 perform_op(Promise, Partition, Key, SnapshotVC, Val) ->
