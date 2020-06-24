@@ -145,7 +145,7 @@ handle_command({replicate_tx, SourceReplica, TxId, WS, VC}, _From, S=#state{part
                                                                             op_log=OpLog,
                                                                             op_log_size=LogSize}) ->
     CommitTime = grb_vclock:get_time(SourceReplica, VC),
-    ok = update_partition_state(SourceReplica, P, TxId, WS, VC, OpLog, LogSize),
+    ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
     ok = grb_propagation_vnode:handle_blue_heartbeat(P, SourceReplica, CommitTime),
     {noreply, S};
 
@@ -162,20 +162,18 @@ decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
     {{WS, _}, PreparedBlue1} = maps:take(TxId, PreparedBlue),
-    ok = update_partition_state(grb_dc_utils:replica_id(), SelfPartition,
-                                TxId, WS, VC, OpLog, LogSize),
-
+    ReplicaId = grb_dc_utils:replica_id(),
+    ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
+    ok = grb_propagation_vnode:append_blue_commit(ReplicaId, SelfPartition, TxId, WS, VC),
     S#state{prepared_blue=PreparedBlue1}.
 
--spec update_partition_state(ReplicaId :: replica_id(),
-                             Partition :: partition_id(),
-                             TxId :: term(),
+-spec update_partition_state(TxId :: term(),
                              WS :: #{},
                              CommitVC :: vclock(),
                              OpLog :: cache(key(), grb_version_log:t()),
                              DefaultSize :: non_neg_integer()) -> ok.
 
-update_partition_state(ReplicaId, Partition, TxId, WS, CommitVC, OpLog, DefaultSize) ->
+update_partition_state(_TxId, WS, CommitVC, OpLog, DefaultSize) ->
     Objects = maps:fold(fun(Key, Value, Acc) ->
         Log = case ets:lookup(OpLog, Key) of
             [{Key, PrevLog}] -> PrevLog;
@@ -185,7 +183,7 @@ update_partition_state(ReplicaId, Partition, TxId, WS, CommitVC, OpLog, DefaultS
         [{Key, NewLog} | Acc]
     end, [], WS),
     true = ets:insert(OpLog, Objects),
-    ok = grb_propagation_vnode:append_blue_commit(ReplicaId, Partition, TxId, WS, CommitVC).
+    ok.
 
 -spec propagate_internal(partition_id(), #{any() => {#{}, vclock()}}) -> ok.
 propagate_internal(Partition, PreparedBlue) ->
