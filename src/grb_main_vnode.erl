@@ -41,7 +41,7 @@
     propagate_interval :: non_neg_integer(),
     propagate_timer = undefined :: timer:tref() | undefined,
 
-    %% todo(borja): for now
+    %% todo(borja, crdt): change type of op_log when adding crdts
     op_log_size :: non_neg_integer(),
     op_log :: cache(key(), cache(key(), grb_version_log:t()))
 }).
@@ -52,7 +52,7 @@
 
 -spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
 prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
-    %% todo(borja): This should be uniform_vc once we add uniformity
+    %% todo(borja, uniformity): Have to update uniform_vc, not stable_vc
     StableVC0 = grb_propagation_vnode:stable_vc(Partition),
     StableVC1 = grb_vclock:max_except(grb_dc_utils:replica_id(), StableVC0, SnapshotVC),
     ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC1),
@@ -146,7 +146,7 @@ handle_command({replicate_tx, SourceReplica, TxId, WS, VC}, _From, S=#state{part
                                                                             op_log_size=LogSize}) ->
     CommitTime = grb_vclock:get_time(SourceReplica, VC),
     ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
-    %% todo(borja): Have to add to committedBlue when we add uniformity
+    %% todo(borja, uniformity): Add to committedBlue[SourceReplica]
     ok = grb_propagation_vnode:handle_blue_heartbeat(P, SourceReplica, CommitTime),
     {noreply, S};
 

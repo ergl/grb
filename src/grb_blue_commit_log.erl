@@ -16,7 +16,7 @@
 -type t() :: #state{}.
 
 %% API
-%% todo(borja): Add prune operation
+%% todo(borja, uniformity): Add prune operation to committedBlue
 -export([new/1,
          insert/4,
          get_bigger/2,
@@ -29,7 +29,7 @@ new(AtId) ->
 -spec insert(term(), #{}, vclock(), t()) -> t().
 insert(TxId, WS, CommitVC, S=#state{at=Id, entries=Entries}) ->
     Key = grb_vclock:get_time(Id, CommitVC),
-    %% todo(borja): Beware of negating timestamps, if we change the type of grb_time:ts()
+    %% todo(borja, warn): Beware of negating timestamps, if we change the type of grb_time:ts()
     S#state{entries=orddict:store(-Key, {TxId, WS, CommitVC}, Entries)}.
 
 %% @doc Get all entries with commit time at the created replica bigger than `Timestamp`

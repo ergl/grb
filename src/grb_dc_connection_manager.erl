@@ -85,7 +85,7 @@ connected_replicas() ->
 -spec send_msg(replica_id(), partition_id(), any()) -> ok.
 send_msg(Replica, Partition, Msg) ->
     Pid = ets:lookup_element(?CONN_PIDS_TABLE, {Partition, Replica}, 2),
-    %% fixme(borja): Avoid going through gen_server, send through socket directly
+    %% todo(borja, speed): Avoid going through gen_server, send through socket directly
     ok = gen_server:cast(Pid, {send, Msg}),
     ok.
 

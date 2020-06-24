@@ -156,7 +156,7 @@ handle_info(Info, State) ->
                           State :: #state{}) -> ok.
 
 perform_op_internal(Promise, Key, SnapshotVC, Val, State=#state{partition=Partition}) ->
-    %% todo(borja): This should be uniform_vc once we add uniformity
+    %% todo(borja, uniformity): Have to update uniform_vc, not stable_vc
     StableVC0 = grb_propagation_vnode:stable_vc(Partition),
     StableVC1 = grb_vclock:max_except(grb_dc_utils:replica_id(), StableVC0, SnapshotVC),
     ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC1),
@@ -191,7 +191,7 @@ check_known_vc(Partition, VC) ->
         true ->
             ready;
         false ->
-            %% todo(borja): stat here
+            %% todo(borja, stat): log miss
             {not_ready, ?OP_WAIT_MS}
     end.
 
@@ -199,13 +199,13 @@ check_known_vc(Partition, VC) ->
 perform_op_continue(Promise, Key, VC, Val, State) ->
     case ets:lookup(State#state.oplog_replica, Key) of
         [] ->
-            %% todo(borja): Check soundness
+            %% todo(borja, warn): Check soundness
             grb_promise:resolve({ok, Val, 0}, Promise);
         [{Key, Log}] ->
-            %% todo(borja): Matches are not totally ordered
+            %% todo(borja, warn): Totally order log operations
             %% should introduce lamport clock to updates to totally order them
             %% Right now, return the first (lower in the snapshot)
-            %% fixme(borja): Revisit redTS once red transactions are implemented
+            %% todo(borja, red): Update redTS with dependence vectors
             case grb_version_log:get_lower(VC, Log) of
                 [] -> grb_promise:resolve({ok, <<>>, 0}, Promise);
                 [{_, FirstVal, FirstVC} | _] ->

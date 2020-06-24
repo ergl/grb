@@ -45,7 +45,7 @@ init([RemoteID, IP, Port]) ->
             ?LOG_ERROR("~p ~p failed to start connection with ~p: ~p", [?MODULE, self(), RemoteID, Reason]),
             {stop, Reason};
         {ok, Socket} ->
-            %% todo(borja): Send the socket to grb_dc_connection_manager to avoid going through gen_server?
+            %% todo(borja, speed): Send the socket to grb_dc_connection_manager to avoid going through gen_server?
             {ok, {LocalIP, LocalPort}} = inet:sockname(Socket),
             ?LOG_INFO("~p ~p started connection with ~p on ~p:~p", [?MODULE, self(), RemoteID, LocalIP, LocalPort]),
             {ok, #state{connected_dc=RemoteID,
@@ -56,7 +56,7 @@ handle_call(E, _From, S) ->
     ?LOG_WARNING("unexpected call: ~p~n", [E]),
     {reply, ok, S}.
 
-%% fixme(borja): remove, send the socket somewhere so parts can send without going through gen_server
+%% todo(borja, speed): remove, send the socket somewhere so parts can send without going through gen_server
 handle_cast({send, Data}, State=#state{socket=S}) ->
     ok = gen_tcp:send(S, Data),
     {noreply, State};

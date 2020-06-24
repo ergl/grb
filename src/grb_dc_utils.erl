@@ -22,7 +22,7 @@
 
 -define(BUCKET, <<"grb">>).
 
-%% todo(borja): Should persist this, Antidote says it can change
+%% todo(borja, warn): Should persist this, Antidote says it can change
 -spec replica_id() -> replica_id().
 replica_id() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),

@@ -12,7 +12,7 @@
 -type cache_id() :: ets:tab().
 -type cache(_K, _V) :: ets:tab().
 
-%% todo(borja): temp, change
+%% todo(borja, crdt): change operation type when adding crdt lib
 -type op() :: atom().
 -type effect() :: atom().
 -type transaction_type() :: red | blue.

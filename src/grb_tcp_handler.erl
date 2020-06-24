@@ -5,7 +5,7 @@
 
 -spec process(grb_promise:t(), atom(), #{}) -> ok.
 process(Promise, 'UniformBarrier', #{client_vc := _CVC, partition := _Partition}) ->
-    %% todo(borja): implement this when replication is done
+    %% todo(borja, uniformity)
     grb_promise:resolve(ok, Promise);
 
 process(Promise, 'ConnectRequest', _) ->
@@ -18,7 +18,7 @@ process(Promise, 'OpRequest', Args) ->
     #{partition := P, key := K, value := V, snapshot_vc := VC} = Args,
     grb:perform_op(Promise, P, K, VC, V);
 
-%% fixme(borja): Make prepare node parallel
+%% todo(borja, speed): Make prepare node parallel
 %% See https://medium.com/@jlouis666/testing-a-parallel-map-implementation-2d9eab47094e
 process(Promise, 'PrepareBlueNode', Args) ->
     #{transaction_id := TxId, snapshot_vc := VC, prepares := Prepares} = Args,
@@ -26,7 +26,7 @@ process(Promise, 'PrepareBlueNode', Args) ->
              || #{partition := P, writeset := WS} <- Prepares],
     grb_promise:resolve(Votes, Promise);
 
-%% fixme(borja): Make decide node parallel
+%% todo(borja, speed): Make decide node parallel
 %% See https://medium.com/@jlouis666/testing-a-parallel-map-implementation-2d9eab47094e
 process(_Promise, 'DecideBlueNode', Args) ->
     #{transaction_id := TxId, partitions := Ps, commit_vc := CVC} = Args,

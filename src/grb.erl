@@ -30,7 +30,7 @@ stop() ->
 connect() ->
     grb_dc_utils:cluster_info().
 
-%% todo(borja): Use uniformVC when uniformity is added
+%% todo(borja, uniformity): Have to update uniform_vc, not stable_vc
 start_transaction(Partition, ClientVC) ->
     StableVC0 = grb_propagation_vnode:stable_vc(Partition),
     StableVC1 = grb_vclock:max_except(grb_dc_utils:replica_id(), StableVC0, ClientVC),

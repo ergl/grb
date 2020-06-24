@@ -36,7 +36,7 @@
 
 -record(state, {
     partition :: partition_id(),
-    %% fixme(borja): Only used for naive replication, use globalKnownMatrix when uniform
+    %% fixme(borja, uniformity): Change last_sent to globalKnownMatrix
     last_sent = 0 :: grb_time:ts(),
     logs = #{} :: #{replica_id() => grb_blue_commit_log:t()},
     clock_cache :: cache(atom(), vclock())
@@ -113,8 +113,7 @@ handle_command({append_blue, ReplicaId, TxId, WS, CommitVC}, _Sender, S=#state{l
 handle_command({propagate_tx, KnownTime}, _Sender, S=#state{clock_cache=ClockTable}) ->
     NewLogs = propagate_internal(KnownTime, S),
     ok = update_known_vc(KnownTime, ClockTable),
-    %% fixme(borja): Change once we add uniform replication
-    %% last_send should change to globalKnownMatrix
+    %% todo(borja, uniformity): last_send should change to globalKnownMatrix
     {noreply, S#state{last_sent=KnownTime, logs=NewLogs}};
 
 handle_command(Message, _Sender, State) ->
