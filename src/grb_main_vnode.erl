@@ -146,6 +146,7 @@ handle_command({replicate_tx, SourceReplica, TxId, WS, VC}, _From, S=#state{part
                                                                             op_log_size=LogSize}) ->
     CommitTime = grb_vclock:get_time(SourceReplica, VC),
     ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
+    %% todo(borja): Have to add to committedBlue when we add uniformity
     ok = grb_propagation_vnode:handle_blue_heartbeat(P, SourceReplica, CommitTime),
     {noreply, S};
 

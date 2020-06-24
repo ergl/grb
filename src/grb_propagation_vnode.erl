@@ -125,7 +125,7 @@ handle_command(Message, _Sender, State) ->
 %%% internal functions
 %%%===================================================================
 
-%% fixme(borja): Change once we add uniform replication
+%% todo(borja): Relay transactions from other replicas when we add uniformity
 -spec propagate_internal(grb_time:ts(), #state{}) -> ok.
 propagate_internal(LocalKnownTime, #state{partition=P, last_sent=LastSent, logs=Logs}) ->
     LocalId = grb_dc_utils:replica_id(),
