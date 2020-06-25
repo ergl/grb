@@ -204,13 +204,13 @@ perform_op_continue(Promise, Key, VC, Val, State) ->
         [{Key, Log}] ->
             %% todo(borja, warn): Totally order log operations
             %% should introduce lamport clock to updates to totally order them
-            %% Right now, return the first (lower in the snapshot)
+            %% Right now, return the first (highest in the snapshot)
             %% todo(borja, red): Update redTS with dependence vectors
-            case grb_version_log:get_lower(VC, Log) of
-                [] -> grb_promise:resolve({ok, Val, 0}, Promise);
-                [{_, FirstVal, FirstVC} | _] ->
-                    RedTs = grb_vclock:get_time(red, FirstVC),
-                    ReturnVal = case Val of <<>> -> FirstVal; _ -> Val end,
+            case grb_version_log:get_first_lower(VC, Log) of
+                undefined -> grb_promise:resolve({ok, Val, 0}, Promise);
+                {_, LastVal, LastVC} ->
+                    RedTs = grb_vclock:get_time(red, LastVC),
+                    ReturnVal = case Val of <<>> -> LastVal; _ -> Val end,
                     grb_promise:resolve({ok, ReturnVal, RedTs}, Promise)
             end
     end.
