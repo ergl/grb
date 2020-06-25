@@ -95,6 +95,9 @@ send_msg(Replica, Partition, Msg) ->
 %% @doc Send a message to all replicas of the given partition
 -spec broadcast_msg(partition_id(), any()) -> ok.
 broadcast_msg(Partition, Msg) ->
+    %% fixme(borja): This will throw if the underlying table has been deleted
+    %% This happens during system termination if stop_bg_processes is not called
+    %% before terminating the node
     Socks = ets:select(?CONN_SOCKS_TABLE, [{{{Partition, '_'}, '$1'}, [], ['$1']}]),
     lists:foreach(fun(S) -> gen_tcp:send(S, Msg) end, Socks),
     ok.
