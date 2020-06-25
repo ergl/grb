@@ -24,7 +24,8 @@
          handle_overload_command/3,
          handle_overload_info/2,
          handle_coverage/4,
-         handle_exit/3]).
+         handle_exit/3,
+         handle_info/2]).
 
 -ignore_xref([start_vnode/1]).
 
@@ -114,17 +115,12 @@ handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     Result = grb_partition_replica:replica_ready(P, N),
     {reply, Result, S};
 
-handle_command(start_propagate_timer, _From, S = #state{partition=P, propagate_interval=Int, propagate_timer=undefined}) ->
-    Args = [{P, node()}, propagate_event, ?master],
-    {ok, TRef} = timer:apply_interval(Int, riak_core_vnode_master, command, Args),
+handle_command(start_propagate_timer, _From, S = #state{propagate_interval=Int, propagate_timer=undefined}) ->
+    {ok, TRef} = timer:send_interval(Int, propagate_event),
     {reply, ok, S#state{propagate_timer=TRef}};
 
 handle_command(start_propagate_timer, _From, S = #state{propagate_timer=_TRef}) ->
     {reply, ok, S};
-
-handle_command(propagate_event, _From, State=#state{partition=P, prepared_blue=PreparedBlue}) ->
-    ok = propagate_internal(P, PreparedBlue),
-    {noreply, State};
 
 handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=undefined}) ->
     {reply, ok, S};
@@ -153,6 +149,14 @@ handle_command({replicate_tx, SourceReplica, TxId, WS, VC}, _From, S=#state{part
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
+
+handle_info(propagate_event, State=#state{partition=P, prepared_blue=PreparedBlue}) ->
+    ok = propagate_internal(P, PreparedBlue),
+    {ok, State};
+
+handle_info(Msg, State) ->
+    ?LOG_WARNING("unhandled_info ~p", [Msg]),
+    {ok, State}.
 
 -spec decide_blue_internal(term(), vclock(), #state{}) -> #state{}.
 decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
