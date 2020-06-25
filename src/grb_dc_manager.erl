@@ -110,7 +110,7 @@ connect_nodes_to_descriptor(Nodes, Desc=#replica_descriptor{replica_id=RemoteId}
 
 stop_background_processes() ->
     Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_replicas),
-    ok = lists:foreach(fun({_, true}) -> ok end, Res),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res),
     Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_propagate_timer),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
     Res2 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, stop_broadcast_timer),
