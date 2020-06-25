@@ -11,7 +11,9 @@
                   riak_core,
                   riak_core_lite_util,
                   ranch,
-                  pvc_proto
+                  pvc_proto,
+                  runtime_tools,
+                  recon
                  ]},
   {mod, { grb_app, []}},
   {env, []}
