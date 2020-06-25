@@ -15,6 +15,9 @@ all: compile
 compile:
 	$(REBAR) compile
 
+check_binaries:
+	$(REBAR) as debug_bin compile
+
 xref:
 	$(REBAR) xref skip_deps=true
 
