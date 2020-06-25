@@ -1,6 +1,6 @@
 #!/usr/bin/env escript
 %% -*- erlang -*-
-%%! -smp enable -name connect_dcs@127.0.0.1 -setcookie grb_cookie
+%%! -smp enable -hidden -name connect_dcs@127.0.0.1 -setcookie grb_cookie
 
 -mode(compile).
 

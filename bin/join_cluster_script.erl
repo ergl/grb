@@ -1,6 +1,6 @@
 #!/usr/bin/env escript
 %% -*- erlang -*-
-%%! -smp enable -name join_cluster@127.0.0.1 -setcookie grb_cookie
+%%! -smp enable -hidden -name join_cluster@127.0.0.1 -setcookie grb_cookie
 
 -mode(compile).
 
