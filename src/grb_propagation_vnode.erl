@@ -14,7 +14,7 @@
          uniform_vc/1,
          broadcast_clocks/1,
          handle_blue_heartbeat/3,
-         append_blue_commit/5,
+         append_blue_commit/6,
          propagate_transactions/2]).
 
 %% riak_core_vnode callbacks
@@ -52,7 +52,7 @@
     %% the partitions present at this cluster, kept to
     %% speed up localKnownMatrix computation
     cluster_partitions = [] :: [partition_id()],
-    %% How ofter to broadcast our clocks to all partitions
+    %% How often to broadcast our clocks to all partitions
     broadcast_clock_interval :: non_neg_integer(),
     broadcast_clock_timer = undefined :: timer:tref() | undefined
 }).
@@ -91,10 +91,10 @@ broadcast_clocks(Partition) ->
 propagate_transactions(Partition, KnownTime) ->
     riak_core_vnode_master:command({Partition, node()}, {propagate_tx, KnownTime}, ?master).
 
--spec append_blue_commit(replica_id(), partition_id(), term(), #{}, vclock()) -> ok.
-append_blue_commit(ReplicaId, Partition, TxId, WS, CommitVC) ->
+-spec append_blue_commit(replica_id(), partition_id(), grb_time:ts(), term(), #{}, vclock()) -> ok.
+append_blue_commit(ReplicaId, Partition, KnownTime, TxId, WS, CommitVC) ->
     riak_core_vnode_master:command({Partition, node()},
-                                   {append_blue, ReplicaId, TxId, WS, CommitVC},
+                                   {append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC},
                                    ?master).
 
 %%%===================================================================
@@ -157,8 +157,10 @@ handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTa
     ok = update_known_vc(FromReplica, Ts, ClockTable),
     {noreply, S};
 
-handle_command({append_blue, ReplicaId, TxId, WS, CommitVC}, _Sender, S=#state{logs=Logs}) ->
+handle_command({append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC}, _Sender, S=#state{logs=Logs,
+                                                                                          clock_cache=ClockTable}) ->
     ReplicaLog = maps:get(ReplicaId, Logs, grb_blue_commit_log:new(ReplicaId)),
+    ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
     {noreply, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
 
 handle_command({propagate_tx, KnownTime}, _Sender, S=#state{clock_cache=ClockTable}) ->

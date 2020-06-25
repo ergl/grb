@@ -79,15 +79,13 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
-    Interval = application:get_env(grb, propagate_interval, 5),
-    KeyLogSize = application:get_env(grb, version_log_size, 50),
-    State = #state{
-        partition = Partition,
-        prepared_blue = #{},
-        propagate_interval = Interval,
-        op_log_size = KeyLogSize,
-        op_log = new_cache(Partition, ?OP_LOG_TABLE)
-    },
+    {ok, Interval} = application:get_env(grb, propagate_interval),
+    {ok, KeyLogSize} = application:get_env(grb, version_log_size),
+    State = #state{partition = Partition,
+                   prepared_blue = #{},
+                   propagate_interval = Interval,
+                   op_log_size = KeyLogSize,
+                   op_log = new_cache(Partition, ?OP_LOG_TABLE)},
 
     {ok, State}.
 
@@ -151,7 +149,8 @@ handle_command(Message, _Sender, State) ->
     {noreply, State}.
 
 handle_info(propagate_event, State=#state{partition=P, prepared_blue=PreparedBlue}) ->
-    ok = propagate_internal(P, PreparedBlue),
+    KnownTime = compute_new_known_time(PreparedBlue),
+    ok = grb_propagation_vnode:propagate_transactions(P, KnownTime),
     {ok, State};
 
 handle_info(Msg, State) ->
@@ -169,7 +168,8 @@ decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
     {{WS, _}, PreparedBlue1} = maps:take(TxId, PreparedBlue),
     ReplicaId = grb_dc_utils:replica_id(),
     ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
-    ok = grb_propagation_vnode:append_blue_commit(ReplicaId, SelfPartition, TxId, WS, VC),
+    KnownTime = compute_new_known_time(PreparedBlue1),
+    ok = grb_propagation_vnode:append_blue_commit(ReplicaId, SelfPartition, KnownTime, TxId, WS, VC),
     S#state{prepared_blue=PreparedBlue1}.
 
 -spec update_partition_state(TxId :: term(),
@@ -190,19 +190,17 @@ update_partition_state(_TxId, WS, CommitVC, OpLog, DefaultSize) ->
     true = ets:insert(OpLog, Objects),
     ok.
 
--spec propagate_internal(partition_id(), #{any() => {#{}, vclock()}}) -> ok.
-propagate_internal(Partition, PreparedBlue) ->
-    Ts = case map_size(PreparedBlue) of
-        0 -> grb_time:timestamp();
-        _ ->
-            MinTS = maps:fold(fun
-                (_, {_, Ts}, ignore) -> Ts;
-                (_, {_, Ts}, Acc) -> erlang:min(Ts, Acc)
-            end, ignore, PreparedBlue),
-            ?LOG_DEBUG("knownVC[d] = min_prep (~p - 1)", [MinTS]),
-            MinTS - 1
-    end,
-    grb_propagation_vnode:propagate_transactions(Partition, Ts).
+-spec compute_new_known_time(#{any() => {#{}, vclock()}}) -> grb_time:ts().
+compute_new_known_time(PreparedBlue) when map_size(PreparedBlue) =:= 0 ->
+    grb_time:timestamp();
+
+compute_new_known_time(PreparedBlue) ->
+    MinPrep = maps:fold(fun
+        (_, {_, Ts}, ignore) -> Ts;
+        (_, {_, Ts}, Acc) -> erlang:min(Ts, Acc)
+    end, ignore, PreparedBlue),
+    ?LOG_DEBUG("knownVC[d] = min_prep (~p - 1)", [MinPrep]),
+    MinPrep - 1.
 
 %%%===================================================================
 %%% Util Functions
