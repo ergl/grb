@@ -6,7 +6,7 @@
 
 -define(REPLICAS_TABLE, connected_replicas).
 -define(REPLICAS_TABLE_KEY, replicas).
--define(CONN_PIDS_TABLE, connection_pids).
+-define(CONN_SOCKS_TABLE, connection_sockets).
 
 %% External API
 -export([connect_to/1,
@@ -30,8 +30,12 @@
 
 -record(state, {
     replicas :: cache(replicas, ordsets:ordset(replica_id())),
-    connection_pids :: cache({partition_id(), replica_id()}, pid())
+    connection_sockets :: cache({partition_id(), replica_id()}, inet:socket())
 }).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% DC API
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -spec connect_to(replica_descriptor()) -> ok | {error, term()}.
 connect_to(#replica_descriptor{replica_id=ReplicaID, remote_addresses=RemoteNodes}) ->
@@ -84,16 +88,15 @@ connected_replicas() ->
 
 -spec send_msg(replica_id(), partition_id(), any()) -> ok.
 send_msg(Replica, Partition, Msg) ->
-    Pid = ets:lookup_element(?CONN_PIDS_TABLE, {Partition, Replica}, 2),
-    %% todo(borja, speed): Avoid going through gen_server, send through socket directly
-    ok = gen_server:cast(Pid, {send, Msg}),
+    Sock = ets:lookup_element(?CONN_SOCKS_TABLE, {Partition, Replica}, 2),
+    ok = gen_tcp:send(Sock, Msg),
     ok.
 
 %% @doc Send a message to all replicas of the given partition
 -spec broadcast_msg(partition_id(), any()) -> ok.
 broadcast_msg(Partition, Msg) ->
-    Pids = ets:select(?CONN_PIDS_TABLE, [{{{Partition, '_'}, '$1'}, [], ['$1']}]),
-    lists:foreach(fun(P) -> gen_server:cast(P, {send, Msg}) end, Pids),
+    Socks = ets:select(?CONN_SOCKS_TABLE, [{{{Partition, '_'}, '$1'}, [], ['$1']}]),
+    lists:foreach(fun(S) -> gen_tcp:send(S, Msg) end, Socks),
     ok.
 
 -spec broadcast_heartbeat(replica_id(), partition_id(), grb_time:ts()) -> ok.
@@ -111,15 +114,18 @@ broadcast_tx(FromId, ToPartition, Transaction) ->
 init([]) ->
     ReplicaTable = ets:new(?REPLICAS_TABLE, [set, protected, named_table, {read_concurrency, true}]),
     true = ets:insert(?REPLICAS_TABLE, {?REPLICAS_TABLE_KEY, ordsets:new()}),
-    ConnPidTable = ets:new(?CONN_PIDS_TABLE, [set, protected, named_table, {read_concurrency, true}]),
+    ConnPidTable = ets:new(?CONN_SOCKS_TABLE, [set, protected, named_table, {read_concurrency, true}]),
     {ok, #state{replicas=ReplicaTable,
-                connection_pids=ConnPidTable}}.
+                connection_sockets=ConnPidTable}}.
 
 handle_call({add_replica_connections, ReplicaId, PartitionConnections}, _From, State) ->
     Replicas = connected_replicas(),
     true = ets:insert(?REPLICAS_TABLE, {?REPLICAS_TABLE_KEY, ordsets:add_element(ReplicaId, Replicas)}),
-    Objects = [ {{Partition, ReplicaId}, Pid} || {Partition, Pid} <- maps:to_list(PartitionConnections)],
-    true = ets:insert(?CONN_PIDS_TABLE, Objects),
+    Objects = [begin
+        ConnSocket = grb_dc_connection_sender:get_socket(Pid),
+        {{Partition, ReplicaId}, ConnSocket}
+    end || {Partition, Pid} <- maps:to_list(PartitionConnections)],
+    true = ets:insert(?CONN_SOCKS_TABLE, Objects),
     {reply, ok, State};
 
 handle_call(E, _From, S) ->

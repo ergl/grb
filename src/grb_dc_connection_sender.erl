@@ -11,6 +11,9 @@
 %% Supervisor
 -export([start_link/3]).
 
+%% External API
+-export([get_socket/1]).
+
 %% API
 -export([init/1,
          handle_call/3,
@@ -24,8 +27,8 @@
 }).
 
 -spec start_link(replica_id(), inet:ip_address(), inet:port_number()) -> {ok, pid()}.
-start_link(RemoteID, IP, Port) ->
-    Ret = gen_server:start_link(?MODULE, [RemoteID, IP, Port], []),
+start_link(ReplicaId, IP, Port) ->
+    Ret = gen_server:start_link(?MODULE, [ReplicaId, IP, Port], []),
     case Ret of
         {ok, Pid} ->
             {ok, Pid};
@@ -35,31 +38,32 @@ start_link(RemoteID, IP, Port) ->
             Err
     end.
 
+-spec get_socket(pid()) -> inet:socket().
+get_socket(Pid) ->
+    gen_server:call(Pid, socket).
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-init([RemoteID, IP, Port]) ->
+init([ReplicaId, IP, Port]) ->
     case gen_tcp:connect(IP, Port, ?INTER_DC_SOCK_OPTS) of
         {error, Reason} ->
-            ?LOG_ERROR("~p ~p failed to start connection with ~p: ~p", [?MODULE, self(), RemoteID, Reason]),
+            ?LOG_ERROR("~p ~p failed to start connection with ~p: ~p", [?MODULE, self(), ReplicaId, Reason]),
             {stop, Reason};
         {ok, Socket} ->
-            %% todo(borja, speed): Send the socket to grb_dc_connection_manager to avoid going through gen_server?
             {ok, {LocalIP, LocalPort}} = inet:sockname(Socket),
-            ?LOG_INFO("~p ~p started connection with ~p on ~p:~p", [?MODULE, self(), RemoteID, LocalIP, LocalPort]),
-            {ok, #state{connected_dc=RemoteID,
+            ?LOG_INFO("~p ~p started connection with ~p on ~p:~p", [?MODULE, self(), ReplicaId, LocalIP, LocalPort]),
+            {ok, #state{connected_dc=ReplicaId,
                         socket=Socket}}
     end.
+
+handle_call(socket, _From, S=#state{socket=Socket}) ->
+    {reply, Socket, S};
 
 handle_call(E, _From, S) ->
     ?LOG_WARNING("unexpected call: ~p~n", [E]),
     {reply, ok, S}.
-
-%% todo(borja, speed): remove, send the socket somewhere so parts can send without going through gen_server
-handle_cast({send, Data}, State=#state{socket=S}) ->
-    ok = gen_tcp:send(S, Data),
-    {noreply, State};
 
 handle_cast(E, S) ->
     ?LOG_WARNING("unexpected cast: ~p~n", [E]),
