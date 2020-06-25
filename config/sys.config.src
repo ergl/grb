@@ -49,9 +49,9 @@
     {auto_start_background_processes, false},
     %% todo(borja): Play with these settings
     %% How often should we propagate transactions in the background?
-    {propagate_interval, 5},
+    {propagate_interval, 50},
     %% How often should we propagate clocks in the background?
-    {broadcast_clock_interval, 1000},
+    {broadcast_clock_interval, 500},
     %% How many versions to keep per key
     {version_log_size, 50}
   ]}
