@@ -9,17 +9,19 @@
 -spec usage() -> no_return().
 usage() ->
     Name = filename:basename(escript:script_name()),
-    io:fwrite(standard_error, "Usage: ~s [-f config_file]~n", [Name]),
+    io:fwrite(standard_error, "Usage: ~s [-f config_file] | 'node_1@host_1' ... 'node_n@host_n' ~n", [Name]),
     halt(1).
 
 main(Args) ->
-    case parse_args(Args, [config]) of
+    case parse_args(Args, []) of
         {error, Reason} ->
             io:fwrite(standard_error, "Wrong option: reason ~p~n", [Reason]),
             usage(),
             halt(1);
         {ok, #{config := ConfigFile}} ->
-            prepare(validate(parse_node_config(ConfigFile)))
+            prepare(validate(parse_node_config(ConfigFile)));
+        {ok, #{rest := Nodes}} ->
+            prepare(validate(parse_node_list(Nodes)))
     end.
 
 %% @doc Parse node names from config file
@@ -44,6 +46,19 @@ build_erlang_node_name(Node) ->
     {ok, Addr} = inet:getaddr(Node, inet),
     IPString = inet:ntoa(Addr),
     list_to_atom("grb@" ++ IPString).
+
+parse_node_list([]) ->
+    {error, emtpy_node_list};
+parse_node_list([_Node]) ->
+    {error, single_node_connect_dcs};
+parse_node_list([_|_]=NodeListString) ->
+    try
+        Nodes = lists:foldl(fun(NodeString, Acc) ->
+            [ list_to_atom(NodeString) | Acc]
+        end, [], NodeListString),
+        {ok, lists:reverse(Nodes)}
+    catch Err -> {error, Err}
+    end.
 
 %% @doc Validate parsing, then proceed
 -spec validate({ok, [node()]} | error | {error, term()}) -> ok | no_return().
