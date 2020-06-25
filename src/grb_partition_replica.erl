@@ -207,10 +207,11 @@ perform_op_continue(Promise, Key, VC, Val, State) ->
             %% Right now, return the first (lower in the snapshot)
             %% todo(borja, red): Update redTS with dependence vectors
             case grb_version_log:get_lower(VC, Log) of
-                [] -> grb_promise:resolve({ok, <<>>, 0}, Promise);
+                [] -> grb_promise:resolve({ok, Val, 0}, Promise);
                 [{_, FirstVal, FirstVC} | _] ->
-                    RedTS = grb_vclock:get_time(red, FirstVC),
-                    grb_promise:resolve({ok, FirstVal, RedTS}, Promise)
+                    RedTs = grb_vclock:get_time(red, FirstVC),
+                    ReturnVal = case Val of <<>> -> FirstVal; _ -> Val end,
+                    grb_promise:resolve({ok, ReturnVal, RedTs}, Promise)
             end
     end.
 
