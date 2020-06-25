@@ -9,6 +9,7 @@
          key_location/1,
          bcast_vnode_sync/2,
          bcast_vnode_async/2,
+         bcast_vnode_async_noself/3,
          bcast_vnode_local_sync/2]).
 
 %% For external script
@@ -89,6 +90,13 @@ bcast_vnode_sync(Master, Request) ->
 bcast_vnode_async(Master, Request) ->
     lists:foreach(fun(IndexNode) ->
         riak_core_vnode_master:command(IndexNode, Request, Master)
+    end, get_index_nodes()).
+
+-spec bcast_vnode_async_noself(atom(), partition_id(), any()) -> ok.
+bcast_vnode_async_noself(Master, Self, Request) ->
+    lists:foreach(fun
+        ({P, _}) when P =:= Self -> ok;
+        (IndexNode) ->  riak_core_vnode_master:command(IndexNode, Request, Master)
     end, get_index_nodes()).
 
 %% @doc Broadcast a message to all vnodes of the given type

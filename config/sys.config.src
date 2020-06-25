@@ -47,10 +47,10 @@
     %% The port to send/recv inter-dc communication (default is 8989)
     {inter_dc_port, ${INTER_DC_PORT}},
     {auto_start_background_processes, false},
+    %% todo(borja): Play with these settings
     %% How often should we propagate transactions in the background?
     {propagate_interval, 5},
     %% How often should we propagate clocks in the background?
-    %% todo(borja): Play with this
     {broadcast_clock_interval, 1000},
     %% How many versions to keep per key
     {version_log_size, 50}
