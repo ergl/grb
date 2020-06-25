@@ -1,16 +1,38 @@
 #!/usr/bin/env escript
 %% -*- erlang -*-
-%%! -smp enable -name join_cluster@127.0.0.1 -setcookie grb_cookie
+%%! -smp enable -hidden -name join_cluster@127.0.0.1 -setcookie grb_cookie
 
 -mode(compile).
 
 -export([main/1]).
 
-main([NodeNaneListConfig]) ->
-    prepare(validate(parse_node_config(NodeNaneListConfig)));
+-spec usage() -> no_return().
+usage() ->
+    Name = filename:basename(escript:script_name()),
+    io:fwrite(standard_error, "Usage: ~s [-c --cluster cluster_name] [-f config_file] | 'node_1@host_1' ... 'node_n@host_n'~n", [Name]),
+    halt(1).
 
-main(NodesListString) ->
-    prepare(validate(parse_node_list(NodesListString))).
+main(Args) ->
+    case parse_args(Args, []) of
+        {error, Reason} ->
+            io:fwrite(standard_error, "Wrong option: reason ~p~n", [Reason]),
+            usage(),
+            halt(1);
+        {ok, Opts} ->
+            io:format("~p~n", [Opts]),
+            case maps:is_key(config, Opts) of
+                true -> prepare_from_config(Opts);
+                false -> prepare_from_args(maps:get(rest, Opts))
+            end
+    end.
+
+prepare_from_args(NodeListString) ->
+    prepare(validate(parse_node_list(NodeListString))).
+
+prepare_from_config(#{config := Config, cluster := ClusterName}) ->
+    prepare(validate(parse_node_config(ClusterName, Config)));
+prepare_from_config(#{config := Config}) ->
+    prepare(validate(parse_node_config(Config))).
 
 %% @doc Parse a literal node list passed as argument
 -spec parse_node_list(list(string())) -> {ok, [node()]} | error.
@@ -28,16 +50,34 @@ parse_node_list([_|_]=NodeListString) ->
         _:_ -> error
     end.
 
+-spec parse_node_config(ClusterName :: atom(), ConfigFilePath :: string()) -> {ok, [node()] | {error, term()}}.
+parse_node_config(ClusterName, ConfigFilePath) ->
+    case file:consult(ConfigFilePath) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Terms} ->
+            {clusters, ClusterMap} = lists:keyfind(clusters, 1, Terms),
+            case maps:is_key(ClusterName, ClusterMap) of
+                false ->
+                    {error, unicode:characters_to_list(io_lib:format("No cluster named ~p", [ClusterName]))};
+                true ->
+                    #{servers := Servers} = maps:get(ClusterName, ClusterMap),
+                    {ok, build_erlang_node_names(lists:usort(Servers))}
+            end
+    end.
+
 %% @doc Parse node names from config file
 %%
 %% The config file is the same as the cluster definition.
--spec parse_node_config(ConfigFilePath :: string()) -> {ok, [atom()]} | error.
+-spec parse_node_config(ConfigFilePath :: string()) -> {ok, #{atom() => [node()]}} | error.
 parse_node_config(ConfigFilePath) ->
     case file:consult(ConfigFilePath) of
         {ok, Terms} ->
             {clusters, ClusterMap} = lists:keyfind(clusters, 1, Terms),
-            NodeNames = lists:usort(lists:flatten([N || #{servers := N} <- maps:values(ClusterMap)])),
-            {ok, build_erlang_node_names(NodeNames)};
+            Nodes = maps:fold(fun(Cluster, #{servers := Servers}, Acc) ->
+                Acc#{Cluster => build_erlang_node_names(lists:usort(Servers))}
+            end, #{}, ClusterMap),
+            {ok, Nodes};
         _ ->
             error
     end.
@@ -51,8 +91,12 @@ build_erlang_node_names(NodeNames) ->
      end || Node <- NodeNames].
 
 %% @doc Validate parsing, then proceed
--spec validate({ok, [node()]} | error) -> ok | no_return().
+-spec validate({ok, [node()] | #{atom() => [node()]}} | error | {error, term()}) -> ok | no_return().
 validate(error) ->
+    usage();
+
+validate({error, Reason}) ->
+    io:fwrite(standard_error, "Validate error: ~p~n", [Reason]),
     usage();
 
 validate({ok, [_SingleNode]}) ->
@@ -60,12 +104,20 @@ validate({ok, [_SingleNode]}) ->
     halt();
 
 validate({ok, Nodes}) ->
-    io:format("Starting clustering of nodes ~p~n", [Nodes]),
     {ok, Nodes}.
 
--spec prepare({ok, [node()]}) -> ok.
-prepare({ok, [MainNode | _] = Nodes}) ->
+-spec prepare({ok, [node()] | #{atom() => [node()]}}) -> ok.
+prepare({ok, ClusterMap}) when is_map(ClusterMap) ->
+    maps:fold(fun(ClusterName, NodeList, ok) ->
+        io:format("Starting clustering at ~p of nodes ~p~n", [ClusterName, NodeList]),
+        ok = do_join(NodeList)
+    end, ok, ClusterMap);
+
+prepare({ok, Nodes}) ->
     io:format("Starting clustering of nodes ~p~n", [Nodes]),
+    do_join(Nodes).
+
+do_join([MainNode | _] = Nodes) ->
     lists:foreach(fun(N) -> erlang:set_cookie(N, grb_cookie) end, Nodes),
     ok = join_cluster(Nodes),
     Result = erpc:multicall(Nodes, grb_dc_manager, start_background_processes, []),
@@ -78,12 +130,6 @@ prepare({ok, [MainNode | _] = Nodes}) ->
             io:fwrite(standard_error, "start_bg_processes failed with ~p, aborting~n", [Result]),
             halt(1)
     end.
-
--spec usage() -> no_return().
-usage() ->
-    Name = filename:basename(escript:script_name()),
-    io:fwrite(standard_error, "~s <config_file> | 'node_1@host_1' ... 'node_n@host_n'~n", [Name]),
-    halt(1).
 
 %% @doc Build clusters out of the given node list
 -spec join_cluster(list(atom())) -> ok.
@@ -360,8 +406,8 @@ wait_until_master_ready(MasterNode) ->
 check_ready(Node) ->
     io:format("[master ready] Checking ~p~n", [Node]),
 
-    Res0 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_vnode_master, is_ready]),
-    Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_vnode_master, replicas_ready]),
+    Res0 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, is_ready]),
+    Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, replicas_ready]),
     VNodeReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res0),
     ReadReplicasReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res1),
 
@@ -374,3 +420,48 @@ check_ready(Node) ->
     end,
 
     NodeReady.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% getopt
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+parse_args([], _) -> {error, noargs};
+parse_args(Args, Required) ->
+    case parse_args_inner(Args, #{}) of
+        {ok, Opts} -> required(Required, Opts);
+        Err -> Err
+    end.
+
+parse_args_inner([], Acc) -> {ok, Acc};
+parse_args_inner([ [$- | Flag] | Args], Acc) ->
+    case Flag of
+        [$c] ->
+            parse_flag(Flag, Args, fun(Arg) -> Acc#{cluster => list_to_atom(Arg)} end);
+        "-cluster" ->
+            parse_flag(Flag, Args, fun(Arg) -> Acc#{cluster => list_to_atom(Arg)} end);
+        [$f] ->
+            parse_flag(Flag, Args, fun(Arg) -> Acc#{config => Arg} end);
+        "-file" ->
+            parse_flag(Flag, Args, fun(Arg) -> Acc#{config => Arg} end);
+        [$h] ->
+            usage(),
+            halt(0);
+        _ ->
+            {error, {badarg, Flag}}
+    end;
+
+parse_args_inner(Words, Acc) ->
+    {ok, Acc#{rest => Words}}.
+
+parse_flag(Flag, Args, Fun) ->
+    case Args of
+        [FlagArg | Rest] -> parse_args_inner(Rest, Fun(FlagArg));
+        _ -> {error, {noarg, Flag}}
+    end.
+
+required(Required, Opts) ->
+    Valid = lists:all(fun(F) -> maps:is_key(F, Opts) end, Required),
+    case Valid of
+        true -> {ok, Opts};
+        false -> {error, "Missing required fields"}
+    end.

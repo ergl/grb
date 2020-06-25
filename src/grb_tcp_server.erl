@@ -52,8 +52,8 @@ init({Ref, Transport, _Opts}) ->
     {ok, Socket} = ranch:handshake(Ref),
     ok = ranch:remove_connection(Ref),
     ok = Transport:setopts(Socket, [{active, once}, {packet, 4}]),
-    IDLen = application:get_env(grb, tcp_id_len_bits, 16),
-    State = #state{socket=Socket, transport=Transport, id_len=IDLen},
+    IdLen = application:get_env(grb, tcp_id_len_bits, 16),
+    State = #state{socket=Socket, transport=Transport, id_len=IdLen},
     gen_server:enter_loop(?MODULE, [], State).
 
 handle_call(E, From, S) ->
@@ -64,19 +64,22 @@ handle_cast(E, S) ->
     ?LOG_WARNING("server got unexpected cast with msg ~w", [E]),
     {noreply, S}.
 
-terminate(_, #state{socket=undefined, transport=undefined}) ->  ok;
 terminate(_Reason, #state{socket=Socket, transport=Transport}) ->
     catch Transport:close(Socket),
     ok.
 
 handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
-                                                id_len=IDLen,
+                                                id_len=IdLen,
                                                 transport=Transport}) ->
-    <<MessageID:IDLen, Request/binary>> = Data,
-    {Module, Type, Msg} = pvc_proto:decode_client_req(Request),
-    ?LOG_DEBUG("request id=~b, type=~p, msg=~w", [MessageID, Type, Msg]),
-    Promise = grb_promise:new(self(), {MessageID, Module, Type}),
-    ok = grb_tcp_handler:process(Promise, Type, Msg),
+    case Data of
+        <<MessageId:IdLen, Request/binary>> ->
+            {Module, Type, Msg} = pvc_proto:decode_client_req(Request),
+            ?LOG_DEBUG("request id=~b, type=~p, msg=~w", [MessageId, Type, Msg]),
+            Promise = grb_promise:new(self(), {MessageId, Module, Type}),
+            ok = grb_tcp_handler:process(Promise, Type, Msg);
+        _ ->
+            ?LOG_WARNING("received unknown data ~p", [Data])
+    end,
     Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
@@ -92,11 +95,11 @@ handle_info(timeout, State) ->
     {stop, normal, State};
 
 handle_info({'$grb_promise_resolve', Result, {Id, Mod, Type}}, S=#state{socket=Socket,
-                                                                        id_len=IDLen,
+                                                                        id_len=IdLen,
                                                                         transport=Transport}) ->
     ?LOG_DEBUG("response id=~b, msg=~w", [Id, Result]),
     Reply = pvc_proto:encode_serv_reply(Mod, Type, Result),
-    Transport:send(Socket, <<Id:IDLen, Reply/binary>>),
+    Transport:send(Socket, <<Id:IdLen, Reply/binary>>),
     {noreply, S};
 
 handle_info(E, S) ->

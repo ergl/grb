@@ -1,13 +1,12 @@
--module(grb_vnode).
+-module(grb_main_vnode).
 -behaviour(riak_core_vnode).
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 %% Public API
 -export([cache_name/2,
-         start_replicas/0,
-         stop_replicas/0,
-         prepare_blue/4]).
+         prepare_blue/4,
+         handle_replicate/5]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -25,9 +24,12 @@
          handle_overload_command/3,
          handle_overload_info/2,
          handle_coverage/4,
-         handle_exit/3]).
+         handle_exit/3,
+         handle_info/2]).
 
 -ignore_xref([start_vnode/1]).
+
+-define(master, grb_main_vnode_master).
 
 -record(state, {
     partition :: partition_id(),
@@ -37,34 +39,36 @@
 
     prepared_blue :: #{any() => {#{}, vclock()}},
 
-    %% todo(borja): Maybe move this to other vnode when impl. replication
     propagate_interval :: non_neg_integer(),
     propagate_timer = undefined :: timer:tref() | undefined,
 
-    %% todo(borja): for now
-    op_log :: cache(key(), val())
+    %% todo(borja, crdt): change type of op_log when adding crdts
+    op_log_size :: non_neg_integer(),
+    op_log :: cache(key(), cache(key(), grb_version_log:t()))
 }).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
-start_replicas() ->
-    R = grb_dc_utils:bcast_vnode_local_sync(grb_vnode_master, start_replicas),
-    ok = lists:foreach(fun({_, true}) -> ok end, R).
-
-stop_replicas() ->
-    R = grb_dc_utils:bcast_vnode_local_sync(grb_vnode_master, stop_replicas),
-    ok = lists:foreach(fun({_, ok}) -> ok end, R).
-
-%% todo(borja): Update uniform_vc once replication is done
--spec prepare_blue(partition_id(), _, _, vclock()) -> grb_time:ts().
-prepare_blue(Partition, TxId, WriteSet, _VC) ->
+-spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
+prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
+    %% todo(borja, uniformity): Have to update uniform_vc, not stable_vc
+    StableVC0 = grb_propagation_vnode:stable_vc(Partition),
+    StableVC1 = grb_vclock:max_except(grb_dc_utils:replica_id(), StableVC0, SnapshotVC),
+    ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC1),
     Ts = grb_time:timestamp(),
     ok = riak_core_vnode_master:command({Partition, node()},
                                         {prepare_blue, TxId, WriteSet, Ts},
-                                        grb_vnode_master),
+                                        ?master),
     Ts.
+
+-spec handle_replicate(partition_id(), replica_id(), term(), #{}, vclock()) -> ok.
+handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {replicate_tx, SourceReplica, TxId, WS, VC},
+                                   ?master).
+
 
 %%%===================================================================
 %%% api riak_core callbacks
@@ -75,17 +79,16 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
-    Interval = application:get_env(grb, propagate_interval, 5),
-    State = #state{
-        partition = Partition,
-        prepared_blue = #{},
-        propagate_interval = Interval,
-        op_log = new_cache(Partition, ?OP_LOG_TABLE)
-    },
+    {ok, Interval} = application:get_env(grb, propagate_interval),
+    {ok, KeyLogSize} = application:get_env(grb, version_log_size),
+    State = #state{partition = Partition,
+                   prepared_blue = #{},
+                   propagate_interval = Interval,
+                   op_log_size = KeyLogSize,
+                   op_log = new_cache(Partition, ?OP_LOG_TABLE)},
 
     {ok, State}.
 
-%% Sample command: respond to a ping
 handle_command(ping, _Sender, State) ->
     {reply, {pong, node(), State#state.partition}, State};
 
@@ -110,17 +113,12 @@ handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     Result = grb_partition_replica:replica_ready(P, N),
     {reply, Result, S};
 
-handle_command(start_propagate_timer, _From, S = #state{partition=P, propagate_interval=Int, propagate_timer=undefined}) ->
-    Args = [{P, node()}, propagate_event, grb_vnode_master],
-    {ok, TRef} = timer:apply_interval(Int, riak_core_vnode_master, command, Args),
+handle_command(start_propagate_timer, _From, S = #state{propagate_interval=Int, propagate_timer=undefined}) ->
+    {ok, TRef} = timer:send_interval(Int, propagate_event),
     {reply, ok, S#state{propagate_timer=TRef}};
 
 handle_command(start_propagate_timer, _From, S = #state{propagate_timer=_TRef}) ->
     {reply, ok, S};
-
-handle_command(propagate_event, _From, State) ->
-    ok = propagate_internal(State#state.prepared_blue),
-    {noreply, State};
 
 handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=undefined}) ->
     {reply, ok, S};
@@ -137,42 +135,72 @@ handle_command({decide_blue, TxId, VC}, _From, State) ->
     NewState = decide_blue_internal(TxId, VC, State),
     {noreply, NewState};
 
+handle_command({replicate_tx, SourceReplica, TxId, WS, VC}, _From, S=#state{partition=P,
+                                                                            op_log=OpLog,
+                                                                            op_log_size=LogSize}) ->
+    CommitTime = grb_vclock:get_time(SourceReplica, VC),
+    ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
+    %% todo(borja, uniformity): Add to committedBlue[SourceReplica]
+    ok = grb_propagation_vnode:handle_blue_heartbeat(P, SourceReplica, CommitTime),
+    {noreply, S};
+
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
 
+handle_info(propagate_event, State=#state{partition=P, prepared_blue=PreparedBlue}) ->
+    KnownTime = compute_new_known_time(PreparedBlue),
+    ok = grb_propagation_vnode:propagate_transactions(P, KnownTime),
+    {ok, State};
+
+handle_info(Msg, State) ->
+    ?LOG_WARNING("unhandled_info ~p", [Msg]),
+    {ok, State}.
+
 -spec decide_blue_internal(term(), vclock(), #state{}) -> #state{}.
-decide_blue_internal(TxId, VC, S=#state{op_log=OpLog,
+decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
+                                        op_log=OpLog,
+                                        op_log_size=LogSize,
                                         prepared_blue=PreparedBlue}) ->
 
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
     {{WS, _}, PreparedBlue1} = maps:take(TxId, PreparedBlue),
+    ReplicaId = grb_dc_utils:replica_id(),
+    ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
+    KnownTime = compute_new_known_time(PreparedBlue1),
+    ok = grb_propagation_vnode:append_blue_commit(ReplicaId, SelfPartition, KnownTime, TxId, WS, VC),
+    S#state{prepared_blue=PreparedBlue1}.
+
+-spec update_partition_state(TxId :: term(),
+                             WS :: #{},
+                             CommitVC :: vclock(),
+                             OpLog :: cache(key(), grb_version_log:t()),
+                             DefaultSize :: non_neg_integer()) -> ok.
+
+update_partition_state(_TxId, WS, CommitVC, OpLog, DefaultSize) ->
     Objects = maps:fold(fun(Key, Value, Acc) ->
         Log = case ets:lookup(OpLog, Key) of
             [{Key, PrevLog}] -> PrevLog;
-            [] -> grb_version_log:new()
+            [] -> grb_version_log:new(DefaultSize)
         end,
-        NewLog = grb_version_log:append({blue, Value, VC}, Log),
+        NewLog = grb_version_log:append({blue, Value, CommitVC}, Log),
         [{Key, NewLog} | Acc]
     end, [], WS),
     true = ets:insert(OpLog, Objects),
+    ok.
 
-    S#state{prepared_blue=PreparedBlue1}.
+-spec compute_new_known_time(#{any() => {#{}, vclock()}}) -> grb_time:ts().
+compute_new_known_time(PreparedBlue) when map_size(PreparedBlue) =:= 0 ->
+    grb_time:timestamp();
 
-%% todo(borja): revisit with replication
--spec propagate_internal(#{any() => {#{}, vclock()}}) -> ok.
-propagate_internal(PreparedBlue) when map_size(PreparedBlue) =:= 0 ->
-    Ts = grb_time:timestamp(),
-    grb_replica_state:set_known_vc(Ts);
-
-propagate_internal(PreparedBlue) ->
-    MinTS = maps:fold(fun
+compute_new_known_time(PreparedBlue) ->
+    MinPrep = maps:fold(fun
         (_, {_, Ts}, ignore) -> Ts;
         (_, {_, Ts}, Acc) -> erlang:min(Ts, Acc)
     end, ignore, PreparedBlue),
-    ?LOG_DEBUG("knownVC[d] = min_prep (~p - 1)", [MinTS]),
-    grb_replica_state:set_known_vc(MinTS - 1).
+    ?LOG_DEBUG("knownVC[d] = min_prep (~p - 1)", [MinPrep]),
+    MinPrep - 1.
 
 %%%===================================================================
 %%% Util Functions
@@ -195,7 +223,7 @@ new_cache(Partition, Name, Options) ->
         undefined ->
             ets:new(CacheName, Options);
         _ ->
-            lager:info("Unsable to create cache ~p at ~p, retrying", [Name, Partition]),
+            ?LOG_INFO("Unsable to create cache ~p at ~p, retrying", [Name, Partition]),
             timer:sleep(100),
             try ets:delete(CacheName) catch _:_ -> ok end,
             new_cache(Partition, Name, Options)

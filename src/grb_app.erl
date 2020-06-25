@@ -15,15 +15,19 @@ start(_StartType, _StartArgs) ->
             {error, Reason};
 
         {ok, Pid} ->
-            ok = riak_core:register([{vnode_module, grb_vnode}]),
-            ok = riak_core_node_watcher:service_up(grb, self()),
+            ok = riak_core:register([{vnode_module, grb_propagation_vnode}]),
+            ok = riak_core_node_watcher:service_up(grb_propagation, self()),
+
+            ok = riak_core:register([{vnode_module, grb_main_vnode}]),
+            ok = riak_core_node_watcher:service_up(grb_main, self()),
 
             ok = enable_debug_logs(),
             ok = grb_tcp_server:start_server(),
+            ok = grb_dc_connection_receiver:start_server(),
             case application:get_env(grb, auto_start_background_processes) of
                 {ok, true} ->
                     ?LOG_INFO("Starting background processes"),
-                    grb_vnode:start_replicas();
+                    grb_dc_manager:start_background_processes();
                 _ ->
                     ok
             end,

@@ -1,5 +1,5 @@
 %% -------------------------------------------------------------------
-%% This module allows multiple readers on the ETS tables of a grb_vnode
+%% This module allows multiple readers on the ETS tables of a grb_main_vnode
 %% -------------------------------------------------------------------
 -module(grb_partition_replica).
 -behavior(gen_server).
@@ -108,7 +108,7 @@ decide_blue(Partition, TxId, VC) ->
 
 init([Partition, Id]) ->
     Self = generate_replica_name(Partition, Id),
-    OpLog = grb_vnode:cache_name(Partition, ?OP_LOG_TABLE),
+    OpLog = grb_main_vnode:cache_name(Partition, ?OP_LOG_TABLE),
     {ok, #state{self = Self,
                 partition = Partition,
                 oplog_replica = OpLog}}.
@@ -133,8 +133,8 @@ handle_cast({decide_blue, TxId, VC}, State) ->
 handle_cast(_Request, _State) ->
     erlang:error(not_implemented).
 
-handle_info({retry_op, Promise, Key, VC, Val}, State) ->
-    ok = perform_op_internal(Promise, Key, VC, Val, State),
+handle_info({retry_op_wait, Promise, Key, VC, Val}, State) ->
+    ok = perform_op_wait(Promise, Key, VC, Val, State),
     {noreply, State};
 
 handle_info({retry_decide, TxId, VC}, State) ->
@@ -149,21 +149,37 @@ handle_info(Info, State) ->
 %% Internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-%% todo(borja): Update uniformVC here once we add replication
-%% update it before we check knownVC
--spec perform_op_internal(grb_promise:t(), key(), vclock(), val(), #state{}) -> ok.
-perform_op_internal(Promise, Key, VC, Val, State) ->
-    case check_known_vc(VC) of
+-spec perform_op_internal(Promise :: grb_promise:t(),
+                          Key :: key(),
+                          SnapshotVC :: vclock(),
+                          Val :: val(),
+                          State :: #state{}) -> ok.
+
+perform_op_internal(Promise, Key, SnapshotVC, Val, State=#state{partition=Partition}) ->
+    %% todo(borja, uniformity): Have to update uniform_vc, not stable_vc
+    StableVC0 = grb_propagation_vnode:stable_vc(Partition),
+    StableVC1 = grb_vclock:max_except(grb_dc_utils:replica_id(), StableVC0, SnapshotVC),
+    ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC1),
+    perform_op_wait(Promise, Key, SnapshotVC, Val, State).
+
+-spec perform_op_wait(Promise :: grb_promise:t(),
+                      Key :: key(),
+                      SnapshotVC :: vclock(),
+                      Val :: val(),
+                      State :: #state{}) -> ok.
+
+perform_op_wait(Promise, Key, SnapshotVC, Val, S=#state{partition=Partition}) ->
+    case check_known_vc(Partition, SnapshotVC) of
         {not_ready, WaitTime} ->
-            erlang:send_after(WaitTime, self(), {retry_op, Promise, Key, VC, Val}),
+            erlang:send_after(WaitTime, self(), {retry_op_wait, Promise, Key, SnapshotVC, Val}),
             ok;
         ready ->
-            perform_op_internal_continue(Promise, Key, VC, Val, State)
+            perform_op_continue(Promise, Key, SnapshotVC, Val, S)
     end.
 
--spec check_known_vc(vclock()) -> ready | {not_ready, non_neg_integer()}.
-check_known_vc(VC) ->
-    KnownVC = grb_replica_state:known_vc(),
+-spec check_known_vc(partition_id(), vclock()) -> ready | {not_ready, non_neg_integer()}.
+check_known_vc(Partition, VC) ->
+    KnownVC = grb_propagation_vnode:known_vc(Partition),
     CurrentReplica = grb_dc_utils:replica_id(),
     SelfBlue = grb_vclock:get_time(CurrentReplica, VC),
     SelfRed = grb_vclock:get_time(red, VC),
@@ -175,26 +191,27 @@ check_known_vc(VC) ->
         true ->
             ready;
         false ->
-            %% todo(borja): stat here
+            %% todo(borja, stat): log miss
             {not_ready, ?OP_WAIT_MS}
     end.
 
--spec perform_op_internal_continue(grb_promise:t(), key(), vclock(), val(), #state{}) -> ok.
-perform_op_internal_continue(Promise, Key, VC, Val, State) ->
+-spec perform_op_continue(grb_promise:t(), key(), vclock(), val(), #state{}) -> ok.
+perform_op_continue(Promise, Key, VC, Val, State) ->
     case ets:lookup(State#state.oplog_replica, Key) of
         [] ->
-            %% todo(borja): Check soundness
+            %% todo(borja, warn): Check soundness
             grb_promise:resolve({ok, Val, 0}, Promise);
         [{Key, Log}] ->
-            %% todo(borja): Matches are not totally ordered
+            %% todo(borja, warn): Totally order log operations
             %% should introduce lamport clock to updates to totally order them
-            %% Right now, return the first (lower in the snapshot)
-            %% fixme(borja): Revisit redTS once red transactions are implemented
-            case grb_version_log:get_lower(VC, Log) of
-                [] -> grb_promise:resolve({ok, <<>>, 0}, Promise);
-                [{_, FirstVal, FirstVC} | _] ->
-                    RedTS = grb_vclock:get_time(red, FirstVC),
-                    grb_promise:resolve({ok, FirstVal, RedTS}, Promise)
+            %% Right now, return the first (highest in the snapshot)
+            %% todo(borja, red): Update redTS with dependence vectors
+            case grb_version_log:get_first_lower(VC, Log) of
+                undefined -> grb_promise:resolve({ok, Val, 0}, Promise);
+                {_, LastVal, LastVC} ->
+                    RedTs = grb_vclock:get_time(red, LastVC),
+                    ReturnVal = case Val of <<>> -> LastVal; _ -> Val end,
+                    grb_promise:resolve({ok, ReturnVal, RedTs}, Promise)
             end
     end.
 
@@ -206,11 +223,11 @@ decide_blue_internal(Partition, TxId, VC) ->
             ok;
         ready ->
             riak_core_vnode_master:command({Partition, node()},
-                {decide_blue, TxId, VC},
-                grb_vnode_master)
+                                           {decide_blue, TxId, VC},
+                                           grb_main_vnode_master)
     end.
 
--spec check_current_clock(vclock()) -> ready | {not_rady, non_neg_integer()}.
+-spec check_current_clock(vclock()) -> ready | {not_ready, non_neg_integer()}.
 check_current_clock(VC) ->
     CurrentReplica = grb_dc_utils:replica_id(),
     SelfBlue = grb_vclock:get_time(CurrentReplica, VC),

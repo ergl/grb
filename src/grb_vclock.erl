@@ -4,13 +4,18 @@
 -export([new/0,
          get_time/2,
          set_time/3,
+         set_max_time/3,
          eq/2,
          leq/2,
+         min/2,
          max/2,
-         max_at/3]).
+         min_at/3,
+         max_at/3,
+         max_except/3]).
 
-%% Debug API
--export([from_list/1]).
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-endif.
 
 -type vc() :: vc(term()).
 -opaque vc(T) :: #{T => grb_time:ts()}.
@@ -28,9 +33,33 @@ get_time(Key, VectorClock) ->
 set_time(Key, Value, VectorClock) ->
     maps:put(Key, Value, VectorClock).
 
+-spec set_max_time(T, grb_time:ts(), vc(T)) -> vc(T).
+set_max_time(Key, Value, VectorClock) ->
+    maps:update_with(Key, fun(Old) -> erlang:max(Old, Value) end, Value, VectorClock).
+
 -spec eq(vc(T), vc(T)) -> boolean().
 eq(VC, VC) -> true;
 eq(Left, Right) -> Left =:= Right.
+
+-spec min(vc(T), vc(T)) -> vc(T).
+min(Left, _Right) when map_size(Left) == 0 -> Left;
+min(_Left, Right) when map_size(Right) == 0 -> Right;
+min(Left, Right) ->
+    LeftKeys = maps:keys(Left),
+    RigthKeys = maps:keys(Right),
+    lists:foldl(fun(Key, AccMap) ->
+        LeftV = get_time(Key, Left),
+        RigthV = get_time(Key, Right),
+        AccMap#{Key => erlang:min(LeftV, RigthV)}
+    end, #{}, LeftKeys ++ RigthKeys). %% :^(
+
+-spec min_at([T], vc(T), vc(T)) -> vc(T).
+min_at(Keys, Left, Right) ->
+    lists:foldl(fun(Key, AccMap) ->
+        LeftV = get_time(Key, Left),
+        RigthV = get_time(Key, Right),
+        AccMap#{Key => erlang:min(LeftV, RigthV)}
+    end, #{}, Keys).
 
 -spec max(vc(T), vc(T)) -> vc(T).
 max(Left, Right) when map_size(Left) == 0 -> Right;
@@ -41,6 +70,17 @@ max(Left, Right) ->
             {ok, V} -> erlang:max(V, Value);
             error -> Value
         end
+    end, Right)).
+
+-spec max_except(T, vc(T), vc(T)) -> vc(T).
+max_except(Key, Left, Right) ->
+    maps:merge(Left, maps:map(fun
+        (InnerKey, _) when InnerKey =:= Key -> get_time(Key, Left);
+        (InnerKey, Value) ->
+            case maps:find(InnerKey, Left) of
+                {ok, V} -> erlang:max(V, Value);
+                error -> Value
+            end
     end, Right)).
 
 -spec max_at(T, vc(T), vc(T)) -> vc(T).
@@ -54,5 +94,78 @@ leq(Left, Right) ->
     end,
     lists:all(F, maps:keys(maps:merge(Left, Right))).
 
-from_list(List) ->
-    maps:from_list(List).
+-ifdef(TEST).
+
+grb_vclock_min_test() ->
+    A = #{c => 10},
+    B = #{a => 5, b => 3, c => 2},
+    C = #{a => 3, b => 4, c => 7},
+    D = #{a => 0, b => 2, c => 3},
+
+    Result = lists:foldl(fun
+        (V, ignore) -> V;
+        (V, Acc) -> grb_vclock:min(V, Acc)
+    end, ignore, [A, B, C, D]),
+
+    ShouldBe = #{a => 0, b => 0, c => 2},
+    ?assertEqual(ShouldBe, Result).
+
+grb_vclock_min_at_test() ->
+    A = #{c => 10},
+    B = #{a => 5, b => 3, c => 2},
+    C = #{a => 3, b => 4, c => 7},
+    D = #{a => 0, b => 2, c => 3},
+
+    Result = lists:foldl(fun
+        (V, ignore) -> V;
+        (V, Acc) -> grb_vclock:min_at([a,b,c], V, Acc)
+    end, ignore, [A, B, C, D]),
+
+    ShouldBe = #{a => 0, b => 0, c => 2},
+    ?assertEqual(ShouldBe, Result).
+
+grb_vclock_max_test() ->
+    A = #{c => 10},
+    B = #{a => 5, c => 2},
+    C = #{a => 3, b => 4, c => 7},
+    D = #{b => 2},
+
+    Result = lists:foldl(fun(V, Acc) ->
+        grb_vclock:max(V, Acc)
+    end, #{}, [A, B, C, D]),
+    ShouldBe = #{a => 5, b => 4, c => 10},
+    ?assertEqual(ShouldBe, Result).
+
+grb_vclock_max_at_test() ->
+    A = #{a => 0, b => 10},
+    B = #{b => 20},
+
+    C = grb_vclock:max_at(b, B, A),
+    ?assertEqual(B, C),
+
+    D = grb_vclock:max_at(a, B, A),
+    ?assertEqual(#{a => 0, b => 20}, D),
+
+    E = grb_vclock:max_at(b, A, B),
+    ?assertEqual(D, E),
+
+    F = grb_vclock:max_at(a, A, B),
+    ?assertEqual(A, F).
+
+grb_vclock_max_except_test() ->
+    A = #{a => 1,  b => 10},
+    B = #{b => 20},
+
+    C = grb_vclock:max_except(b, B, A),
+    ?assertEqual(grb_vclock:max(B, A), C),
+
+    D = grb_vclock:max_except(a, B, A),
+    ?assertEqual(#{a => 0, b => 20}, D),
+
+    E = grb_vclock:max_except(b, A, B),
+    ?assertEqual(A, E),
+
+    F = grb_vclock:max_except(a, A, B),
+    ?assertEqual(grb_vclock:max(A, B), F).
+
+-endif.

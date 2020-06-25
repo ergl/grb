@@ -5,7 +5,7 @@
 -export_type([ts/0]).
 -export([timestamp/0]).
 
-%% todo(borja): This chould change if we enable time warp mode
+%% todo(borja, warn): Change type of timestamp if we enable time warp mode
 %%
 %% one possible option is to use the following:
 %%

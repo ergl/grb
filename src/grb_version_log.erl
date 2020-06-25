@@ -5,7 +5,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--define(BUFFER_SIZE, 50).
 -define(DEFAULT, '$vlog_bottom').
 
 -type entry() :: {transaction_type(), val(), vclock()}.
@@ -26,19 +25,15 @@
 -export_type([entry/0, t/0]).
 
 %% API
--export([new/0,
-         new/1,
+-export([new/1,
          append/2,
          get_lower/2,
+         get_first_lower/2,
          to_list/1]).
 
 -ifdef(TEST).
 -export([from_list/2]).
 -endif.
-
--spec new() -> t().
-new() ->
-    new(?BUFFER_SIZE).
 
 -spec new(non_neg_integer()) -> t().
 new(Size) ->
@@ -55,6 +50,20 @@ forward(L=#vlog{max_size=Size, write_index=WIdx, read_index=RIdx, full=Full}) ->
     end,
     NextWIdx = (WIdx + 1) rem Size,
     L#vlog{write_index=NextWIdx, read_index=NextRIdx, full=(NextRIdx =:= NextWIdx)}.
+
+-spec get_first_lower(vclock(), t()) -> entry() | undefined.
+get_first_lower(VC, #vlog{buffer=B, read_index=Start, write_index=End, max_size=Size}) ->
+    LastIdx = mod(End - 1, Size),
+    case array:get(LastIdx, B) of
+        ?DEFAULT -> undefined;
+        Elt={_, _, EltVC} ->
+            case grb_vclock:leq(EltVC, VC) of
+                true ->
+                    Elt;
+                false ->
+                    get_first_lower(VC, B, mod(LastIdx - 1, Size), Start, Size)
+            end
+    end.
 
 -spec get_lower(vclock(), t()) -> [entry()].
 get_lower(VC, #vlog{buffer=B, read_index=Start, write_index=End, max_size=Size}) ->
@@ -87,6 +96,29 @@ get_lower(VC, Buff, Start, End, Mod, Acc) ->
         false -> get_lower(VC, Buff, Next, End, Mod, Acc)
     end.
 
+-spec get_first_lower(
+    VC :: vclock(),
+    Buff :: array:array(entry()),
+    Start :: array:array_indx(),
+    End :: array:array_indx(),
+    Mod :: non_neg_integer()
+) -> entry() | undefined.
+
+get_first_lower(VC, Buff, End, End, _Mod) ->
+    {_, _, EltVC}=Elt = array:get(End, Buff),
+    case grb_vclock:leq(EltVC, VC) of
+        true -> Elt;
+        false -> undefined
+    end;
+
+get_first_lower(VC, Buff, Start, End, Mod) ->
+    {_, _, EltVC}=Elt = array:get(Start, Buff),
+    Next = mod((Start - 1), Mod),
+    case grb_vclock:leq(EltVC, VC) of
+        true -> Elt;
+        false -> get_first_lower(VC, Buff, Next, End, Mod)
+    end.
+
 -spec to_list(t()) -> [entry()].
 to_list(#vlog{buffer=B, read_index=Start, write_index=End, max_size=Size}) ->
     case array:get(Start, B) of
@@ -105,6 +137,10 @@ to_list(#vlog{buffer=B, read_index=Start, write_index=End, max_size=Size}) ->
 to_list(_B, End, End, _Size, Acc) -> lists:reverse(Acc);
 to_list(Buff, Start, End, Size, Acc) ->
     to_list(Buff, (Start + 1) rem Size, End, Size, [array:get(Start, Buff) | Acc]).
+
+mod(X,Y) when X > 0 -> X rem Y;
+mod(X,Y) when X < 0 -> Y + X rem Y;
+mod(0,_Y) -> 0.
 
 -ifdef(TEST).
 
@@ -133,9 +169,10 @@ grb_version_log_to_list_test() ->
 
 grb_version_log_get_lower_ordered_test() ->
     MyDCID = '$dc_id',
+    VClock = fun(N) -> grb_vclock:set_time(MyDCID, N, grb_vclock:new()) end,
+
     Entries = lists:map(fun(V) ->
-        VC = grb_vclock:set_time(MyDCID, V, grb_vclock:new()),
-        {blue, V, VC}
+        {blue, V, VClock(V)}
     end, lists:seq(0, 9)),
     Log = grb_version_log:from_list(Entries, length(Entries)),
     ?assertEqual(Entries, grb_version_log:to_list(Log)),
@@ -184,15 +221,82 @@ grb_version_log_get_lower_unordered_test() ->
     MinMatches0 = grb_version_log:get_lower(MinVC, Log),
     ?assertMatch([{blue, 0, _}], MinMatches0),
 
-    Log1 = grb_version_log:append(
-        {blue, 10, grb_vclock:set_time(MyDCID, 10, grb_vclock:new())},
-        Log
-    ),
+    Log1 = grb_version_log:append({blue, 10, VClock(10)}, Log),
     MinMatches1 = grb_version_log:get_lower(MinVC, Log1),
     ?assertMatch([], MinMatches1),
 
     %% Matches keep the order of insertion
     Matches = grb_version_log:get_lower(VClock(2), Log1),
     ?assertMatch([{blue, 2,  _}, {blue, 1, _}], Matches).
+
+grb_version_log_get_first_lower_ordered_test() ->
+    MyDCID = '$dc_id',
+    VClock = fun(N) -> grb_vclock:set_time(MyDCID, N, grb_vclock:new()) end,
+
+    Entries = [
+        {blue, 0, VClock(0)},
+        {blue, 1, VClock(1)},
+        {blue, 2, VClock(2)},
+        {blue, 3, VClock(3)},
+        {blue, 4, VClock(4)},
+        {blue, 5, VClock(5)},
+        {blue, 6, VClock(6)},
+        {blue, 7, VClock(7)},
+        {blue, 8, VClock(8)},
+        {blue, 9, VClock(9)}
+    ],
+
+    Log = grb_version_log:from_list(Entries, length(Entries)),
+    ?assertEqual(Entries, grb_version_log:to_list(Log)),
+
+    MaxVC = grb_vclock:set_time(MyDCID, 10, grb_vclock:new()),
+    MaxMatches = grb_version_log:get_first_lower(MaxVC, Log),
+    ?assertEqual({blue, 9, VClock(9)}, MaxMatches),
+
+    MinVC = grb_vclock:new(),
+    MinMatches0 = grb_version_log:get_first_lower(MinVC, Log),
+    ?assertEqual({blue, 0, VClock(0)}, MinMatches0),
+
+    Log1 = grb_version_log:append({blue, 10, VClock(10)}, Log),
+    MinMatches1 = grb_version_log:get_first_lower(MinVC, Log1),
+    ?assertEqual(undefined, MinMatches1).
+
+grb_version_log_get_first_lower_unordered_test() ->
+    MyDCID = '$dc_id',
+    VClock = fun(N) -> grb_vclock:set_time(MyDCID, N, grb_vclock:new()) end,
+
+    Entries = [
+        {blue, 0, VClock(0)},
+        {blue, 2, VClock(2)},
+        {blue, 1, VClock(1)},
+        {blue, 3, VClock(3)},
+        {blue, 4, VClock(4)},
+        {blue, 7, VClock(7)},
+        {blue, 5, VClock(5)},
+        {blue, 6, VClock(6)},
+        {blue, 9, VClock(9)},
+        {blue, 8, VClock(8)}
+    ],
+
+    %% Entries are ordered by insertion
+    Log = grb_version_log:from_list(Entries, length(Entries)),
+    ?assertEqual(Entries, grb_version_log:to_list(Log)),
+
+    MaxVC = grb_vclock:set_time(MyDCID, 10, grb_vclock:new()),
+    MaxMatches = grb_version_log:get_first_lower(MaxVC, Log),
+    ?assertEqual({blue, 8, VClock(8)}, MaxMatches),
+
+    MinVC = grb_vclock:new(),
+    MinMatches0 = grb_version_log:get_first_lower(MinVC, Log),
+    ?assertEqual({blue, 0, VClock(0)}, MinMatches0),
+
+    Log1 = grb_version_log:append({blue, 10, VClock(10)}, Log),
+    MinMatches1 = grb_version_log:get_first_lower(MinVC, Log1),
+    ?assertEqual(undefined, MinMatches1),
+
+    %% We go backwards from the end, so we might hit another entry before
+    Matches = grb_version_log:get_first_lower(VClock(2), Log1),
+    ?assertEqual({blue, 1, VClock(1)}, Matches).
+
 
 -endif.

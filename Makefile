@@ -1,5 +1,5 @@
 BASEDIR = $(shell pwd)
-REBAR = rebar3
+REBAR = $(BASEDIR)/rebar3
 RELPATH = _build/default/rel/grb
 DEV1RELPATH = _build/dev1/rel/grb
 DEV2RELPATH = _build/dev2/rel/grb
@@ -14,6 +14,15 @@ all: compile
 
 compile:
 	$(REBAR) compile
+
+check_binaries:
+	$(REBAR) as debug_bin compile
+
+xref:
+	$(REBAR) xref skip_deps=true
+
+dialyzer:
+	$(REBAR) dialyzer
 
 debug:
 	$(REBAR) as debug_log compile
@@ -66,53 +75,53 @@ devrel3:
 devrel: devrel1 devrel2 devrel3
 
 dev1-attach:
-	INSTANCE_NAME=grb_local1 RIAK_HANDOFF_PORT=8199 TCP_LIST_PORT=7891 $(BASEDIR)/_build/default/rel/grb_local1/bin/$(ENVFILE) attach
+	INSTANCE_NAME=grb_local1 $(BASEDIR)/_build/default/rel/grb_local1/bin/$(ENVFILE) attach
 
 dev2-attach:
-	INSTANCE_NAME=grb_local2 RIAK_HANDOFF_PORT=8299 TCP_LIST_PORT=7892 $(BASEDIR)/_build/default/rel/grb_local2/bin/$(ENVFILE) attach
+	INSTANCE_NAME=grb_local2 $(BASEDIR)/_build/default/rel/grb_local2/bin/$(ENVFILE) attach
 
 dev3-attach:
-	INSTANCE_NAME=grb_local3 RIAK_HANDOFF_PORT=8399 TCP_LIST_PORT=7893 $(BASEDIR)/_build/default/rel/grb_local3/bin/$(ENVFILE) attach
+	INSTANCE_NAME=grb_local3 $(BASEDIR)/_build/default/rel/grb_local3/bin/$(ENVFILE) attach
 
 devrel-clean:
 	rm -rf _build/default/rel/grb_local*
 
 dev1-start:
-	INSTANCE_NAME=grb_local1 RIAK_HANDOFF_PORT=8199 TCP_LIST_PORT=7891 $(BASEDIR)/_build/default/rel/grb_local1/bin/$(ENVFILE) start
+	INSTANCE_NAME=grb_local1 RIAK_HANDOFF_PORT=8199 TCP_LIST_PORT=7891 INTER_DC_PORT=8991 $(BASEDIR)/_build/default/rel/grb_local1/bin/$(ENVFILE) start
 
 dev2-start:
-	INSTANCE_NAME=grb_local2 RIAK_HANDOFF_PORT=8299 TCP_LIST_PORT=7892 $(BASEDIR)/_build/default/rel/grb_local2/bin/$(ENVFILE) start
+	INSTANCE_NAME=grb_local2 RIAK_HANDOFF_PORT=8299 TCP_LIST_PORT=7892 INTER_DC_PORT=8992 $(BASEDIR)/_build/default/rel/grb_local2/bin/$(ENVFILE) start
 
 dev3-start:
-	INSTANCE_NAME=grb_local3 RIAK_HANDOFF_PORT=8399 TCP_LIST_PORT=7893 $(BASEDIR)/_build/default/rel/grb_local3/bin/$(ENVFILE) start
+	INSTANCE_NAME=grb_local3 RIAK_HANDOFF_PORT=8399 TCP_LIST_PORT=7893 INTER_DC_PORT=8993 $(BASEDIR)/_build/default/rel/grb_local3/bin/$(ENVFILE) start
 
 devrel-start: dev1-start dev2-start dev3-start
 
 dev2-join:
-	INSTANCE_NAME=grb_local2 RIAK_HANDOFF_PORT=8299 TCP_LIST_PORT=7892 $(BASEDIR)/_build/default/rel/grb_local2/bin/$(ENVFILE) eval 'riak_core:join("grb_local1@127.0.0.1")'
+	INSTANCE_NAME=grb_local2 $(BASEDIR)/_build/default/rel/grb_local2/bin/$(ENVFILE) eval 'riak_core:join("grb_local1@127.0.0.1")'
 
 dev3-join:
-	INSTANCE_NAME=grb_local3 RIAK_HANDOFF_PORT=8399 TCP_LIST_PORT=7893 $(BASEDIR)/_build/default/rel/grb_local3/bin/$(ENVFILE) eval 'riak_core:join("grb_local1@127.0.0.1")'
+	INSTANCE_NAME=grb_local3 $(BASEDIR)/_build/default/rel/grb_local3/bin/$(ENVFILE) eval 'riak_core:join("grb_local1@127.0.0.1")'
 
 devrel-join: dev2-join dev3-join
 
 devrel-cluster-plan:
-	INSTANCE_NAME=grb_local1 RIAK_HANDOFF_PORT=8199 TCP_LIST_PORT=7891 $(BASEDIR)/_build/default/rel/grb_local1/bin/$(ENVFILE) eval 'riak_core_claimant:plan()'
+	INSTANCE_NAME=grb_local1 $(BASEDIR)/_build/default/rel/grb_local1/bin/$(ENVFILE) eval 'riak_core_claimant:plan()'
 
 devrel-cluster-commit:
-	INSTANCE_NAME=grb_local1 RIAK_HANDOFF_PORT=8199 TCP_LIST_PORT=7891 $(BASEDIR)/_build/default/rel/grb_local1/bin/$(ENVFILE) eval 'riak_core_claimant:commit()'
+	INSTANCE_NAME=grb_local1 $(BASEDIR)/_build/default/rel/grb_local1/bin/$(ENVFILE) eval 'riak_core_claimant:commit()'
 
 devrel-status:
-	INSTANCE_NAME=grb_local1 RIAK_HANDOFF_PORT=8199 TCP_LIST_PORT=7891 $(BASEDIR)/_build/default/rel/grb_local1/bin/$(ENVFILE) eval 'riak_core_console:member_status([])'
+	INSTANCE_NAME=grb_local1 $(BASEDIR)/_build/default/rel/grb_local1/bin/$(ENVFILE) eval 'riak_core_console:member_status([])'
 
 dev1-ping:
-	INSTANCE_NAME=grb_local1 RIAK_HANDOFF_PORT=8199 TCP_LIST_PORT=7891 $(BASEDIR)/_build/default/rel/grb_local1/bin/$(ENVFILE) ping
+	INSTANCE_NAME=grb_local1 $(BASEDIR)/_build/default/rel/grb_local1/bin/$(ENVFILE) ping
 
 dev2-ping:
-	INSTANCE_NAME=grb_local2 RIAK_HANDOFF_PORT=8299 TCP_LIST_PORT=7892 $(BASEDIR)/_build/default/rel/grb_local2/bin/$(ENVFILE) ping
+	INSTANCE_NAME=grb_local2 $(BASEDIR)/_build/default/rel/grb_local2/bin/$(ENVFILE) ping
 
 dev3-ping:
-	INSTANCE_NAME=grb_local3 RIAK_HANDOFF_PORT=8399 TCP_LIST_PORT=7893 $(BASEDIR)/_build/default/rel/grb_local3/bin/$(ENVFILE) ping
+	INSTANCE_NAME=grb_local3 $(BASEDIR)/_build/default/rel/grb_local3/bin/$(ENVFILE) ping
 
 devrel-ping: dev1-ping dev2-ping dev3-ping
 

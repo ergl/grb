@@ -7,8 +7,7 @@
 ## todo(borja): for now, check grb_time:timestamp/0 for more info
 +C no_time_warp
 
-## Enable kernel poll and a few async threads
-+K true
+## Spawn a few async threads
 +A 5
 
 ## Increase number of concurrent ports/sockets

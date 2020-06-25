@@ -37,9 +37,22 @@
 
   {grb, [
     %% Configuration for GRB coming form the command line
+    %% The IP of this node. We can get this using inet:getif,
+    %% but we already told the node which IP to use use in vm.args,
+    %% so might as well use that one, too.
+    {bounded_ip, "${IP}"},
     %% The port to listen for client commands (default is 7878)
     {tcp_port, ${TCP_LIST_PORT}},
     {tcp_id_len_bits, ${TCP_ID_LEN}},
-    {auto_start_background_processes, false}
+    %% The port to send/recv inter-dc communication (default is 8989)
+    {inter_dc_port, ${INTER_DC_PORT}},
+    {auto_start_background_processes, false},
+    %% todo(borja): Play with these settings
+    %% How often should we propagate transactions in the background?
+    {propagate_interval, 50},
+    %% How often should we propagate clocks in the background?
+    {broadcast_clock_interval, 500},
+    %% How many versions to keep per key
+    {version_log_size, 50}
   ]}
 ].
