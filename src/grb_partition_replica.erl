@@ -68,9 +68,9 @@ start_link(Partition, Id, Val, RedTs) ->
     gen_server:start_link(Name, ?MODULE, [Partition, Id, Val, RedTs], []).
 
 %% @doc Start `Count` read replicas for the given partition
--spec start_replicas(partition_id(), non_neg_integer(), term(), vclock()) -> ok.
-start_replicas(Partition, Count, Val, Clock) ->
-    start_replicas_internal(Partition, Count, Val, Clock).
+-spec start_replicas(partition_id(), non_neg_integer(), term(), grb_time:ts()) -> ok.
+start_replicas(Partition, Count, Val, RedTs) ->
+    start_replicas_internal(Partition, Count, Val, RedTs).
 
 %% @doc Stop `Count` read replicas for the given partition
 -spec stop_replicas(partition_id(), non_neg_integer()) -> ok.
@@ -269,7 +269,7 @@ generate_replica_name(Partition, Id) ->
 random_replica(Partition) ->
     generate_replica_name(Partition, rand:uniform(?READ_CONCURRENCY)).
 
--spec start_replicas_internal(partition_id(), non_neg_integer(), term(), vclock()) -> ok.
+-spec start_replicas_internal(partition_id(), non_neg_integer(), term(), grb_time:ts()) -> ok.
 start_replicas_internal(_Partition, 0, _, _) ->
     ok;
 

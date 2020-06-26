@@ -12,7 +12,7 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
--spec start_replica(partition_id(), non_neg_integer(), term(), grb_time:ts()) -> ok.
+-spec start_replica(partition_id(), non_neg_integer(), term(), grb_time:ts()) -> supervisor:startchild_ret().
 start_replica(Partition, Id, Val, RedTs) ->
     supervisor:start_child(?MODULE, [Partition, Id, Val, RedTs]).
 
