@@ -38,6 +38,8 @@
 -ignore_xref([start_vnode/1]).
 
 -define(master, grb_propagation_vnode_master).
+-define(broadcast_clock_req, local_clock_event).
+-define(update_clock_req, remote_clock_event).
 
 -type local_matrix() :: #{partition_id() => vclock()}.
 
@@ -54,7 +56,7 @@
     cluster_partitions = [] :: [partition_id()],
     %% How often to broadcast our clocks to all partitions
     broadcast_clock_interval :: non_neg_integer(),
-    broadcast_clock_timer = undefined :: timer:tref() | undefined
+    broadcast_clock_timer = undefined :: reference() | undefined
 }).
 
 %%%===================================================================
@@ -114,7 +116,7 @@ handle_command(ping, _Sender, State) ->
 
 handle_command(start_broadcast_timer, _From, S=#state{broadcast_clock_interval=Int,
                                                       broadcast_clock_timer=undefined}) ->
-    {ok, TRef} = timer:send_interval(Int, local_clock_event),
+    TRef = erlang:send_after(Int, self(), ?broadcast_clock_req),
     {reply, ok, S#state{broadcast_clock_timer=TRef, cluster_partitions=grb_dc_utils:all_partitions()}};
 
 handle_command(start_broadcast_timer, _From, S=#state{broadcast_clock_timer=_TRef}) ->
@@ -124,7 +126,7 @@ handle_command(stop_broadcast_timer, _From, S=#state{broadcast_clock_timer=undef
     {reply, ok, S};
 
 handle_command(stop_broadcast_timer, _From, S=#state{broadcast_clock_timer=TRef}) ->
-    {ok, cancel} = timer:cancel(TRef),
+    erlang:cancel_timer(TRef),
     {reply, ok, S#state{broadcast_clock_timer=undefined}};
 
 handle_command({update_stable_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
@@ -134,7 +136,7 @@ handle_command({update_stable_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable
     true = ets:update_element(ClockTable, stable_vc, {2, NewSVC}),
     {noreply, S};
 
-handle_command({remote_clock_event, FromPartition, KnownVC}, _Sender, State) ->
+handle_command({?update_clock_req, FromPartition, KnownVC}, _Sender, State) ->
     {noreply, clock_event_internal(FromPartition, KnownVC, State)};
 
 handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
@@ -157,12 +159,15 @@ handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
 
-handle_info(local_clock_event, State=#state{partition=Partition,
-                                            clock_cache=ClockTable}) ->
-
+handle_info(?broadcast_clock_req, State=#state{partition=Partition,
+                                               clock_cache=ClockTable,
+                                               broadcast_clock_timer=Timer,
+                                               broadcast_clock_interval=Interval}) ->
+    erlang:cancel_timer(Timer),
     KnownVC = ets:lookup_element(ClockTable, known_vc, 2),
-    grb_dc_utils:bcast_vnode_async_noself(?master, Partition, {remote_clock_event, Partition, KnownVC}),
-    {ok, clock_event_internal(Partition, KnownVC, State)};
+    grb_dc_utils:bcast_vnode_async_noself(?master, Partition, {?update_clock_req, Partition, KnownVC}),
+    NewState = clock_event_internal(Partition, KnownVC, State),
+    {ok, NewState#state{broadcast_clock_timer=erlang:send_after(Interval, self(), ?broadcast_clock_req)}};
 
 handle_info(Msg, State) ->
     ?LOG_WARNING("unhandled_info ~p", [Msg]),
