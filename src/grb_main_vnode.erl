@@ -27,7 +27,9 @@
          handle_exit/3,
          handle_info/2]).
 
--ignore_xref([start_vnode/1]).
+%% Called by vnode proxy
+-ignore_xref([start_vnode/1,
+              handle_info/2]).
 
 -define(master, grb_main_vnode_master).
 -define(propagate_req, propagate_event).
