@@ -5,6 +5,7 @@
 
 %% Public API
 -export([cache_name/2,
+         get_default/1,
          prepare_blue/4,
          handle_replicate/5]).
 
@@ -51,12 +52,18 @@
 
     %% todo(borja, crdt): change type of op_log when adding crdts
     op_log_size :: non_neg_integer(),
-    op_log :: cache(key(), cache(key(), grb_version_log:t()))
+    op_log :: cache(key(), cache(key(), grb_version_log:t())),
+    default_bottom_value = <<>> :: term(),
+    default_bottom_clock = grb_vclock:new() :: vclock()
 }).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
+
+-spec get_default(partition_id()) -> {term(), vclock()}.
+get_default(Partition) ->
+    riak_core_vnode_master:sync_command({Partition, node()}, get_default, ?master).
 
 -spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
 prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
@@ -125,11 +132,15 @@ handle_command(is_ready, _Sender, State) ->
     Ready = lists:all(fun is_ready/1, [State#state.op_log]),
     {reply, Ready, State};
 
-handle_command(start_replicas, _From, S = #state{partition=P, replicas_n=N}) ->
+handle_command(start_replicas, _From, S = #state{partition=P,
+                                                 replicas_n=N,
+                                                 default_bottom_value=Val,
+                                                 default_bottom_clock=Clock}) ->
+
     Result = case grb_partition_replica:replica_ready(P, N) of
         true -> true;
         false ->
-            ok = grb_partition_replica:start_replicas(P, N),
+            ok = grb_partition_replica:start_replicas(P, N, Val, Clock),
             grb_partition_replica:replica_ready(P, N)
     end,
     {reply, Result, S};
@@ -155,6 +166,13 @@ handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=undefined
 handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=TRef}) ->
     erlang:cancel_timer(TRef),
     {reply, ok, S#state{propagate_timer=undefined}};
+
+handle_command(get_default, _From, S=#state{default_bottom_value=Val, default_bottom_clock=VC}) ->
+    {reply, {Val, VC}, S};
+
+handle_command({update_default, DefaultVal, DefaultVC}, _From, S=#state{partition=P, replicas_n=N}) ->
+    Result = grb_partition_replica:update_default(P, N, DefaultVal, DefaultVC),
+    {reply, Result, S#state{default_bottom_value=DefaultVal, default_bottom_clock=DefaultVC}};
 
 handle_command({prepare_blue, TxId, WS, Ts}, _From, S=#state{prepared_blue=PB}) ->
     ?LOG_DEBUG("prepare_blue ~p wtih time ~p", [TxId, Ts]),

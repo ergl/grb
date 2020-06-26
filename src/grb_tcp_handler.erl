@@ -4,6 +4,9 @@
 -export([process/3]).
 
 -spec process(grb_promise:t(), atom(), #{}) -> ok.
+process(Promise, 'Load', #{bin_size := Size}) ->
+    grb_promise:resolve(grb:load(Size), Promise);
+
 process(Promise, 'UniformBarrier', #{client_vc := _CVC, partition := _Partition}) ->
     %% todo(borja, uniformity)
     grb_promise:resolve(ok, Promise);

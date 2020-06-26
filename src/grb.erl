@@ -1,5 +1,6 @@
 -module(grb).
 -include("grb.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 %% External API for console use
 -export([start/0,
@@ -7,6 +8,7 @@
 
 %% API for applications
 -export([connect/0,
+         load/1,
          start_transaction/2,
          perform_op/5,
          prepare_blue/4,
@@ -29,6 +31,23 @@ stop() ->
 -spec connect() -> {ok, replica_id(), non_neg_integer(), [index_node()]}.
 connect() ->
     grb_dc_utils:cluster_info().
+
+-spec load(non_neg_integer()) -> ok.
+load(Size) ->
+    Val = crypto:strong_rand_bytes(Size),
+    Clock = grb_vclock:new(),
+    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, {update_default, Val, Clock}),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res),
+    Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, get_default),
+    true = lists:all(fun({P, {DefaultVal, DefaultClock}}) ->
+        case (DefaultVal =:= Val) andalso (DefaultClock =:= Clock) of
+            true -> true;
+            false ->
+                ?LOG_WARNING("Couldn't load at partition ~p", [P]),
+                false
+        end
+    end, Res1),
+    ok.
 
 %% todo(borja, uniformity): Have to update uniform_vc, not stable_vc
 start_transaction(Partition, ClientVC) ->

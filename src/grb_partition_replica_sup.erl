@@ -1,7 +1,7 @@
 -module(grb_partition_replica_sup).
 -behavior(supervisor).
 
--export([start_replica/2,
+-export([start_replica/4,
          start_link/0]).
 
 -export([init/1]).
@@ -11,8 +11,8 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-start_replica(Partition, Id) ->
-    supervisor:start_child(?MODULE, [Partition, Id]).
+start_replica(Partition, Id, Val, Clock) ->
+    supervisor:start_child(?MODULE, [Partition, Id, Val, Clock]).
 
 init([]) ->
     {ok, {{simple_one_for_one, 5, 10},

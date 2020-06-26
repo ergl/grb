@@ -38,7 +38,7 @@ start_propagation_processes() ->
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
--spec stop_propagation_processes() -> ok.
+-spec stop_background_processes() -> ok.
 stop_background_processes() ->
     Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_replicas),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
