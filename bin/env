@@ -23,6 +23,24 @@ if [ -z "$INTER_DC_PORT" ]; then
   export INTER_DC_PORT=8989
 fi
 
+if [ -z "$VSN_LOG_SIZE" ]; then
+  export VSN_LOG_SIZE=50
+fi
+
+# Timer config
+
+if [ -z "$SELF_HB_INTERVAL_MS" ]; then
+  export SELF_HB_INTERVAL_MS=5
+fi
+
+if [ -z "$REPLICATION_INTERVAL_MS" ]; then
+  export REPLICATION_INTERVAL_MS=100
+fi
+
+if [ -z "$BCAST_KNOWN_VC_INTERVAL_MS" ]; then
+  export BCAST_KNOWN_VC_INTERVAL_MS=150
+fi
+
 # Node config
 
 if [ -z "$IP" ]; then

@@ -57,9 +57,9 @@
     {auto_start_background_processes, false},
 
     %% How many versions to keep per key
-    {version_log_size, 50},
+    {version_log_size, ${VSN_LOG_SIZE}},
 
-    %% todo(borja): Play with these settings. Add them as env vars?
+    %% todo(borja): Play with these settings.
     %% Timer intervals, in ms.
     %%
     %% How often do we increase our own knownVC entry?
@@ -68,12 +68,12 @@
     %% Given that background propagation is less frequent, and that a
     %% partition might not receive transactions in a while, we need to perform
     %% automatic ticks from time time.
-    {self_blue_heartbeat_interval, 5},
+    {self_blue_heartbeat_interval, ${SELF_HB_INTERVAL_MS}},
 
     %% How often should we propagate transactions in the background?
     %% The latency between replicas can be large, so it doesn't make
     %% sense to have a small interval here.
-    {propagate_interval, 100},
+    {propagate_interval, ${REPLICATION_INTERVAL_MS}},
 
     %% How often should we propagate clocks in the background?
     %% This is used to update globalKnownMatrix, stableVC and
@@ -90,6 +90,6 @@
     %% However, we should introduce some jitter so the timers don't fire at
     %% the same time. At the same time, computing the clock is expensive, so
     %% we don't want to do it all the time.
-    {broadcast_clock_interval, 150}
+    {broadcast_clock_interval, ${BCAST_KNOWN_VC_INTERVAL_MS}}
   ]}
 ].
