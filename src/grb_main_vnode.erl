@@ -42,7 +42,7 @@
     prepared_blue :: #{any() => {#{}, vclock()}},
 
     propagate_interval :: non_neg_integer(),
-    propagate_timer = undefined :: timer:tref() | undefined,
+    propagate_timer = undefined :: reference() | undefined,
 
     blue_tick_timer :: reference(),
     blue_tick_interval :: non_neg_integer(),
@@ -141,7 +141,7 @@ handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     {reply, Result, S};
 
 handle_command(start_propagate_timer, _From, S = #state{propagate_interval=Int, propagate_timer=undefined}) ->
-    {ok, TRef} = timer:send_interval(Int, propagate_event),
+    TRef = erlang:send_after(Int, self(), ?propagate_req),
     {reply, ok, S#state{propagate_timer=TRef}};
 
 handle_command(start_propagate_timer, _From, S = #state{propagate_timer=_TRef}) ->
@@ -151,7 +151,7 @@ handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=undefined
     {reply, ok, S};
 
 handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=TRef}) ->
-    {ok, cancel} = timer:cancel(TRef),
+    erlang:cancel_timer(TRef),
     {reply, ok, S#state{propagate_timer=undefined}};
 
 handle_command({prepare_blue, TxId, WS, Ts}, _From, S=#state{prepared_blue=PB}) ->
@@ -184,10 +184,14 @@ handle_info(?blue_tick_req, State=#state{partition=P,
     ok = grb_propagation_vnode:handle_blue_heartbeat(P, grb_dc_utils:replica_id(), KnownTime),
     {ok, State#state{blue_tick_timer=erlang:send_after(Interval, self(), ?blue_tick_req)}};
 
-handle_info(?propagate_req, State=#state{partition=P, prepared_blue=PreparedBlue}) ->
+handle_info(?propagate_req, State=#state{partition=P,
+                                         propagate_timer=Timer,
+                                         propagate_interval=Interval,
+                                         prepared_blue=PreparedBlue}) ->
+    erlang:cancel_timer(Timer),
     KnownTime = compute_new_known_time(PreparedBlue),
     ok = grb_propagation_vnode:propagate_transactions(P, KnownTime),
-    {ok, State};
+    {ok, State#state{propagate_timer=erlang:send_after(Interval, self(), ?propagate_req)}};
 
 handle_info(Msg, State) ->
     ?LOG_WARNING("unhandled_info ~p", [Msg]),
