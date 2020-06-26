@@ -48,8 +48,16 @@
 
     %% The port to send/recv inter-dc communication (default is 8989)
     {inter_dc_port, ${INTER_DC_PORT}},
+
+    %% Auto-start book-keeping processes in the background
+    %% These processes should start after the ring for a cluster
+    %% is fully connected. If the node is not going to be joined
+    %% with others, it makes sense to start it with these processes
+    %% enabled by default.
     {auto_start_background_processes, false},
-    %% todo(borja): Play with these settings
+
+    %% How many versions to keep per key
+    {version_log_size, 50},
 
     %% todo(borja): Play with these settings. Add them as env vars?
     %% Timer intervals, in ms.
@@ -63,10 +71,25 @@
     {self_blue_heartbeat_interval, 5},
 
     %% How often should we propagate transactions in the background?
-    {propagate_interval, 50},
+    %% The latency between replicas can be large, so it doesn't make
+    %% sense to have a small interval here.
+    {propagate_interval, 100},
+
     %% How often should we propagate clocks in the background?
-    {broadcast_clock_interval, 500},
-    %% How many versions to keep per key
-    {version_log_size, 50}
+    %% This is used to update globalKnownMatrix, stableVC and
+    %% uniformVC, which controls which transactions from remote
+    %% replicas are made visible. Having a high interval here
+    %% won't harm local visibility for local transactions, since
+    %% transactions will propagate changes to stableVC/uniformVC
+    %% as they move between partitions, and keep their local
+    %% time for the local replica between transactions, which allows
+    %% for read-your-writes even if this interval is high.
+    %%
+    %% It makes sense for this interval to be similar to the propagate
+    %% interval, since it controls the visibility of incoming transactions.
+    %% However, we should introduce some jitter so the timers don't fire at
+    %% the same time. At the same time, computing the clock is expensive, so
+    %% we don't want to do it all the time.
+    {broadcast_clock_interval, 150}
   ]}
 ].

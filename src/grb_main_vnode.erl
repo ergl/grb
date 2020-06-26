@@ -30,6 +30,7 @@
 -ignore_xref([start_vnode/1]).
 
 -define(master, grb_main_vnode_master).
+-define(propagate_req, propagate_event).
 -define(blue_tick_req, blue_tick_event).
 
 -record(state, {
@@ -183,7 +184,7 @@ handle_info(?blue_tick_req, State=#state{partition=P,
     ok = grb_propagation_vnode:handle_blue_heartbeat(P, grb_dc_utils:replica_id(), KnownTime),
     {ok, State#state{blue_tick_timer=erlang:send_after(Interval, self(), ?blue_tick_req)}};
 
-handle_info(propagate_event, State=#state{partition=P, prepared_blue=PreparedBlue}) ->
+handle_info(?propagate_req, State=#state{partition=P, prepared_blue=PreparedBlue}) ->
     KnownTime = compute_new_known_time(PreparedBlue),
     ok = grb_propagation_vnode:propagate_transactions(P, KnownTime),
     {ok, State};
