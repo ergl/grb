@@ -30,6 +30,7 @@
 -ignore_xref([start_vnode/1]).
 
 -define(master, grb_main_vnode_master).
+-define(blue_tick_req, blue_tick_event).
 
 -record(state, {
     partition :: partition_id(),
@@ -41,6 +42,9 @@
 
     propagate_interval :: non_neg_integer(),
     propagate_timer = undefined :: timer:tref() | undefined,
+
+    blue_tick_timer :: reference(),
+    blue_tick_interval :: non_neg_integer(),
 
     %% todo(borja, crdt): change type of op_log when adding crdts
     op_log_size :: non_neg_integer(),
@@ -79,11 +83,33 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
-    {ok, Interval} = application:get_env(grb, propagate_interval),
     {ok, KeyLogSize} = application:get_env(grb, version_log_size),
+    {ok, PropagateInterval} = application:get_env(grb, propagate_interval),
+    %% This timer is always started automatically, even if the ring is not ready
+    %% This is because it doesn't matter if we're in a cluster, we always want to
+    %% be updating our knownVC entry.
+    %%
+    %% We're not using the timer:send_interval/2 or timer:send_after/2 functions for
+    %% two reasons:
+    %%
+    %% - for timer:send_after/2, the timer is much more expensive to create, since
+    %%   the timer is managed by an external process, and it can get overloaded
+    %%
+    %% - for timer:send_interval/2, messages will keep being sent even if we're
+    %%   overloaded. Using the send_after / cancel_timer pattern, we can control
+    %%   how far behind we fall, and we make sure we're always ready to handle an
+    %%   event. We know, at least, that `BlueTickInterval` ms will occur between
+    %%   events. If we were using timer:send_interval/2, if in one event we spend
+    %%   more time than the specified interval, we are going to get pending jobs
+    %%   in the process queue, and some events will be processed quicker. Since
+    %%   we want to control the size of the queue, this allows us to do that.
+    {ok, BlueTickInterval} = application:get_env(grb, self_blue_heartbeat_interval),
+    TimerRef = erlang:send_after(BlueTickInterval, self(), ?blue_tick_req),
     State = #state{partition = Partition,
                    prepared_blue = #{},
-                   propagate_interval = Interval,
+                   blue_tick_timer = TimerRef,
+                   blue_tick_interval=BlueTickInterval,
+                   propagate_interval=PropagateInterval,
                    op_log_size = KeyLogSize,
                    op_log = new_cache(Partition, ?OP_LOG_TABLE)},
 
@@ -147,6 +173,15 @@ handle_command({replicate_tx, SourceReplica, TxId, WS, VC}, _From, S=#state{part
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
+
+handle_info(?blue_tick_req, State=#state{partition=P,
+                                         blue_tick_timer=Timer,
+                                         blue_tick_interval=Interval,
+                                         prepared_blue=PreparedBlue}) ->
+    erlang:cancel_timer(Timer),
+    KnownTime = compute_new_known_time(PreparedBlue),
+    ok = grb_propagation_vnode:handle_blue_heartbeat(P, grb_dc_utils:replica_id(), KnownTime),
+    {ok, State#state{blue_tick_timer=erlang:send_after(Interval, self(), ?blue_tick_req)}};
 
 handle_info(propagate_event, State=#state{partition=P, prepared_blue=PreparedBlue}) ->
     KnownTime = compute_new_known_time(PreparedBlue),
