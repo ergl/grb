@@ -4,27 +4,53 @@
 
 %% API
 -export([start_background_processes/0,
+         start_propagation_processes/0,
          replica_descriptor/0,
          connect_to_replicas/1,
-         stop_background_processes/0]).
+         stop_background_processes/0,
+         stop_propagation_processes/0]).
 
 %% All functions are called through erpc
 -ignore_xref([start_background_processes/0,
+              start_propagation_processes/0,
               replica_descriptor/0,
               connect_to_replicas/1,
-              stop_background_processes/0]).
+              stop_background_processes/0,
+              stop_propagation_processes/0]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% External API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+-spec start_background_processes() -> ok.
 start_background_processes() ->
     Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_replicas),
     ok = lists:foreach(fun({_, true}) -> ok end, Res),
-    Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_propagate_timer),
+    Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_broadcast_timer),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
-    Res2 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_broadcast_timer),
-    ok = lists:foreach(fun({_, ok}) -> ok end, Res2),
+    ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
+    ok.
+
+-spec start_propagation_processes() -> ok.
+start_propagation_processes() ->
+    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_propagate_timer),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res),
+    ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
+    ok.
+
+-spec stop_propagation_processes() -> ok.
+stop_background_processes() ->
+    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_replicas),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res),
+    Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, stop_broadcast_timer),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
+    ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
+    ok.
+
+-spec stop_propagation_processes() -> ok.
+stop_propagation_processes() ->
+    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_propagate_timer),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
@@ -67,6 +93,10 @@ connect_to_replicas(Descriptors) ->
     {LocalNumPartitions, _} = riak_core_ring:chash(Ring),
     connect_to_replicas(Descriptors, LocalId, LocalNodes, LocalNumPartitions).
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Internal Functions
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 -spec connect_to_replicas([replica_descriptor()], replica_id(), [node()], non_neg_integer()) -> ok | {error, term()}.
 connect_to_replicas([], _, _, _) -> ok;
 connect_to_replicas([#replica_descriptor{replica_id=Id} | Rest], Id, Nodes, Num) ->
@@ -107,13 +137,3 @@ connect_nodes_to_descriptor(Nodes, Desc=#replica_descriptor{replica_id=RemoteId}
                 end
         end
     end, ok, lists:zip(Returns, Nodes)).
-
-stop_background_processes() ->
-    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_replicas),
-    ok = lists:foreach(fun({_, ok}) -> ok end, Res),
-    Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_propagate_timer),
-    ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
-    Res2 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, stop_broadcast_timer),
-    ok = lists:foreach(fun({_, ok}) -> ok end, Res2),
-    ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
-    ok.
