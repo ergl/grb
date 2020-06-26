@@ -35,12 +35,12 @@ connect() ->
 -spec load(non_neg_integer()) -> ok.
 load(Size) ->
     Val = crypto:strong_rand_bytes(Size),
-    Clock = grb_vclock:new(),
-    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, {update_default, Val, Clock}),
+    BottomRed = 0,
+    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, {update_default, Val, BottomRed}),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
     Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, get_default),
-    true = lists:all(fun({P, {DefaultVal, DefaultClock}}) ->
-        case (DefaultVal =:= Val) andalso (DefaultClock =:= Clock) of
+    true = lists:all(fun({P, {DefaultVal, DefaultRed}}) ->
+        case (DefaultVal =:= Val) andalso (DefaultRed =:= BottomRed) of
             true -> true;
             false ->
                 ?LOG_WARNING("Couldn't load at partition ~p", [P]),
