@@ -71,7 +71,7 @@ prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
 -spec handle_replicate(partition_id(), replica_id(), term(), #{}, vclock()) -> ok.
 handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
     riak_core_vnode_master:command({Partition, node()},
-                                   {replicate_tx, SourceReplica, TxId, WS, VC},
+                                   {handle_remote_tx, SourceReplica, TxId, WS, VC},
                                    ?master).
 
 
@@ -162,9 +162,9 @@ handle_command({decide_blue, TxId, VC}, _From, State) ->
     NewState = decide_blue_internal(TxId, VC, State),
     {noreply, NewState};
 
-handle_command({replicate_tx, SourceReplica, TxId, WS, VC}, _From, S=#state{partition=P,
-                                                                            op_log=OpLog,
-                                                                            op_log_size=LogSize}) ->
+handle_command({handle_remote_tx, SourceReplica, TxId, WS, VC}, _From, S=#state{partition=P,
+                                                                                op_log=OpLog,
+                                                                                op_log_size=LogSize}) ->
     CommitTime = grb_vclock:get_time(SourceReplica, VC),
     ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
     %% todo(borja, uniformity): Add to committedBlue[SourceReplica]
