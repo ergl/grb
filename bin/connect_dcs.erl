@@ -69,8 +69,9 @@ validate({error, Reason}) ->
     io:fwrite(standard_error, "Validate error: ~p~n", [Reason]),
     usage();
 
-validate({ok, [_SingleNode]}) ->
-    io:format("Single-node cluster, nothing to join"),
+validate({ok, [SingleNode]}) ->
+    io:format("Single-node cluster, nothing to join but will start processes"),
+    ok = erpc:call(SingleNode, grb_dc_manager, start_propagation_processes, []),
     halt();
 
 validate({ok, Nodes}) ->
