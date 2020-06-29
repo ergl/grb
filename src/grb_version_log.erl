@@ -105,18 +105,27 @@ get_lower(VC, Buff, Start, End, Mod, Acc) ->
 ) -> entry() | undefined.
 
 get_first_lower(VC, Buff, End, End, _Mod) ->
-    {_, _, EltVC}=Elt = array:get(End, Buff),
-    case grb_vclock:leq(EltVC, VC) of
-        true -> Elt;
-        false -> undefined
+    Elt = array:get(End, Buff),
+    case Elt of
+        ?DEFAULT -> undefined;
+        {_, _, EltVC} ->
+            case grb_vclock:leq(EltVC, VC) of
+                true -> Elt;
+                false -> undefined
+            end
     end;
 
 get_first_lower(VC, Buff, Start, End, Mod) ->
-    {_, _, EltVC}=Elt = array:get(Start, Buff),
-    Next = mod((Start - 1), Mod),
-    case grb_vclock:leq(EltVC, VC) of
-        true -> Elt;
-        false -> get_first_lower(VC, Buff, Next, End, Mod)
+    Elt = array:get(Start, Buff),
+    case Elt of
+        ?DEFAULT -> undefined;
+        {_, _, EltVC} ->
+            case grb_vclock:leq(EltVC, VC) of
+                true -> Elt;
+                false ->
+                    Next = mod((Start - 1), Mod),
+                    get_first_lower(VC, Buff, Next, End, Mod)
+            end
     end.
 
 -spec to_list(t()) -> [entry()].
@@ -139,8 +148,12 @@ to_list(Buff, Start, End, Size, Acc) ->
     to_list(Buff, (Start + 1) rem Size, End, Size, [array:get(Start, Buff) | Acc]).
 
 mod(X,Y) when X > 0 -> X rem Y;
-mod(X,Y) when X < 0 -> Y + X rem Y;
-mod(0,_Y) -> 0.
+mod(X,Y) when X < 0 ->
+    K = (-X div Y) + 1,
+    PositiveX = X + K*Y,
+    PositiveX rem Y;
+
+mod(0, _Y) -> 0.
 
 -ifdef(TEST).
 
@@ -298,5 +311,19 @@ grb_version_log_get_first_lower_unordered_test() ->
     Matches = grb_version_log:get_first_lower(VClock(2), Log1),
     ?assertEqual({blue, 1, VClock(1)}, Matches).
 
+grb_version_log_get_first_lower_single_entry_test() ->
+    MyDCID = '$dc_id',
+    VClock = fun(N) -> grb_vclock:set_time(MyDCID, N, grb_vclock:new()) end,
+    Entries = [
+        {blue, 2, VClock(2)}
+    ],
+
+    Log0 = grb_version_log:from_list(Entries, 1),
+    Matches0 = grb_version_log:get_first_lower(VClock(1), Log0),
+    ?assertEqual(undefined, Matches0),
+
+    Log1 = grb_version_log:from_list(Entries, 2),
+    Matches1 = grb_version_log:get_first_lower(VClock(1), Log1),
+    ?assertEqual(undefined, Matches1).
 
 -endif.
