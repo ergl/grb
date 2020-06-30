@@ -6,6 +6,7 @@
          my_bounded_ip/0,
          my_partitions/0,
          all_partitions/0,
+         all_nodes/0,
          key_location/1,
          bcast_vnode_sync/2,
          bcast_vnode_async/2,
@@ -70,6 +71,12 @@ all_partitions() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     Chash = riak_core_ring:chash(Ring),
     [ P || {P, _} <- chash:nodes(Chash)].
+
+-spec all_nodes() -> [node()].
+all_nodes() ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    Chash = riak_core_ring:chash(Ring),
+    lists:usort([ N || {_, N} <- chash:nodes(Chash)]).
 
 -spec key_location(key()) -> index_node().
 key_location(Key) ->

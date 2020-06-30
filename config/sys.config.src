@@ -90,6 +90,7 @@
     %% However, we should introduce some jitter so the timers don't fire at
     %% the same time. At the same time, computing the clock is expensive, so
     %% we don't want to do it all the time.
-    {broadcast_clock_interval, ${BCAST_KNOWN_VC_INTERVAL_MS}}
+    {broadcast_clock_interval, ${BCAST_KNOWN_VC_INTERVAL_MS}},
+    {local_broadcast_tree_fanout, ${BCAST_FANOUT}}
   ]}
 ].
