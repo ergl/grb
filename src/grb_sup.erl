@@ -35,10 +35,12 @@ init(_Args) ->
     ReplicaSup = ?CHILD(grb_partition_replica_sup, supervisor, []),
     InterDCConnManager = ?CHILD(grb_dc_connection_manager, worker, []),
     InterDCSenderSup = ?CHILD(grb_dc_connection_sender_sup, supervisor, []),
+    LocalBroadcast = ?CHILD(grb_local_broadcast, worker, []),
     {ok,
         {{one_for_one, 5, 10},
          [BluePropMaster,
           MainVNodeMaster,
           ReplicaSup,
+          LocalBroadcast,
           InterDCConnManager,
           InterDCSenderSup]}}.
