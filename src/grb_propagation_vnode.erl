@@ -313,9 +313,9 @@ grb_propagation_vnode_compute_stable_vc_test() ->
     Replicas = [dc_id1, dc_id2, dc_id3],
 
     EmptySVC = compute_stable_vc(#{}, SelfPartition, Partitions, Replicas),
-    lists:foreach(fun(P) ->
-        ?assertEqual(0, grb_vclock:get_time(P, EmptySVC))
-    end, Partitions),
+    lists:foreach(fun(R) ->
+        ?assertEqual(0, grb_vclock:get_time(R, EmptySVC))
+    end, Replicas),
 
     Matrix0 = #{
         p => #{dc_id1 => 0, dc_id2 => 0, dc_id3 => 10},
