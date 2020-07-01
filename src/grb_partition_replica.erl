@@ -6,6 +6,8 @@
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
+-ignore_xref([start_link/4]).
+
 %% supervision tree
 -export([start_link/4]).
 
