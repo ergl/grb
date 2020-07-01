@@ -61,6 +61,7 @@
                     | #root_state{}.
 
 -record(state, {
+    self_name :: atom(),
     self_replica = undefined :: replica_id() | undefined,
     self_partitions = [] :: [partition_id()],
     tree_state = undefined:: tree_state()
@@ -99,7 +100,7 @@ start_as_leaf(Parent) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 init([]) ->
-    {ok, #state{}}.
+    {ok, #state{self_name=generate_name(node())}}.
 
 -spec init_state(#state{}) -> #state{}.
 init_state(S) ->
@@ -135,49 +136,71 @@ handle_call(E, _From, S) ->
     ?LOG_WARNING("unexpected call: ~p~n", [E]),
     {reply, ok, S}.
 
-handle_cast({clock_event, _From, ChildSVC}, S=#state{self_replica=ReplicaId,
-                                                     self_partitions=Partitions,
-                                                     tree_state=RootState=#root_state{}}) ->
+handle_cast({clock_event, From, ChildSVC}, S=#state{self_name=SelfNode,
+                                                    self_replica=ReplicaId,
+                                                    self_partitions=Partitions,
+                                                    tree_state=RootState=#root_state{}}) ->
+
+    ?LOG_DEBUG("root node received stableVC ~p from child ~p", [ChildSVC, From]),
 
     #root_state{children=Children, children_to_ack=N, children_acc=Acc} = RootState,
     NewRootState = case N of
         1 ->
             LocalSVC = compute_local_svc(ReplicaId, Partitions),
             GlobalSVC = compute_children_svc(ReplicaId, [ChildSVC | Acc], LocalSVC),
-            ok = handle_set_svc(node(), GlobalSVC, Partitions, RootState),
+            ok = set_svc(Partitions, GlobalSVC),
+            ok = send_to_children(SelfNode, Children, GlobalSVC),
+            ?LOG_DEBUG("root node recomputing global stableVC as ~p, sending to ~p", [GlobalSVC, Children]),
             RootState#root_state{children_acc=[], children_to_ack=length(Children)};
         _ ->
             RootState#root_state{children_acc=[ChildSVC | Acc], children_to_ack=N-1}
     end,
     {noreply, S#state{tree_state=NewRootState}};
 
-handle_cast({clock_event, _From, ChildSVC}, S=#state{self_replica=ReplicaId,
+handle_cast({clock_event, From, ChildSVC}, S=#state{self_name=SelfNode,
+                                                    self_replica=ReplicaId,
                                                     self_partitions=Partitions,
                                                     tree_state=NodeState=#node_state{}}) ->
+
+    ?LOG_DEBUG("int node received stableVC ~p from child ~p", [ChildSVC, From]),
 
     #node_state{parent=Parent, children=Children, children_to_ack=N, children_acc=Acc} = NodeState,
     NewNodeState = case N of
         1 ->
             LocalSVC = compute_local_svc(ReplicaId, Partitions),
             ChildrenSVC = compute_children_svc(ReplicaId, [ChildSVC | Acc], LocalSVC),
-            ok = gen_server:cast({global, Parent}, {clock_event, node(), ChildrenSVC}),
+            ?LOG_DEBUG("int node recomputing stableVC as ~p, sending to ~p", [ChildrenSVC, Parent]),
+            ok = send_to_parent(SelfNode, Parent, ChildrenSVC),
             NodeState#node_state{children_acc=[], children_to_ack=length(Children)};
         _ ->
             NodeState#node_state{children_acc=[ChildSVC | Acc], children_to_ack=N-1}
     end,
     {noreply, S#state{tree_state=NewNodeState}};
 
-handle_cast({set_svc, Parent, ParentSVC}, S=#state{self_partitions=Partitions,
-                                                   tree_state=TreeState}) ->
+handle_cast({set_svc, Parent, ParentSVC}, S=#state{self_name=SelfNode,
+                                                   self_partitions=Partitions,
+                                                   tree_state=#node_state{parent=Parent,
+                                                                          children=Children}}) ->
 
-    ok = handle_set_svc(Parent, ParentSVC, Partitions, TreeState),
+    ?LOG_DEBUG("int node received stableVC ~p from parent ~p", [ParentSVC, Parent]),
+    ok = set_svc(Partitions, ParentSVC),
+    ok = send_to_children(SelfNode, Children, ParentSVC),
+    {noreply, S};
+
+handle_cast({set_svc, Parent, ParentSVC}, S=#state{self_partitions=Partitions,
+                                                   tree_state=#leaf_state{}}) ->
+
+    ?LOG_DEBUG("leaf node received stableVC ~p from parent ~p", [ParentSVC, Parent]),
+    ok = set_svc(Partitions, ParentSVC),
     {noreply, S};
 
 handle_cast(E, S) ->
     ?LOG_WARNING("unexpected cast: ~p~n", [E]),
     {noreply, S}.
 
-handle_info(broadcast_clock, S=#state{self_replica=ReplicaId,
+%% Send our local stableVC to our parent periodically
+handle_info(broadcast_clock, S=#state{self_name=SelfNode,
+                                      self_replica=ReplicaId,
                                       self_partitions=Partitions,
                                       tree_state=Leaf=#leaf_state{}}) ->
     #leaf_state{parent=Parent,
@@ -187,13 +210,14 @@ handle_info(broadcast_clock, S=#state{self_replica=ReplicaId,
     erlang:cancel_timer(TRef),
 
     LocalSVC = compute_local_svc(ReplicaId, Partitions),
-    ok = gen_server:cast({global, Parent}, {clock_event, node(), LocalSVC}),
+    ok = send_to_parent(SelfNode, Parent, LocalSVC),
 
-    ?LOG_DEBUG("lead recomputing stableVC as ~p, sending to ~p", [LocalSVC, Parent]),
+    ?LOG_DEBUG("leaf recomputing stableVC as ~p, sending to ~p", [LocalSVC, Parent]),
 
     NewLeaf = Leaf#leaf_state{broadcast_timer=erlang:send_after(Int, self(), broadcast_clock)},
     {noreply, S#state{tree_state=NewLeaf}};
 
+%% If singleton, just recalculate our local stableVC
 handle_info(broadcast_clock, S=#state{self_replica=ReplicaId,
                                       self_partitions=Partitions,
                                       tree_state=Single=#singleton_state{}}) ->
@@ -204,7 +228,7 @@ handle_info(broadcast_clock, S=#state{self_replica=ReplicaId,
     erlang:cancel_timer(TRef),
 
     LocalSVC = compute_local_svc(ReplicaId, Partitions),
-    ok = handle_set_svc(node(), LocalSVC, Partitions, Single),
+    ok = set_svc(Partitions, LocalSVC),
 
     ?LOG_DEBUG("singleton recomputing stableVC as ~p", [LocalSVC]),
 
@@ -212,7 +236,7 @@ handle_info(broadcast_clock, S=#state{self_replica=ReplicaId,
     {noreply, S#state{tree_state=NewSingle}};
 
 handle_info(E, S) ->
-    ?LOG_WARNING("unexpected info: ~p~n", [E]),
+    ?LOG_WARNING("unexpected info: ~p at state ~p~n", [E, S]),
     {noreply, S}.
 
 terminate(_Reason, #state{tree_state=#leaf_state{broadcast_timer=TRef}}) ->
@@ -232,7 +256,7 @@ terminate(_Reason, _S) ->
 
 -spec generate_name(node()) -> atom().
 generate_name(Node) ->
-    list_to_atom("grb_local_broadcast" ++ atom_to_list(Node)).
+    list_to_atom("grb_local_broadcast_" ++ atom_to_list(Node)).
 
 -spec compute_local_svc(replica_id(), [partition_id()]) -> vclock().
 compute_local_svc(ReplicaId, Partitions) ->
@@ -257,32 +281,21 @@ compute_svc(AllReplicas, VCs, AccSVC) ->
         grb_vclock:min_at(AllReplicas, SVC, Acc)
     end, AccSVC, VCs).
 
--spec handle_set_svc(atom(), vclock(), [partition_id()], tree_state()) -> ok.
-handle_set_svc(_, _, _, undefined) -> ok;
-
-handle_set_svc(Parent, SVC, Partitions, #leaf_state{parent=Parent}) ->
+-spec set_svc([partition_id()], vclock()) -> ok.
+set_svc(Partitions, StableVC) ->
     lists:foreach(fun(Partition) ->
-        ok = grb_propagation_vnode:update_stable_vc(Partition, SVC)
-    end, Partitions);
-
-handle_set_svc(_, SVC, Partitions, #singleton_state{}) ->
-    lists:foreach(fun(Partition) ->
-        ok = grb_propagation_vnode:update_stable_vc(Partition, SVC)
-    end, Partitions);
-
-handle_set_svc(Parent, SVC, Partitions, State) ->
-    Children = case State of
-        #root_state{children=C} -> C;
-        #node_state{children=C, parent=Parent} -> C
-    end,
-
-    lists:foreach(fun(Child) ->
-        ok = gen_server:cast({global, Child}, {set_svc, node(), SVC})
-    end, Children),
-
-    lists:foreach(fun(Partition) ->
-        ok = grb_propagation_vnode:update_stable_vc(Partition, SVC)
+        ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC)
     end, Partitions).
+
+-spec send_to_parent(atom(), atom(), vclock()) -> ok.
+send_to_parent(Self, Parent, StableVC) ->
+    ok = gen_server:cast({global, Parent}, {clock_event, Self, StableVC}).
+
+-spec send_to_children(atom(), [atom()], vclock()) -> ok.
+send_to_children(Self, Children, StableVC) ->
+    lists:foreach(fun(Child) ->
+        ok = gen_server:cast({global, Child}, {set_svc, Self, StableVC})
+    end, Children).
 
 -ifdef(TEST).
 
