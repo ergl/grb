@@ -38,7 +38,7 @@ start_background_processes() ->
 %% @doc Enable partitions appending transactions to committedBlue (enabled by default)
 -spec enable_blue_append() -> ok.
 enable_blue_append() ->
-    Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode, enable_blue_append),
+    Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, enable_blue_append),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
     ok.
 
@@ -48,7 +48,7 @@ enable_blue_append() ->
 %%      memory accumulating transactions that we'll never send.
 -spec disable_blue_append() -> ok.
 disable_blue_append() ->
-    Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode, disable_blue_append),
+    Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, disable_blue_append),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
     ok.
 
