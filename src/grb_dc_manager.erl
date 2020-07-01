@@ -24,8 +24,10 @@
 
 -spec start_background_processes() -> ok.
 start_background_processes() ->
-    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_replicas),
-    ok = lists:foreach(fun({_, true}) -> ok end, Res),
+    Res0 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_blue_hb_timer),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
+    Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_replicas),
+    ok = lists:foreach(fun({_, true}) -> ok end, Res1),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
@@ -38,8 +40,10 @@ start_propagation_processes() ->
 
 -spec stop_background_processes() -> ok.
 stop_background_processes() ->
-    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_replicas),
-    ok = lists:foreach(fun({_, ok}) -> ok end, Res),
+    Res0 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_blue_hb_timer),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
+    Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_replicas),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 

@@ -47,8 +47,8 @@
     propagate_interval :: non_neg_integer(),
     propagate_timer = undefined :: reference() | undefined,
 
-    blue_tick_timer :: reference(),
     blue_tick_interval :: non_neg_integer(),
+    blue_tick_timer = undefined :: reference() | undefined,
 
     %% todo(borja, crdt): change type of op_log when adding crdts
     op_log_size :: non_neg_integer(),
@@ -113,14 +113,9 @@ init([Partition]) ->
     %%   more time than the specified interval, we are going to get pending jobs
     %%   in the process queue, and some events will be processed quicker. Since
     %%   we want to control the size of the queue, this allows us to do that.
-    %% fixme(borja): This might create entries in the clock from bad replica ids
-    %% we have to wait until we're joined with all the nodes in the clusters to start
-    %% this timer.
     {ok, BlueTickInterval} = application:get_env(grb, self_blue_heartbeat_interval),
-    TimerRef = erlang:send_after(BlueTickInterval, self(), ?blue_tick_req),
     State = #state{partition = Partition,
                    prepared_blue = #{},
-                   blue_tick_timer = TimerRef,
                    blue_tick_interval=BlueTickInterval,
                    propagate_interval=PropagateInterval,
                    op_log_size = KeyLogSize,
@@ -135,6 +130,13 @@ handle_command(is_ready, _Sender, State) ->
     Ready = lists:all(fun is_ready/1, [State#state.op_log]),
     {reply, Ready, State};
 
+handle_command(start_blue_hb_timer, _From, S = #state{blue_tick_interval=Int, blue_tick_timer=undefined}) ->
+    TRef = erlang:send_after(Int, self(), ?blue_tick_req),
+    {reply, ok, S#state{blue_tick_timer=TRef}};
+
+handle_command(start_blue_hb_timer, _From, S = #state{blue_tick_timer=_Tref}) ->
+    {reply, ok, S};
+
 handle_command(start_replicas, _From, S = #state{partition=P,
                                                  replicas_n=N,
                                                  default_bottom_value=Val,
@@ -147,6 +149,13 @@ handle_command(start_replicas, _From, S = #state{partition=P,
             grb_partition_replica:replica_ready(P, N)
     end,
     {reply, Result, S};
+
+handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_timer=undefined}) ->
+    {reply, ok, S};
+
+handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_timer=TRef}) ->
+    erlang:cancel_timer(TRef),
+    {reply, ok, S#state{blue_tick_timer=undefined}};
 
 handle_command(stop_replicas, _From, S = #state{partition=P, replicas_n=N}) ->
     ok = grb_partition_replica:stop_replicas(P, N),
