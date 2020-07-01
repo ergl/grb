@@ -6,11 +6,17 @@
 
 -export([main/1]).
 
+-define(DEFAULT_TREE_FANOUT, 2).
+-include_lib("eunit/include/eunit.hrl").
+
 -spec usage() -> no_return().
 usage() ->
     Name = filename:basename(escript:script_name()),
     io:fwrite(standard_error, "Usage: ~s [-c --cluster cluster_name] [-f config_file] | 'node_1@host_1' ... 'node_n@host_n'~n", [Name]),
     halt(1).
+
+main(["eunit"]) ->
+    eunit:test(fun test/0);
 
 main(Args) ->
     case parse_args(Args, []) of
@@ -35,7 +41,7 @@ prepare_from_config(#{config := Config}) ->
     prepare(validate(parse_node_config(Config))).
 
 %% @doc Parse a literal node list passed as argument
--spec parse_node_list(list(string())) -> {ok, [node()]} | error.
+-spec parse_node_list(list(string())) -> {ok, [node()], non_neg_integer()} | error.
 parse_node_list([]) ->
     error;
 
@@ -45,39 +51,47 @@ parse_node_list([_|_]=NodeListString) ->
             Node = list_to_atom(NodeString),
             [Node | Acc]
                             end, [], NodeListString),
-        {ok, lists:reverse(Nodes)}
+        {ok, lists:reverse(Nodes), ?DEFAULT_TREE_FANOUT}
     catch
         _:_ -> error
     end.
 
--spec parse_node_config(ClusterName :: atom(), ConfigFilePath :: string()) -> {ok, [node()] | {error, term()}}.
+-spec parse_node_config(ClusterName :: atom(), ConfigFilePath :: string()) -> {ok, [node()], non_neg_integer()} | {error, term()}.
 parse_node_config(ClusterName, ConfigFilePath) ->
     case file:consult(ConfigFilePath) of
         {error, Reason} ->
             {error, Reason};
         {ok, Terms} ->
             {clusters, ClusterMap} = lists:keyfind(clusters, 1, Terms),
+            Fanout = case lists:keyfind(tree_fanout, 1, Terms) of
+                false -> ?DEFAULT_TREE_FANOUT;
+               {tree_fanout, TreeFanout} -> TreeFanout
+            end,
             case maps:is_key(ClusterName, ClusterMap) of
                 false ->
                     {error, unicode:characters_to_list(io_lib:format("No cluster named ~p", [ClusterName]))};
                 true ->
                     #{servers := Servers} = maps:get(ClusterName, ClusterMap),
-                    {ok, build_erlang_node_names(lists:usort(Servers))}
+                    {ok, build_erlang_node_names(lists:usort(Servers)), Fanout}
             end
     end.
 
 %% @doc Parse node names from config file
 %%
 %% The config file is the same as the cluster definition.
--spec parse_node_config(ConfigFilePath :: string()) -> {ok, #{atom() => [node()]}} | error.
+-spec parse_node_config(ConfigFilePath :: string()) -> {ok, #{atom() => [node()]}, non_neg_integer()} | error.
 parse_node_config(ConfigFilePath) ->
     case file:consult(ConfigFilePath) of
         {ok, Terms} ->
             {clusters, ClusterMap} = lists:keyfind(clusters, 1, Terms),
+            Fanout = case lists:keyfind(tree_fanout, 1, Terms) of
+                false -> ?DEFAULT_TREE_FANOUT;
+                {tree_fanout, TreeFanout} -> TreeFanout
+            end,
             Nodes = maps:fold(fun(Cluster, #{servers := Servers}, Acc) ->
                 Acc#{Cluster => build_erlang_node_names(lists:usort(Servers))}
             end, #{}, ClusterMap),
-            {ok, Nodes};
+            {ok, Nodes, Fanout};
         _ ->
             error
     end.
@@ -99,31 +113,37 @@ validate({error, Reason}) ->
     io:fwrite(standard_error, "Validate error: ~p~n", [Reason]),
     usage();
 
-validate({ok, [_SingleNode]}) ->
-    io:format("Single-node cluster, nothing to join"),
-    halt();
-
-validate({ok, Nodes}) ->
-    {ok, Nodes}.
+validate({ok, Nodes, Fanout}) ->
+    {ok, Nodes, Fanout}.
 
 -spec prepare({ok, [node()] | #{atom() => [node()]}}) -> ok.
-prepare({ok, ClusterMap}) when is_map(ClusterMap) ->
+prepare({ok, ClusterMap, Fanout}) when is_map(ClusterMap) ->
     maps:fold(fun(ClusterName, NodeList, ok) ->
-        io:format("Starting clustering at ~p of nodes ~p~n", [ClusterName, NodeList]),
-        ok = do_join(NodeList)
+        io:format("Starting clustering at ~p (fanout ~p) of nodes ~p~n", [ClusterName, Fanout, NodeList]),
+        ok = do_join(NodeList, Fanout)
     end, ok, ClusterMap);
 
-prepare({ok, Nodes}) ->
-    io:format("Starting clustering of nodes ~p~n", [Nodes]),
-    do_join(Nodes).
+prepare({ok, Nodes, Fanout}) ->
+    io:format("Starting clustering (fanout ~p) of nodes ~p~n", [Fanout, Nodes]),
+    do_join(Nodes, Fanout).
 
-do_join([MainNode | _] = Nodes) ->
+do_join(N=[SingleNode], Fanout) ->
+    io:format("Started background processes, checking master ready~n"),
+    erpc:call(SingleNode, grb_dc_manager, start_background_processes, []),
+    ok = start_broadcast_tree(N, Fanout),
+    ok = wait_until_master_ready(SingleNode),
+    io:format("Successfully joined nodes ~p~n", [N]),
+    ok;
+
+do_join([MainNode | _] = Nodes, Fanout) ->
     lists:foreach(fun(N) -> erlang:set_cookie(N, grb_cookie) end, Nodes),
     ok = join_cluster(Nodes),
     Result = erpc:multicall(Nodes, grb_dc_manager, start_background_processes, []),
     case lists:all(fun({ok, ok}) -> true; (_) -> false end, Result) of
         true ->
-            io:format("Started background processes, checking master ready~n"),
+            io:format("Started background processes, starting broadcast tree~n"),
+            ok = start_broadcast_tree(Nodes, Fanout),
+            io:format("Started broadcast tree, checking master ready~n"),
             ok = wait_until_master_ready(MainNode),
             io:format("Successfully joined nodes ~p~n", [Nodes]);
         false ->
@@ -422,6 +442,87 @@ check_ready(Node) ->
     NodeReady.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% broadcast tree
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% @doc Build the local broadcast tree with the given fanout, and start the nodes
+-spec start_broadcast_tree([node()], non_neg_integer()) -> ok.
+start_broadcast_tree([Node], _Fanout) ->
+    erpc:call(Node, grb_local_broadcast, start_as_singleton, []);
+
+start_broadcast_tree(Nodes, Fanout) ->
+    {Root, IntNodes, Leafs} = build_broadcast_tree(Nodes, Fanout),
+    {RootNode, RootChildren} = Root,
+    ok = erpc:call(RootNode, grb_local_broadcast, start_as_root, [RootChildren]),
+    lists:foreach(fun({IntNode, IntParent, IntChildren}) ->
+        ok = erpc:call(IntNode, grb_local_broadcast, start_as_node, [IntParent, IntChildren])
+    end, IntNodes),
+    lists:foreach(fun({LeafNode, LeafParent}) ->
+        ok = erpc:call(LeafNode, grb_local_broadcast, start_as_leaf, [LeafParent])
+    end, Leafs).
+
+%% @doc Convert the list of given nodes and fanout into an n-ary tree of nodes
+-spec build_broadcast_tree(Nodes :: [node()],
+                          Fanout :: non_neg_integer()) -> {Root :: {node(), [node()]},
+                                                           Nodes :: [{node(), node(), [node()]}],
+                                                           Leafs :: [{node(), node()}]}.
+build_broadcast_tree(Nodes, Fanout) ->
+    Depth = trunc(math:ceil(math:log(length(Nodes) * (Fanout - 1) + 1) / math:log(Fanout))),
+    ListTable = ets:new(values, [ordered_set]),
+    AccTable = ets:new(tree_repr, [duplicate_bag]),
+    true = ets:insert(ListTable, [ {N, ignore} || N <- Nodes ]),
+    _ = build_broadcast_tree(ets:first(ListTable), ListTable, Fanout, Depth, AccTable),
+    Res = lists:foldl(fun(Node, {Root, IntNodes, Leafs}) ->
+        Parent = get_parent(Node, AccTable),
+        Children = get_children(Node, AccTable),
+        case {Parent, Children} of
+            {root, ChildNodes} -> {{Node, ChildNodes}, IntNodes, Leafs};
+            {ParentNode, leaf} -> {Root, IntNodes, [{Node, ParentNode} | Leafs]};
+            {ParentNode, ChildNodes} -> {Root, [{Node, ParentNode, ChildNodes} | IntNodes], Leafs}
+        end
+    end, {ignore, [], []}, Nodes),
+    true = ets:delete(ListTable),
+    true = ets:delete(AccTable),
+    Res.
+
+-spec get_parent(node(), ets:tid()) -> node() | root.
+get_parent(Node, AccTable) ->
+    Par = ets:select(AccTable, [{{'$1', '$2'}, [{'=:=', '$2', {const, Node}}], ['$1']}]),
+    case Par of
+        [] -> root;
+        [ParentNode] -> ParentNode
+    end.
+
+-spec get_children(node(), ets:tid()) -> node() | leaf.
+get_children(Node, AccTable) ->
+    Ch = ets:select(AccTable, [{{'$1', '$2'}, [{'=:=', '$1', {const, Node}}], ['$2']}]),
+    case Ch of
+        [] -> leaf;
+        ChildNodes -> ChildNodes
+    end.
+
+%% Hacked-together imperative version of https://pastebin.com/0gVATpRa
+-spec build_broadcast_tree(node() | atom(), ets:tid(), non_neg_integer(), non_neg_integer(), ets:tid()) -> node() | ignore.
+build_broadcast_tree(_, _, _, 0, _) -> ignore;
+build_broadcast_tree('$end_of_table', _, _, _, _) -> ignore;
+build_broadcast_tree(Head, List, Fanout, Depth, AccTable) ->
+    true = ets:delete(List, Head),
+    add_node_children(Fanout, Head, List, Fanout, Depth, AccTable),
+    Head.
+
+-spec add_node_children(non_neg_integer(), node(), ets:tid(), non_neg_integer(), non_neg_integer(), ets:tid()) -> ok.
+add_node_children(0, _, _, _, _, _) -> ok;
+add_node_children(N, Head, List, Fanout, Depth, AccTable) ->
+    Root = build_broadcast_tree(ets:next(List, Head), List, Fanout, Depth - 1, AccTable),
+    case Root of
+        ignore -> ok;
+        Other ->
+            true = ets:insert(AccTable, {Head, Other}),
+            ok
+    end,
+    add_node_children(N - 1, Head, List, Fanout, Depth, AccTable).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% getopt
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -465,3 +566,61 @@ required(Required, Opts) ->
         true -> {ok, Opts};
         false -> {error, "Missing required fields"}
     end.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% tests
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+test() ->
+    Nodes0 = [a,b,c,d,e,f,g],
+    %%        a
+    %%      /   \
+    %%     b     e
+    %%    / \   / \
+    %%   c   d  f  g
+    {Root0, IntNodes0, Leafs0} = build_broadcast_tree(Nodes0, 2),
+    ?assertMatch({a, [b, e]}, Root0),
+    ?assertEqual(
+        lists:usort([{b, a, [c, d]}, {e, a, [f, g]}]),
+        lists:usort(IntNodes0)
+    ),
+    ?assertEqual(
+        lists:usort([{c, b}, {d, b}, {f, e}, {g, e}]),
+        lists:usort(Leafs0)
+    ),
+
+    Nodes1 = [a,b,c,d,e,f,g,h],
+    %%        a
+    %%        |
+    %%        b
+    %%      /   \
+    %%     c     f
+    %%    / \   / \
+    %%   d   e g   h
+    {Root1, IntNodes1, Leafs1} = build_broadcast_tree(Nodes1, 2),
+    ?assertMatch({a, [b]}, Root1),
+    ?assertEqual(
+        lists:usort([{b, a, [c, f]}, {c, b, [d, e]}, {f, b, [g, h]}]),
+        lists:usort(IntNodes1)
+    ),
+    ?assertEqual(
+        lists:usort([{d, c}, {e, c}, {g, f}, {h, f}]),
+        lists:usort(Leafs1)
+    ),
+
+    Nodes2 = [a,b,c,d,e,f,g,h,i,j,k,l,m],
+    %%       _______a_______
+    %%      /       |       \
+    %%     b        f        j
+    %%   / | \    / | \    / | \
+    %%  c  d  e   g h  i   k l  m
+    {Root2, IntNodes2, Leafs2} = build_broadcast_tree(Nodes2, 3),
+    ?assertMatch({a, [b, f, j]}, Root2),
+    ?assertEqual(
+        lists:usort([{b, a, [c, d, e]}, {f, a, [g, h, i]}, {j, a, [k, l, m]}]),
+        lists:usort(IntNodes2)
+    ),
+    ?assertEqual(
+        lists:usort([{c, b}, {d, b}, {e, b}, {g, f}, {h, f}, {i, f}, {k, j}, {l, j}, {m, j}]),
+        lists:usort(Leafs2)
+    ).

@@ -283,7 +283,7 @@ new_cache(Partition, Name, Options) ->
         undefined ->
             ets:new(CacheName, Options);
         _ ->
-            ?LOG_INFO("Unsable to create cache ~p at ~p, retrying", [Name, Partition]),
+            ?LOG_INFO("Unable to create cache ~p at ~p, retrying", [Name, Partition]),
             timer:sleep(100),
             try ets:delete(CacheName) catch _:_ -> ok end,
             new_cache(Partition, Name, Options)
