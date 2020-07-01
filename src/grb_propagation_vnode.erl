@@ -231,10 +231,12 @@ is_empty(State) ->
 handle_exit(_Pid, _Reason, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
+terminate(_Reason, #state{clock_cache=ClockCache}) ->
+    try ets:delete(ClockCache) catch _:_ -> ok end,
     ok.
 
-delete(State) ->
+delete(State=#state{clock_cache=ClockCache}) ->
+    try ets:delete(ClockCache) catch _:_ -> ok end,
     {ok, State}.
 
 handle_overload_command(_, _, _) ->

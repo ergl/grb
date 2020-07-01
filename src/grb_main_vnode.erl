@@ -113,6 +113,9 @@ init([Partition]) ->
     %%   more time than the specified interval, we are going to get pending jobs
     %%   in the process queue, and some events will be processed quicker. Since
     %%   we want to control the size of the queue, this allows us to do that.
+    %% fixme(borja): This might create entries in the clock from bad replica ids
+    %% we have to wait until we're joined with all the nodes in the clusters to start
+    %% this timer.
     {ok, BlueTickInterval} = application:get_env(grb, self_blue_heartbeat_interval),
     TimerRef = erlang:send_after(BlueTickInterval, self(), ?blue_tick_req),
     State = #state{partition = Partition,
@@ -332,10 +335,12 @@ is_empty(State) ->
 handle_exit(_Pid, _Reason, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
+terminate(_Reason, #state{op_log=OpLog}) ->
+    try ets:delete(OpLog) catch _:_ -> ok end,
     ok.
 
-delete(State) ->
+delete(State=#state{op_log=OpLog}) ->
+    try ets:delete(OpLog) catch _:_ -> ok end,
     {ok, State}.
 
 handle_overload_command(_, _, _) ->
