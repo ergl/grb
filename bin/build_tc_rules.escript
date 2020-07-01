@@ -46,9 +46,9 @@ usage() ->
     ok = io:fwrite(standard_error, "~s [-d] -c <cluster-name> -f <config_file>~n", [Name]).
 
 run(Self, ConfigFile) ->
-    {ok, [{latencies, LatencyMap},
-          {clusters, ClusterDef}]} = file:consult(ConfigFile),
-
+    {ok, Terms} = file:consult(ConfigFile),
+    {latencies, LatencyMap} = lists:keyfind(latencies, 1, Terms),
+    {clusters, ClusterDef} = lists:keyfind(clusters, 1, Terms),
     case maps:get(Self, LatencyMap, empty) of
         empty ->
             %% If we don't have a latency map for ourselves, it means we shouldn't
