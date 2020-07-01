@@ -5,6 +5,8 @@
 %% API
 -export([start_background_processes/0,
          start_propagation_processes/0,
+         enable_blue_append/0,
+         disable_blue_append/0,
          replica_descriptor/0,
          connect_to_replicas/1,
          stop_background_processes/0,
@@ -13,6 +15,8 @@
 %% All functions are called through erpc
 -ignore_xref([start_background_processes/0,
               start_propagation_processes/0,
+              enable_blue_append/0,
+              disable_blue_append/0,
               replica_descriptor/0,
               connect_to_replicas/1,
               stop_background_processes/0,
@@ -29,6 +33,23 @@ start_background_processes() ->
     Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_replicas),
     ok = lists:foreach(fun({_, true}) -> ok end, Res1),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
+    ok.
+
+%% @doc Enable partitions appending transactions to committedBlue (enabled by default)
+-spec enable_blue_append() -> ok.
+enable_blue_append() ->
+    Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode, enable_blue_append),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res),
+    ok.
+
+%% @doc Disable partitions appending transactions to committedBlue (enabled by default)
+%%
+%%      This is useful if we know we'll never connect to other replicas, so we don't waste
+%%      memory accumulating transactions that we'll never send.
+-spec disable_blue_append() -> ok.
+disable_blue_append() ->
+    Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode, disable_blue_append),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res),
     ok.
 
 -spec start_propagation_processes() -> ok.

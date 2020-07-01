@@ -46,6 +46,9 @@
     %% todo(borja, uniformity): Change last_sent to globalKnownMatrix
     last_sent = 0 :: grb_time:ts(),
     logs = #{} :: #{replica_id() => grb_blue_commit_log:t()},
+    %% It doesn't make sense to append it if we're not connected
+    %% to other clusters
+    should_append_commit = true :: boolean(),
     clock_cache :: cache(atom(), vclock())
 }).
 
@@ -102,6 +105,12 @@ init([Partition]) ->
 handle_command(ping, _Sender, State) ->
     {reply, {pong, node(), State#state.partition}, State};
 
+handle_command(enable_blue_append, _Sender, S) ->
+    {reply, ok, S#state{should_append_commit=true}};
+
+handle_command(disable_blue_append, _Sender, S) ->
+    {reply, ok, S#state{should_append_commit=false}};
+
 handle_command({update_stable_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
     OldSVC = ets:lookup_element(ClockTable, stable_vc, 2),
     %% Safe to update everywhere, caller has already ensured to not update the current replica
@@ -113,8 +122,14 @@ handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTa
     ok = update_known_vc(FromReplica, Ts, ClockTable),
     {noreply, S};
 
+handle_command({append_blue, ReplicaId, KnownTime, _TxId, _WS, _CommitVC}, _Sender, S=#state{clock_cache=ClockTable,
+                                                                                             should_append_commit=false}) ->
+    ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
+    {noreply, S};
+
 handle_command({append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC}, _Sender, S=#state{logs=Logs,
-                                                                                          clock_cache=ClockTable}) ->
+                                                                                          clock_cache=ClockTable,
+                                                                                          should_append_commit=true})->
     ReplicaLog = maps:get(ReplicaId, Logs, grb_blue_commit_log:new(ReplicaId)),
     ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
     {noreply, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};

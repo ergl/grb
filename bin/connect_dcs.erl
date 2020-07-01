@@ -70,8 +70,8 @@ validate({error, Reason}) ->
     usage();
 
 validate({ok, [SingleNode]}) ->
-    io:format("Single-node cluster, nothing to join but will start processes"),
-    ok = erpc:call(SingleNode, grb_dc_manager, start_propagation_processes, []),
+    io:format("Single-node cluster, disable blue append"),
+    ok = erpc:call(SingleNode, grb_dc_manager, disable_blue_append, []),
     halt();
 
 validate({ok, Nodes}) ->
