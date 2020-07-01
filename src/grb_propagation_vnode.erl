@@ -40,25 +40,13 @@
               handle_info/2]).
 
 -define(master, grb_propagation_vnode_master).
--define(broadcast_clock_req, local_clock_event).
--define(update_clock_req, remote_clock_event).
-
--type local_matrix() :: #{partition_id() => vclock()}.
 
 -record(state, {
     partition :: partition_id(),
     %% todo(borja, uniformity): Change last_sent to globalKnownMatrix
     last_sent = 0 :: grb_time:ts(),
     logs = #{} :: #{replica_id() => grb_blue_commit_log:t()},
-    local_known_matrix = #{} :: local_matrix(),
-    clock_cache :: cache(atom(), vclock()),
-
-    %% the partitions present at this cluster, kept to
-    %% speed up localKnownMatrix computation
-    cluster_partitions = [] :: [partition_id()],
-    %% How often to broadcast our clocks to all partitions
-    broadcast_clock_interval :: non_neg_integer(),
-    broadcast_clock_timer = undefined :: reference() | undefined
+    clock_cache :: cache(atom(), vclock())
 }).
 
 %%%===================================================================
@@ -103,33 +91,16 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
-    {ok, Interval}  = application:get_env(grb, broadcast_clock_interval),
     ClockTable = new_cache(Partition, ?PARTITION_CLOCK_TABLE),
     true = ets:insert(ClockTable, [{uniform_vc, grb_vclock:new()},
                                    {stable_vc, grb_vclock:new()},
                                    {known_vc, grb_vclock:new()}]),
 
     {ok, #state{partition=Partition,
-                clock_cache=ClockTable,
-                broadcast_clock_interval=Interval}}.
+                clock_cache=ClockTable}}.
 
 handle_command(ping, _Sender, State) ->
     {reply, {pong, node(), State#state.partition}, State};
-
-handle_command(start_broadcast_timer, _From, S=#state{broadcast_clock_interval=Int,
-                                                      broadcast_clock_timer=undefined}) ->
-    TRef = erlang:send_after(Int, self(), ?broadcast_clock_req),
-    {reply, ok, S#state{broadcast_clock_timer=TRef, cluster_partitions=grb_dc_utils:all_partitions()}};
-
-handle_command(start_broadcast_timer, _From, S=#state{broadcast_clock_timer=_TRef}) ->
-    {reply, ok, S};
-
-handle_command(stop_broadcast_timer, _From, S=#state{broadcast_clock_timer=undefined}) ->
-    {reply, ok, S};
-
-handle_command(stop_broadcast_timer, _From, S=#state{broadcast_clock_timer=TRef}) ->
-    erlang:cancel_timer(TRef),
-    {reply, ok, S#state{broadcast_clock_timer=undefined}};
 
 handle_command({update_stable_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
     OldSVC = ets:lookup_element(ClockTable, stable_vc, 2),
@@ -137,9 +108,6 @@ handle_command({update_stable_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable
     NewSVC = grb_vclock:max(OldSVC, SVC),
     true = ets:update_element(ClockTable, stable_vc, {2, NewSVC}),
     {noreply, S};
-
-handle_command({?update_clock_req, FromPartition, KnownVC}, _Sender, State) ->
-    {noreply, clock_event_internal(FromPartition, KnownVC, State)};
 
 handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
     ok = update_known_vc(FromReplica, Ts, ClockTable),
@@ -161,16 +129,6 @@ handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
 
-handle_info(?broadcast_clock_req, State=#state{partition=Partition,
-                                               clock_cache=ClockTable,
-                                               broadcast_clock_timer=Timer,
-                                               broadcast_clock_interval=Interval}) ->
-    erlang:cancel_timer(Timer),
-    KnownVC = ets:lookup_element(ClockTable, known_vc, 2),
-    grb_dc_utils:bcast_vnode_async_noself(?master, Partition, {?update_clock_req, Partition, KnownVC}),
-    NewState = clock_event_internal(Partition, KnownVC, State),
-    {ok, NewState#state{broadcast_clock_timer=erlang:send_after(Interval, self(), ?broadcast_clock_req)}};
-
 handle_info(Msg, State) ->
     ?LOG_WARNING("unhandled_info ~p", [Msg]),
     {ok, State}.
@@ -178,27 +136,6 @@ handle_info(Msg, State) ->
 %%%===================================================================
 %%% internal functions
 %%%===================================================================
-
--spec compute_stable_vc(local_matrix(), partition_id(), [partition_id()], [replica_id()]) -> vclock().
-compute_stable_vc(LocalKnownMatrix, LocalPartition, AllPartitions, AllReplicas) ->
-    Fresh = grb_vclock:new(),
-    lists:foldl(fun(Partition, Acc) ->
-        RVC = maps:get(Partition, LocalKnownMatrix, Fresh),
-        grb_vclock:min_at(AllReplicas, RVC, Acc)
-    end, maps:get(LocalPartition, LocalKnownMatrix, Fresh), AllPartitions).
-
--spec clock_event_internal(partition_id(), vclock(), #state{}) -> #state{}.
-clock_event_internal(FromPartition, KnownVC, S=#state{partition=Partition,
-                                                   clock_cache=ClockCache,
-                                                   local_known_matrix=Matrix0,
-                                                   cluster_partitions=AllPartitions}) ->
-
-    Matrix1 = Matrix0#{FromPartition => KnownVC},
-    LocalReplica = grb_dc_utils:replica_id(),
-    RemoteReplicas = grb_dc_connection_manager:connected_replicas(),
-    SVC = compute_stable_vc(Matrix1, Partition, AllPartitions, [LocalReplica | RemoteReplicas]),
-    true = ets:update_element(ClockCache, stable_vc, {2, SVC}),
-    S#state{local_known_matrix=Matrix1}.
 
 %% todo(borja): Relay transactions from other replicas when we add uniformity
 -spec propagate_internal(grb_time:ts(), #state{}) -> #{replica_id() => grb_blue_commit_log:t()}.
@@ -305,26 +242,3 @@ handle_overload_command(_, _, _) ->
 
 handle_overload_info(_, _Idx) ->
     ok.
-
--ifdef(TEST).
-grb_propagation_vnode_compute_stable_vc_test() ->
-    SelfPartition = p,
-    Partitions = [p, q, r, s],
-    Replicas = [dc_id1, dc_id2, dc_id3],
-
-    EmptySVC = compute_stable_vc(#{}, SelfPartition, Partitions, Replicas),
-    lists:foreach(fun(R) ->
-        ?assertEqual(0, grb_vclock:get_time(R, EmptySVC))
-    end, Replicas),
-
-    Matrix0 = #{
-        p => #{dc_id1 => 0, dc_id2 => 0, dc_id3 => 10},
-        q => #{dc_id1 => 5, dc_id2 => 3, dc_id3 => 2},
-        r => #{dc_id1 => 3, dc_id2 => 4, dc_id3 => 7},
-        s => #{dc_id1 => 0, dc_id2 => 2, dc_id3 => 3}
-    },
-
-    ResultSVC = compute_stable_vc(Matrix0, SelfPartition, Partitions, Replicas),
-    ?assertEqual(#{dc_id1 => 0, dc_id2 => 0, dc_id3 => 2}, ResultSVC).
-
--endif.
