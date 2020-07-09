@@ -40,7 +40,7 @@
 
 -spec connect_to(replica_descriptor()) -> ok | {error, term()}.
 connect_to(#replica_descriptor{replica_id=ReplicaID, remote_addresses=RemoteNodes}) ->
-    ?LOG_DEBUG("Node ~p connected succesfully to DC ~p", [ReplicaID]),
+    ?LOG_DEBUG("Node ~p connected succesfully to DC ~p", [ReplicaID, RemoteNodes]),
     %% RemoteNodes is a map, with Partitions as keys
     %% The value is a tuple {IP, Port}, to allow addressing
     %% that specific partition at the replica
@@ -99,6 +99,7 @@ send_msg(Replica, Partition, Msg) ->
                      Time :: grb_time:ts()) -> ok.
 
 send_heartbeat(ToId, FromId, Partition, Time) ->
+    ?LOG_DEBUG("Sending blue_hearbeat to ~p:~p on behalf of ~p: ~p", [ToId, Partition, FromId, Time]),
     send_msg(ToId, Partition, heartbeat(FromId, Partition, Time)).
 
 -spec send_tx(From :: replica_id(),
@@ -107,6 +108,7 @@ send_heartbeat(ToId, FromId, Partition, Time) ->
               Tx :: {term(), #{}, vclock()}) -> ok.
 
 send_tx(ToId, FromId, Partition, Transaction) ->
+    ?LOG_DEBUG("Sending transaction to ~p:~p on behalf of ~p", [ToId, Partition, FromId, Transaction]),
     send_msg(ToId, Partition, replicate_tx(FromId, Partition, Transaction)).
 
 %% @doc Send a message to all replicas of the given partition
