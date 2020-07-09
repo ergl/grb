@@ -129,7 +129,8 @@ async_op(Promise, Partition, Key, VC, Val) ->
 -spec decide_blue(partition_id(), _, vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->
     Target = random_replica(Partition),
-    gen_server:cast(Target, {decide_blue, TxId, VC}).
+    ReplicaId = grb_dc_utils:replica_id(),
+    gen_server:cast(Target, {decide_blue, ReplicaId, TxId, VC}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
@@ -164,8 +165,8 @@ handle_cast({perform_op, Promise, ReplicaId, Key, VC, Val}, State) ->
     ok = perform_op_internal(Promise, ReplicaId, Key, VC, Val, State),
     {noreply, State};
 
-handle_cast({decide_blue, TxId, VC}, State) ->
-    ok = decide_blue_internal(State#state.partition, TxId, VC),
+handle_cast({decide_blue, ReplicaId, TxId, VC}, State) ->
+    ok = decide_blue_internal(State#state.partition, ReplicaId, TxId, VC),
     {noreply, State};
 
 handle_cast(_Request, _State) ->
@@ -179,8 +180,8 @@ handle_info({retry_op_wait, Promise, ReplicaId, Key, VC, Val}, State) ->
     ok = perform_op_wait(Promise, ReplicaId, Key, VC, Val, State),
     {noreply, State};
 
-handle_info({retry_decide, TxId, VC}, State) ->
-    ok = decide_blue_internal(State#state.partition, TxId, VC),
+handle_info({retry_decide, ReplicaId, TxId, VC}, State) ->
+    ok = decide_blue_internal(State#state.partition, ReplicaId, TxId, VC),
     {noreply, State};
 
 handle_info(Info, State) ->
@@ -283,22 +284,21 @@ perform_op_continue(Promise, Key, VC, Val, State=#state{default_bottom_value=Bot
             end
     end.
 
--spec decide_blue_internal(partition_id(), _, vclock()) -> ok.
-decide_blue_internal(Partition, TxId, VC) ->
-    case check_current_clock(VC) of
+-spec decide_blue_internal(partition_id(), replica_id(), _, vclock()) -> ok.
+decide_blue_internal(Partition, ReplicaId, TxId, VC) ->
+    case check_current_clock(ReplicaId, VC) of
         {not_ready, WaitTime} ->
-            erlang:send_after(WaitTime, self(), {retry_decide, TxId, VC}),
+            erlang:send_after(WaitTime, self(), {retry_decide, ReplicaId, TxId, VC}),
             ok;
         ready ->
             riak_core_vnode_master:command({Partition, node()},
-                                           {decide_blue, TxId, VC},
+                                           {decide_blue, ReplicaId, TxId, VC},
                                            grb_main_vnode_master)
     end.
 
--spec check_current_clock(vclock()) -> ready | {not_ready, non_neg_integer()}.
-check_current_clock(VC) ->
-    CurrentReplica = grb_dc_utils:replica_id(),
-    SelfBlue = grb_vclock:get_time(CurrentReplica, VC),
+-spec check_current_clock(replica_id(), vclock()) -> ready | {not_ready, non_neg_integer()}.
+check_current_clock(ReplicaId, VC) ->
+    SelfBlue = grb_vclock:get_time(ReplicaId, VC),
     CurrentTS = grb_time:timestamp(),
     case CurrentTS >= SelfBlue of
         true ->

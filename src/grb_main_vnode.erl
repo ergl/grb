@@ -190,8 +190,8 @@ handle_command({prepare_blue, TxId, WS, Ts}, _From, S=#state{prepared_blue=PB}) 
     ?LOG_DEBUG("prepare_blue ~p wtih time ~p", [TxId, Ts]),
     {noreply, S#state{prepared_blue=PB#{TxId => {WS, Ts}}}};
 
-handle_command({decide_blue, TxId, VC}, _From, State) ->
-    NewState = decide_blue_internal(TxId, VC, State),
+handle_command({decide_blue, ReplicaId, TxId, VC}, _From, State) ->
+    NewState = decide_blue_internal(ReplicaId, TxId, VC, State),
     {noreply, NewState};
 
 handle_command({handle_remote_tx, SourceReplica, TxId, WS, VC}, _From, S=#state{partition=P,
@@ -230,16 +230,15 @@ handle_info(Msg, State) ->
     ?LOG_WARNING("unhandled_info ~p", [Msg]),
     {ok, State}.
 
--spec decide_blue_internal(term(), vclock(), #state{}) -> #state{}.
-decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
-                                        op_log=OpLog,
-                                        op_log_size=LogSize,
-                                        prepared_blue=PreparedBlue}) ->
+-spec decide_blue_internal(replica_id(), term(), vclock(), #state{}) -> #state{}.
+decide_blue_internal(ReplicaId, TxId, VC, S=#state{partition=SelfPartition,
+                                                   op_log=OpLog,
+                                                   op_log_size=LogSize,
+                                                   prepared_blue=PreparedBlue}) ->
 
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
     {{WS, _}, PreparedBlue1} = maps:take(TxId, PreparedBlue),
-    ReplicaId = grb_dc_utils:replica_id(),
     ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
     KnownTime = compute_new_known_time(PreparedBlue1),
     ok = grb_propagation_vnode:append_blue_commit(ReplicaId, SelfPartition, KnownTime, TxId, WS, VC),
