@@ -181,6 +181,7 @@ handle_info(?propagate_req, State=#state{partition=P,
                                          propagate_interval=Interval}) ->
 
     erlang:cancel_timer(Timer),
+    %% todo(borja, uniformity): piggy-back on these messages to send knownVC / stableVC to remote replicas
     KnownTime = grb_main_vnode:get_known_time(P),
     KnownVC = get_updated_known_vc(LocalId, KnownTime, ClockTable),
     NewMatrix = propagate_internal(KnownVC, State),
