@@ -5,7 +5,6 @@
 
 %% Public API
 -export([cache_name/2,
-         get_default/1,
          get_known_time/1,
          prepare_blue/4,
          handle_replicate/5]).
@@ -57,10 +56,6 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
-
--spec get_default(partition_id()) -> {term(), grb_time:ts()}.
-get_default(Partition) ->
-    riak_core_vnode_master:sync_command({Partition, node()}, get_default, ?master).
 
 -spec get_known_time(partition_id()) -> grb_time:ts().
 get_known_time(Partition) ->
@@ -159,6 +154,7 @@ handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     Result = grb_partition_replica:replica_ready(P, N),
     {reply, Result, S};
 
+%% called from grb:load/1 to verify loading mechanism
 handle_command(get_default, _From, S=#state{default_bottom_value=Val, default_bottom_red=RedTs}) ->
     {reply, {Val, RedTs}, S};
 
