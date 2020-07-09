@@ -67,10 +67,10 @@ get_default(Partition) ->
 
 -spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
 prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
-    %% todo(borja, uniformity): Have to update uniform_vc, not stable_vc
-    StableVC0 = grb_propagation_vnode:stable_vc(Partition),
-    StableVC1 = grb_vclock:max_except(grb_dc_utils:replica_id(), StableVC0, SnapshotVC),
-    ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC1),
+    ReplicaId = grb_dc_utils:replica_id(),
+    UniformVC0 = grb_propagation_vnode:uniform_vc(Partition),
+    UniformVC1 = grb_vclock:max_except(ReplicaId, UniformVC0, SnapshotVC),
+    ok = grb_propagation_vnode:update_uniform_vc(Partition, UniformVC1),
     Ts = grb_time:timestamp(),
     ok = riak_core_vnode_master:command({Partition, node()},
                                         {prepare_blue, TxId, WriteSet, Ts},
