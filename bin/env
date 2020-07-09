@@ -6,7 +6,7 @@ if [ -z "$RIAK_HANDOFF_PORT" ]; then
 fi
 
 if [ -z "$RIAK_RING_SIZE" ]; then
-  export RIAK_RING_SIZE=32
+  export RIAK_RING_SIZE=64
 fi
 
 # GRB config
