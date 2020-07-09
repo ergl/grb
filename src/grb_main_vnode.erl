@@ -199,8 +199,7 @@ handle_command({handle_remote_tx, SourceReplica, TxId, WS, VC}, _From, S=#state{
                                                                                 op_log_size=LogSize}) ->
     CommitTime = grb_vclock:get_time(SourceReplica, VC),
     ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
-    %% todo(borja, uniformity): Add to committedBlue[SourceReplica]
-    ok = grb_propagation_vnode:handle_blue_heartbeat(P, SourceReplica, CommitTime),
+    ok = grb_propagation_vnode:append_blue_commit(SourceReplica, P, CommitTime, TxId, WS, VC),
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->
