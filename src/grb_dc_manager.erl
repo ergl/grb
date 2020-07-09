@@ -56,7 +56,7 @@ disable_blue_append() ->
 
 -spec start_propagation_processes() -> ok.
 start_propagation_processes() ->
-    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_propagate_timer),
+    Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_propagate_timer),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
@@ -72,7 +72,7 @@ stop_background_processes() ->
 
 -spec stop_propagation_processes() -> ok.
 stop_propagation_processes() ->
-    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_propagate_timer),
+    Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, stop_propagate_timer),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.

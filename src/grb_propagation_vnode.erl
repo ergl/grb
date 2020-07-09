@@ -14,8 +14,7 @@
          uniform_vc/1,
          update_uniform_vc/2,
          handle_blue_heartbeat/3,
-         append_blue_commit/6,
-         propagate_transactions/2]).
+         append_blue_commit/6]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -41,6 +40,7 @@
               handle_info/2]).
 
 -define(master, grb_propagation_vnode_master).
+-define(propagate_req, propagate_event).
 
 -type global_known_matrix() :: #{{replica_id(), replica_id()} => grb_time:ts()}.
 -type blue_commit_logs() :: #{replica_id() => grb_blue_commit_log:t()}.
@@ -48,8 +48,13 @@
 -record(state, {
     partition :: partition_id(),
     local_replica :: replica_id(),
-    global_known_matrix = #{} :: global_known_matrix(),
+
     logs = #{} :: blue_commit_logs(),
+    global_known_matrix = #{} :: global_known_matrix(),
+
+    propagate_interval :: non_neg_integer(),
+    propagate_timer = undefined :: reference() | undefined,
+
     %% It doesn't make sense to append it if we're not connected to other clusters
     should_append_commit = true :: boolean(),
     clock_cache :: cache(atom(), vclock())
@@ -83,10 +88,6 @@ known_vc(Partition) ->
 handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
     riak_core_vnode_master:command({Partition, node()}, {blue_hb, ReplicaId, Ts}, ?master).
 
--spec propagate_transactions(partition_id(), grb_time:ts()) -> ok.
-propagate_transactions(Partition, KnownTime) ->
-    riak_core_vnode_master:command({Partition, node()}, {propagate_tx, KnownTime}, ?master).
-
 -spec append_blue_commit(replica_id(), partition_id(), grb_time:ts(), term(), #{}, vclock()) -> ok.
 append_blue_commit(ReplicaId, Partition, KnownTime, TxId, WS, CommitVC) ->
     riak_core_vnode_master:command({Partition, node()},
@@ -101,6 +102,7 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
+    {ok, PropagateInterval} = application:get_env(grb, propagate_interval),
     ClockTable = new_cache(Partition, ?PARTITION_CLOCK_TABLE),
     true = ets:insert(ClockTable, [{uniform_vc, grb_vclock:new()},
                                    {stable_vc, grb_vclock:new()},
@@ -108,6 +110,7 @@ init([Partition]) ->
 
     {ok, #state{partition=Partition,
                 local_replica=grb_dc_utils:replica_id(), % ok to do this, we'll overwrite it after join
+                propagate_interval=PropagateInterval,
                 clock_cache=ClockTable}}.
 
 handle_command(ping, _Sender, State) ->
@@ -122,6 +125,20 @@ handle_command(disable_blue_append, _Sender, S) ->
 handle_command(learn_dc_id, _Sender, S) ->
     %% called after joining ring, this is now the correct id
     {reply, ok, S#state{local_replica=grb_dc_utils:replica_id()}};
+
+handle_command(start_propagate_timer, _From, S = #state{propagate_interval=Int, propagate_timer=undefined}) ->
+    TRef = erlang:send_after(Int, self(), ?propagate_req),
+    {reply, ok, S#state{propagate_timer=TRef}};
+
+handle_command(start_propagate_timer, _From, S = #state{propagate_timer=_TRef}) ->
+    {reply, ok, S};
+
+handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=undefined}) ->
+    {reply, ok, S};
+
+handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=TRef}) ->
+    erlang:cancel_timer(TRef),
+    {reply, ok, S#state{propagate_timer=undefined}};
 
 handle_command({update_stable_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
     OldSVC = ets:lookup_element(ClockTable, stable_vc, 2),
@@ -153,14 +170,22 @@ handle_command({append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC}, _Sender,
     ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
     {noreply, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
 
-handle_command({propagate_tx, KnownTime}, _Sender, S=#state{local_replica=LocalId, clock_cache=ClockTable}) ->
-    KnownVC = get_updated_known_vc(LocalId, KnownTime, ClockTable),
-    NewMatrix = propagate_internal(KnownVC, S),
-    {noreply, S#state{global_known_matrix=NewMatrix}};
-
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
+
+handle_info(?propagate_req, State=#state{partition=P,
+                                         local_replica=LocalId,
+                                         clock_cache=ClockTable,
+                                         propagate_timer=Timer,
+                                         propagate_interval=Interval}) ->
+
+    erlang:cancel_timer(Timer),
+    KnownTime = grb_main_vnode:get_known_time(P),
+    KnownVC = get_updated_known_vc(LocalId, KnownTime, ClockTable),
+    NewMatrix = propagate_internal(KnownVC, State),
+    {ok, State#state{global_known_matrix=NewMatrix,
+                     propagate_timer=erlang:send_after(Interval, self(), ?propagate_req)}};
 
 handle_info(Msg, State) ->
     ?LOG_WARNING("unhandled_info ~p", [Msg]),

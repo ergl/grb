@@ -6,6 +6,7 @@
 %% Public API
 -export([cache_name/2,
          get_default/1,
+         get_known_time/1,
          prepare_blue/4,
          handle_replicate/5]).
 
@@ -33,7 +34,6 @@
               handle_info/2]).
 
 -define(master, grb_main_vnode_master).
--define(propagate_req, propagate_event).
 -define(blue_tick_req, blue_tick_event).
 
 -record(state, {
@@ -43,9 +43,6 @@
     replicas_n = ?READ_CONCURRENCY :: non_neg_integer(),
 
     prepared_blue :: #{any() => {#{}, vclock()}},
-
-    propagate_interval :: non_neg_integer(),
-    propagate_timer = undefined :: reference() | undefined,
 
     blue_tick_interval :: non_neg_integer(),
     blue_tick_timer = undefined :: reference() | undefined,
@@ -65,6 +62,10 @@
 get_default(Partition) ->
     riak_core_vnode_master:sync_command({Partition, node()}, get_default, ?master).
 
+-spec get_known_time(partition_id()) -> grb_time:ts().
+get_known_time(Partition) ->
+    riak_core_vnode_master:sync_command({Partition, node()}, get_known_time, ?master).
+
 -spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
 prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
     ReplicaId = grb_dc_utils:replica_id(),
@@ -83,7 +84,6 @@ handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
                                    {handle_remote_tx, SourceReplica, TxId, WS, VC},
                                    ?master).
 
-
 %%%===================================================================
 %%% api riak_core callbacks
 %%%===================================================================
@@ -94,11 +94,6 @@ start_vnode(I) ->
 
 init([Partition]) ->
     {ok, KeyLogSize} = application:get_env(grb, version_log_size),
-    {ok, PropagateInterval} = application:get_env(grb, propagate_interval),
-    %% This timer is always started automatically, even if the ring is not ready
-    %% This is because it doesn't matter if we're in a cluster, we always want to
-    %% be updating our knownVC entry.
-    %%
     %% We're not using the timer:send_interval/2 or timer:send_after/2 functions for
     %% two reasons:
     %%
@@ -117,7 +112,6 @@ init([Partition]) ->
     State = #state{partition = Partition,
                    prepared_blue = #{},
                    blue_tick_interval=BlueTickInterval,
-                   propagate_interval=PropagateInterval,
                    op_log_size = KeyLogSize,
                    op_log = new_cache(Partition, ?OP_LOG_TABLE)},
 
@@ -165,22 +159,11 @@ handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     Result = grb_partition_replica:replica_ready(P, N),
     {reply, Result, S};
 
-handle_command(start_propagate_timer, _From, S = #state{propagate_interval=Int, propagate_timer=undefined}) ->
-    TRef = erlang:send_after(Int, self(), ?propagate_req),
-    {reply, ok, S#state{propagate_timer=TRef}};
-
-handle_command(start_propagate_timer, _From, S = #state{propagate_timer=_TRef}) ->
-    {reply, ok, S};
-
-handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=undefined}) ->
-    {reply, ok, S};
-
-handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=TRef}) ->
-    erlang:cancel_timer(TRef),
-    {reply, ok, S#state{propagate_timer=undefined}};
-
 handle_command(get_default, _From, S=#state{default_bottom_value=Val, default_bottom_red=RedTs}) ->
     {reply, {Val, RedTs}, S};
+
+handle_command(get_known_time, _From, S=#state{prepared_blue=PreparedBlue}) ->
+    {reply, compute_new_known_time(PreparedBlue), S};
 
 handle_command({update_default, DefaultVal, DefaultRed}, _From, S=#state{partition=P, replicas_n=N}) ->
     Result = grb_partition_replica:update_default(P, N, DefaultVal, DefaultRed),
@@ -214,17 +197,6 @@ handle_info(?blue_tick_req, State=#state{partition=P,
     KnownTime = compute_new_known_time(PreparedBlue),
     ok = grb_propagation_vnode:handle_blue_heartbeat(P, grb_dc_utils:replica_id(), KnownTime),
     {ok, State#state{blue_tick_timer=erlang:send_after(Interval, self(), ?blue_tick_req)}};
-
-handle_info(?propagate_req, State=#state{partition=P,
-                                         propagate_timer=Timer,
-                                         propagate_interval=Interval,
-                                         prepared_blue=PreparedBlue}) ->
-    erlang:cancel_timer(Timer),
-    %% compute knownVC[d]
-    KnownTime = compute_new_known_time(PreparedBlue),
-    %% todo(borja): Make sync?
-    ok = grb_propagation_vnode:propagate_transactions(P, KnownTime),
-    {ok, State#state{propagate_timer=erlang:send_after(Interval, self(), ?propagate_req)}};
 
 handle_info(Msg, State) ->
     ?LOG_WARNING("unhandled_info ~p", [Msg]),
