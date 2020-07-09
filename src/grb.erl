@@ -54,12 +54,17 @@ load(Size) ->
 uniform_barrier(Promise, Partition, CVC) ->
     ok = grb_partition_replica:uniform_barrier(Promise, Partition, CVC).
 
-%% todo(borja, uniformity): Have to update uniform_vc, not stable_vc
+-spec start_transaction(partition_id(), vclock()) -> vclock().
 start_transaction(Partition, ClientVC) ->
-    StableVC0 = grb_propagation_vnode:stable_vc(Partition),
-    StableVC1 = grb_vclock:max_except(grb_dc_utils:replica_id(), StableVC0, ClientVC),
-    ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC1),
-    grb_vclock:max(ClientVC, StableVC1).
+    ReplicaId = grb_dc_utils:replica_id(),
+    %% First, update uniformVC everywhere but current replica
+    UniformVC0 = grb_propagation_vnode:uniform_vc(Partition),
+    UniformVC1 = grb_vclock:max_except(ReplicaId, UniformVC0, ClientVC),
+    ok = grb_propagation_vnode:update_uniform_vc(Partition, UniformVC1),
+    %% snapshotVC[replica] is the same as before, but merge it with stableVC at red
+    StableVC = grb_propagation_vnode:stable_vc(Partition),
+    SVC = grb_vclock:max(ClientVC, UniformVC1),
+    grb_vclock:max_at(?RED_REPLICA, SVC, StableVC).
 
 -spec perform_op(grb_promise:t(), partition_id(), key(), vclock(), val()) -> ok.
 perform_op(Promise, Partition, Key, SnapshotVC, Val) ->

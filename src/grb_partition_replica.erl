@@ -249,9 +249,9 @@ perform_op_wait(Promise, ReplicaId, Key, SnapshotVC, Val, S=#state{partition=Par
 check_known_vc(Partition, ReplicaId, VC) ->
     KnownVC = grb_propagation_vnode:known_vc(Partition),
     SelfBlue = grb_vclock:get_time(ReplicaId, VC),
-    SelfRed = grb_vclock:get_time(red, VC),
+    SelfRed = grb_vclock:get_time(?RED_REPLICA, VC),
     BlueTime = grb_vclock:get_time(ReplicaId, KnownVC),
-    RedTime = grb_vclock:get_time(red, KnownVC),
+    RedTime = grb_vclock:get_time(?RED_REPLICA, KnownVC),
     BlueCheck = BlueTime >= SelfBlue,
     RedCheck = RedTime >= SelfRed,
     case (BlueCheck andalso RedCheck) of
@@ -278,7 +278,7 @@ perform_op_continue(Promise, Key, VC, Val, State=#state{default_bottom_value=Bot
             case grb_version_log:get_first_lower(VC, Log) of
                 undefined -> grb_promise:resolve({ok, BaseVal, BottomRedTs}, Promise);
                 {_, LastVal, LastVC} ->
-                    RedTs = grb_vclock:get_time(red, LastVC),
+                    RedTs = grb_vclock:get_time(?RED_REPLICA, LastVC),
                     ReturnVal = case Val of <<>> -> LastVal; _ -> Val end,
                     grb_promise:resolve({ok, ReturnVal, RedTs}, Promise)
             end

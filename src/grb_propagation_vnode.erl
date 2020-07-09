@@ -12,6 +12,7 @@
          stable_vc/1,
          update_stable_vc/2,
          uniform_vc/1,
+         update_uniform_vc/2,
          handle_blue_heartbeat/3,
          append_blue_commit/6,
          propagate_transactions/2]).
@@ -70,6 +71,10 @@ stable_vc(Partition) ->
 update_stable_vc(Partition, SVC) ->
     riak_core_vnode_master:command({Partition, node()}, {update_stable_vc, SVC}, ?master).
 
+-spec update_uniform_vc(partition_id(), vclock()) -> ok.
+update_uniform_vc(Partition, SVC) ->
+    riak_core_vnode_master:command({Partition, node()}, {update_uniform_vc, SVC}, ?master).
+
 -spec known_vc(partition_id()) -> vclock().
 known_vc(Partition) ->
     ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), known_vc, 2).
@@ -123,6 +128,13 @@ handle_command({update_stable_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable
     %% Safe to update everywhere, caller has already ensured to not update the current replica
     NewSVC = grb_vclock:max(OldSVC, SVC),
     true = ets:update_element(ClockTable, stable_vc, {2, NewSVC}),
+    {noreply, S};
+
+handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
+    OldSVC = ets:lookup_element(ClockTable, uniform_vc, 2),
+    %% Safe to update everywhere, caller has already ensured to not update the current replica
+    NewSVC = grb_vclock:max(OldSVC, SVC),
+    true = ets:update_element(ClockTable, uniform_vc, {2, NewSVC}),
     {noreply, S};
 
 handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
