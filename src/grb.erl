@@ -9,6 +9,7 @@
 %% API for applications
 -export([connect/0,
          load/1,
+         uniform_barrier/3,
          start_transaction/2,
          perform_op/5,
          prepare_blue/4,
@@ -48,6 +49,10 @@ load(Size) ->
         end
     end, Res1),
     ok.
+
+-spec uniform_barrier(grb_promise:t(), partition_id(), vclock()) -> ok.
+uniform_barrier(Promise, Partition, CVC) ->
+    ok = grb_partition_replica:uniform_barrier(Promise, Partition, CVC).
 
 %% todo(borja, uniformity): Have to update uniform_vc, not stable_vc
 start_transaction(Partition, ClientVC) ->
