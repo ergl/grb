@@ -223,10 +223,9 @@ check_uniform_vc(Partition, ReplicaId, CVC) ->
                           State :: #state{}) -> ok.
 
 perform_op_internal(Promise, ReplicaId, Key, SnapshotVC, Val, State=#state{partition=Partition}) ->
-    %% todo(borja, uniformity): Have to update uniform_vc, not stable_vc
-    StableVC0 = grb_propagation_vnode:stable_vc(Partition),
-    StableVC1 = grb_vclock:max_except(ReplicaId, StableVC0, SnapshotVC),
-    ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC1),
+    UniformVC0 = grb_propagation_vnode:uniform_vc(Partition),
+    UniformVC1 = grb_vclock:max_except(ReplicaId, UniformVC0, SnapshotVC),
+    ok = grb_propagation_vnode:update_uniform_vc(Partition, UniformVC1),
     perform_op_wait(Promise, ReplicaId, Key, SnapshotVC, Val, State).
 
 -spec perform_op_wait(Promise :: grb_promise:t(),
