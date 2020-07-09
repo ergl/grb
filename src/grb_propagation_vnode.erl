@@ -41,13 +41,15 @@
 
 -define(master, grb_propagation_vnode_master).
 
+-type global_known_matrix() :: #{{replica_id(), replica_id()} => grb_time:ts()}.
+-type blue_commit_logs() :: #{replica_id() => grb_blue_commit_log:t()}.
+
 -record(state, {
     partition :: partition_id(),
-    %% todo(borja, uniformity): Change last_sent to globalKnownMatrix
-    last_sent = 0 :: grb_time:ts(),
-    logs = #{} :: #{replica_id() => grb_blue_commit_log:t()},
-    %% It doesn't make sense to append it if we're not connected
-    %% to other clusters
+    local_replica :: replica_id(),
+    global_known_matrix = #{} :: global_known_matrix(),
+    logs = #{} :: blue_commit_logs(),
+    %% It doesn't make sense to append it if we're not connected to other clusters
     should_append_commit = true :: boolean(),
     clock_cache :: cache(atom(), vclock())
 }).
@@ -100,6 +102,7 @@ init([Partition]) ->
                                    {known_vc, grb_vclock:new()}]),
 
     {ok, #state{partition=Partition,
+                local_replica=grb_dc_utils:replica_id(), % ok to do this, we'll overwrite it after join
                 clock_cache=ClockTable}}.
 
 handle_command(ping, _Sender, State) ->
@@ -110,6 +113,10 @@ handle_command(enable_blue_append, _Sender, S) ->
 
 handle_command(disable_blue_append, _Sender, S) ->
     {reply, ok, S#state{should_append_commit=false}};
+
+handle_command(learn_dc_id, _Sender, S) ->
+    %% called after joining ring, this is now the correct id
+    {reply, ok, S#state{local_replica=grb_dc_utils:replica_id()}};
 
 handle_command({update_stable_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
     OldSVC = ets:lookup_element(ClockTable, stable_vc, 2),
@@ -134,11 +141,10 @@ handle_command({append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC}, _Sender,
     ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
     {noreply, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
 
-handle_command({propagate_tx, KnownTime}, _Sender, S=#state{clock_cache=ClockTable}) ->
-    NewLogs = propagate_internal(KnownTime, S),
-    ok = update_known_vc(KnownTime, ClockTable),
-    %% todo(borja, uniformity): last_send should change to globalKnownMatrix
-    {noreply, S#state{last_sent=KnownTime, logs=NewLogs}};
+handle_command({propagate_tx, KnownTime}, _Sender, S=#state{local_replica=LocalId, clock_cache=ClockTable}) ->
+    KnownVC = get_updated_known_vc(LocalId, KnownTime, ClockTable),
+    NewMatrix = propagate_internal(KnownVC, S),
+    {noreply, S#state{global_known_matrix=NewMatrix}};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
@@ -152,33 +158,73 @@ handle_info(Msg, State) ->
 %%% internal functions
 %%%===================================================================
 
-%% todo(borja): Relay transactions from other replicas when we add uniformity
--spec propagate_internal(grb_time:ts(), #state{}) -> #{replica_id() => grb_blue_commit_log:t()}.
-propagate_internal(LocalKnownTime, #state{partition=P, last_sent=LastSent, logs=Logs}) ->
-    LocalId = grb_dc_utils:replica_id(),
-    LocalLog = maps:get(LocalId, Logs, grb_blue_commit_log:new(LocalId)),
-    {ToSend, NewLog} = grb_blue_commit_log:remove_bigger(LastSent, LocalLog),
+-spec propagate_internal(vclock(), #state{}) -> global_known_matrix().
+propagate_internal(KnownVC, #state{local_replica=LocalId, partition=Partition, logs=Logs, global_known_matrix=Matrix}) ->
+    RemoteReplicas = grb_dc_connection_manager:connected_replicas(),
+    AllReplicas = [LocalId | RemoteReplicas],
+    lists:foldl(fun(TargetReplica, GlobalMatrix) ->
+        propagate_to(TargetReplica, AllReplicas, Partition, Logs, KnownVC, GlobalMatrix)
+    end, Matrix, RemoteReplicas).
+
+%% @doc Propagate transactions / heartbeats to the target replica.
+%%
+%%      This will iterate over all the other connected replicas and fetch the
+%%      necessary transactions/replicas to relay to the target replica.
+%%
+%%      In effect, we re-send transactions from other replicas to the target,
+%%      to ensure that even if a replica goes down, if we received an update
+%%      from it, other replicas will see it.
+-spec propagate_to(Target :: replica_id(),
+                   AllReplicas :: [replica_id()],
+                   LocalPartition :: partition_id(),
+                   Logs :: blue_commit_logs(),
+                   KnownVC :: vclock(),
+                   Matrix :: global_known_matrix()) -> global_known_matrix().
+
+propagate_to(_TargetReplica, [], _Partition, _Logs, _KnownVC, MatrixAcc) ->
+    MatrixAcc;
+propagate_to(TargetReplica, [TargetReplica | Rest], Partition, Logs, KnownVC, MatrixAcc) ->
+    %% skip ourselves
+    propagate_to(TargetReplica, Rest, Partition, Logs, KnownVC, MatrixAcc);
+propagate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, KnownVC, MatrixAcc) ->
+    %% tx <- { <_, _, VC> \in log[relay] | VC[relay] > globalMatrix[target, relay] }
+    %% if tx =/= \emptyset
+    %%     for all t \in tx (in t.VC[relay] order)
+    %%         send REPLICATE(relay, t) to target
+    %% else
+    %%     send HEARTBEAT(relay, knownVC[relay]) to target
+    %% globalMatrix[target, relay] <- knownVC[relay]
+    RelayKnownTime = grb_vclock:get_time(RelayReplica, KnownVC),
+    Log = maps:get(RelayReplica, Logs, grb_blue_commit_log:new(RelayReplica)),
+    LastSent = maps:get({TargetReplica, RelayReplica}, MatrixAcc, 0),
+    ToSend = grb_blue_commit_log:get_bigger(LastSent, Log),
     case ToSend of
         [] ->
-            grb_dc_connection_manager:broadcast_heartbeat(LocalId, P, LocalKnownTime);
+            grb_dc_connection_manager:send_heartbeat(TargetReplica, RelayReplica, Partition, RelayKnownTime);
         Txs ->
-            %% Entries are already ordered according to local commit time at this replica
+            %% Entries are already ordered to commit time at the replica of the log
             lists:foreach(fun(Tx) ->
-                grb_dc_connection_manager:broadcast_tx(LocalId, P, Tx)
+                grb_dc_connection_manager:send_tx(TargetReplica, RelayReplica, Partition, Tx)
             end, Txs)
     end,
-    Logs#{LocalId => NewLog}.
+    NewMatrix = MatrixAcc#{{TargetReplica, RelayReplica} => RelayKnownTime},
+    propagate_to(TargetReplica, Rest, Partition, Logs, KnownVC, NewMatrix).
 
--spec update_known_vc(grb_time:ts(), cache(atom(), vclock())) -> ok.
-update_known_vc(Time, ClockTable) ->
-    update_known_vc(grb_dc_utils:replica_id(), Time, ClockTable).
-
+%% @doc Set knownVC[ReplicaId] <-max- Time
 -spec update_known_vc(replica_id(), grb_time:ts(), cache(atom(), vclock())) -> ok.
 update_known_vc(ReplicaId, Time, ClockTable) ->
     Old = ets:lookup_element(ClockTable, known_vc, 2),
     New = grb_vclock:set_max_time(ReplicaId, Time, Old),
     true = ets:update_element(ClockTable, known_vc, {2, New}),
     ok.
+
+%% @doc Same as update_known_vc/3, but return resulting knownVC
+-spec get_updated_known_vc(replica_id(), grb_time:ts(), cache(atom(), vclock())) -> vclock().
+get_updated_known_vc(ReplicaId, Time, ClockTable) ->
+    Old = ets:lookup_element(ClockTable, known_vc, 2),
+    New = grb_vclock:set_max_time(ReplicaId, Time, Old),
+    true = ets:update_element(ClockTable, known_vc, {2, New}),
+    New.
 
 %%%===================================================================
 %%% Util Functions

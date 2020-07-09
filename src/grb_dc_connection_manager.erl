@@ -11,7 +11,8 @@
 %% External API
 -export([connect_to/1,
          connected_replicas/0,
-         send_msg/3,
+         send_heartbeat/4,
+         send_tx/4,
          broadcast_tx/3,
          broadcast_heartbeat/3]).
 
@@ -91,6 +92,22 @@ send_msg(Replica, Partition, Msg) ->
     Sock = ets:lookup_element(?CONN_SOCKS_TABLE, {Partition, Replica}, 2),
     ok = gen_tcp:send(Sock, Msg),
     ok.
+
+-spec send_heartbeat(To :: replica_id(),
+                     From :: replica_id(),
+                     Partition :: partition_id(),
+                     Time :: grb_time:ts()) -> ok.
+
+send_heartbeat(ToId, FromId, Partition, Time) ->
+    send_msg(ToId, Partition, heartbeat(FromId, Partition, Time)).
+
+-spec send_tx(From :: replica_id(),
+              To :: replica_id(),
+              Partition :: partition_id(),
+              Tx :: {term(), #{}, vclock()}) -> ok.
+
+send_tx(ToId, FromId, Partition, Transaction) ->
+    send_msg(ToId, Partition, replicate_tx(FromId, Partition, Transaction)).
 
 %% @doc Send a message to all replicas of the given partition
 -spec broadcast_msg(partition_id(), any()) -> ok.

@@ -220,7 +220,9 @@ handle_info(?propagate_req, State=#state{partition=P,
                                          propagate_interval=Interval,
                                          prepared_blue=PreparedBlue}) ->
     erlang:cancel_timer(Timer),
+    %% compute knownVC[d]
     KnownTime = compute_new_known_time(PreparedBlue),
+    %% todo(borja): Make sync?
     ok = grb_propagation_vnode:propagate_transactions(P, KnownTime),
     {ok, State#state{propagate_timer=erlang:send_after(Interval, self(), ?propagate_req)}};
 
