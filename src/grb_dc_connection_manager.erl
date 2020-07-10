@@ -13,6 +13,7 @@
          connected_replicas/0,
          send_heartbeat/4,
          send_tx/4,
+         send_clocks/5,
          broadcast_tx/3,
          broadcast_heartbeat/3]).
 
@@ -111,6 +112,16 @@ send_tx(ToId, FromId, Partition, Transaction) ->
     ?LOG_DEBUG("Sending transaction to ~p:~p on behalf of ~p", [ToId, Partition, FromId, Transaction]),
     send_msg(ToId, Partition, replicate_tx(FromId, Partition, Transaction)).
 
+-spec send_clocks(From :: replica_id(),
+                  To :: replica_id(),
+                  Partition :: partition_id(),
+                  KnownVC :: vclock(),
+                  StableVC :: vclock()) -> ok.
+
+send_clocks(ToId, FromId, Partition, KnownVC, StableVC) ->
+    ?LOG_DEBUG("Sending clocks to ~p:~p", [ToId, Partition]),
+    send_msg(ToId, Partition, clock_msg(FromId, Partition, KnownVC, StableVC)).
+
 %% @doc Send a message to all replicas of the given partition
 -spec broadcast_msg(partition_id(), any()) -> ok.
 broadcast_msg(Partition, Msg) ->
@@ -175,6 +186,10 @@ replicate_tx(FromId, ToPartition, {TxId, WS, CommitVC}) ->
     dc_message(FromId, ToPartition, #replicate_tx{tx_id=TxId,
                                                   writeset=WS,
                                                   commit_vc=CommitVC}).
+
+-spec clock_msg(replica_id(), partition_id(), vclock(), vclock()) -> binary().
+clock_msg(FromId, ToPartition, KnownVC, StableVC) ->
+    dc_message(FromId, ToPartition, #update_clocks{known_vc=KnownVC, stable_vc=StableVC}).
 
 -spec dc_message(replica_id(), partition_id(), term()) -> binary().
 dc_message(FromId, Partition, Payload) ->

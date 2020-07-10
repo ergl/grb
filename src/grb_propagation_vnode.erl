@@ -14,6 +14,7 @@
          uniform_vc/1,
          update_uniform_vc/2,
          handle_blue_heartbeat/3,
+         handle_clock_update/4,
          append_blue_commit/6]).
 
 %% riak_core_vnode callbacks
@@ -88,6 +89,12 @@ known_vc(Partition) ->
 handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
     riak_core_vnode_master:command({Partition, node()}, {blue_hb, ReplicaId, Ts}, ?master).
 
+-spec handle_clock_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
+handle_clock_update(Partition, FromReplicaId, KnownVC, StableVC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {remote_clock_update, FromReplicaId, KnownVC, StableVC},
+                                   ?master).
+
 -spec append_blue_commit(replica_id(), partition_id(), grb_time:ts(), term(), #{}, vclock()) -> ok.
 append_blue_commit(ReplicaId, Partition, KnownTime, TxId, WS, CommitVC) ->
     riak_core_vnode_master:command({Partition, node()},
@@ -158,6 +165,10 @@ handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTa
     ok = update_known_vc(FromReplica, Ts, ClockTable),
     {noreply, S};
 
+handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S) ->
+    ok = update_clocks_internal(FromReplicaId, KnownVC, StableVC),
+    {noreply, S};
+
 handle_command({append_blue, ReplicaId, KnownTime, _TxId, _WS, _CommitVC}, _Sender, S=#state{clock_cache=ClockTable,
                                                                                              should_append_commit=false}) ->
     ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
@@ -181,10 +192,11 @@ handle_info(?propagate_req, State=#state{partition=P,
                                          propagate_interval=Interval}) ->
 
     erlang:cancel_timer(Timer),
-    %% todo(borja, uniformity): piggy-back on these messages to send knownVC / stableVC to remote replicas
     KnownTime = grb_main_vnode:get_known_time(P),
     KnownVC = get_updated_known_vc(LocalId, KnownTime, ClockTable),
-    NewMatrix = propagate_internal(KnownVC, State),
+    StableVC = ets:lookup_element(ClockTable, stable_vc, 2),
+    ok = compute_uniform_vc(LocalId, StableVC),
+    NewMatrix = propagate_internal(KnownVC, StableVC, State),
     {ok, State#state{global_known_matrix=NewMatrix,
                      propagate_timer=erlang:send_after(Interval, self(), ?propagate_req)}};
 
@@ -196,11 +208,18 @@ handle_info(Msg, State) ->
 %%% internal functions
 %%%===================================================================
 
--spec propagate_internal(vclock(), #state{}) -> global_known_matrix().
-propagate_internal(KnownVC, #state{local_replica=LocalId, partition=Partition, logs=Logs, global_known_matrix=Matrix}) ->
+-spec propagate_internal(vclock(), vclock(), #state{}) -> global_known_matrix().
+propagate_internal(KnownVC, StableVC, #state{local_replica=LocalId,
+                                             partition=Partition,
+                                             logs=Logs,
+                                             global_known_matrix=Matrix}) ->
+
     RemoteReplicas = grb_dc_connection_manager:connected_replicas(),
     AllReplicas = [LocalId | RemoteReplicas],
     lists:foldl(fun(TargetReplica, GlobalMatrix) ->
+        %% piggy-back on this loop to send our clocks
+        %% todo(borja, speed): piggy-back on a blue heartbeat inside propagate_to when ReplayReplica = LocalId?
+        ok = grb_dc_connection_manager:send_clocks(TargetReplica, LocalId, Partition, KnownVC, StableVC),
         propagate_to(TargetReplica, AllReplicas, Partition, Logs, KnownVC, GlobalMatrix)
     end, Matrix, RemoteReplicas).
 
@@ -263,6 +282,15 @@ get_updated_known_vc(ReplicaId, Time, ClockTable) ->
     New = grb_vclock:set_max_time(ReplicaId, Time, Old),
     true = ets:update_element(ClockTable, known_vc, {2, New}),
     New.
+
+%% todo(borja, uniformity)
+update_clocks_internal(SourceReplica, _KnownVC, StableVC) ->
+    ok = compute_uniform_vc(SourceReplica, StableVC),
+    ok.
+
+%% todo(borja, uniformity)
+compute_uniform_vc(_SourceReplica, _StableVC) ->
+    ok.
 
 %%%===================================================================
 %%% Util Functions
