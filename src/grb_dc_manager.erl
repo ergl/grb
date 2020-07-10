@@ -56,8 +56,12 @@ disable_blue_append() ->
 
 -spec start_propagation_processes() -> ok.
 start_propagation_processes() ->
-    Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_propagate_timer),
-    ok = lists:foreach(fun({_, ok}) -> ok end, Res),
+    {ok, MyGroups} = compute_groups(grb_dc_utils:replica_id()),
+    ?LOG_DEBUG("Fault tolerant groups: ~p~n", [MyGroups]),
+    Res0 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, {learn_dc_groups, MyGroups}),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
+    Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_propagate_timer),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
@@ -160,3 +164,64 @@ connect_nodes_to_descriptor(Nodes, Desc=#replica_descriptor{replica_id=RemoteId}
                 end
         end
     end, ok, lists:zip(Returns, Nodes)).
+
+
+%% @doc Compute all groups of f+1 replicas including the given replica
+%%
+%%      First, it computes _all_ the possible groups, then selects the
+%%      ones with the given id inside.
+%%
+%%      This may be expensive, but it is only computed once.
+%%
+%%      todo(borja): Change this if we ever support dynamic join of new replicas
+-spec compute_groups(replica_id()) -> {ok, [[replica_id()]]} | {error, not_connected}.
+compute_groups(LocalId) ->
+    case grb_dc_connection_manager:connected_replicas() of
+        [] -> {error, not_connected};
+        Replicas ->
+            %% Pick length(Replicas), since N=f+1, f = N-1
+            AllGroups = cnr(length(Replicas), [LocalId | Replicas]),
+            {ok, lists:filter(fun(L) -> lists:member(LocalId, L) end, AllGroups)}
+    end.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Util Functions
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% Copyright 2016-2017 Jorgen Brandt
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%    http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%
+%% Source: https://github.com/joergen7/lib_combin/blob/b8ef6a0253c6680139aac95b136fee6d6559cf20/src/lib_combin.erl
+%% @doc Enumerates all combinations (order does not matter) of length `N'
+%%      without replacement by drawing elements from `SrcLst'.
+%%
+%%      Herein, `N` must be non-negative for the function clause to match.
+%%
+%%      Example:
+%%      ```
+%%      lib_combin:cnr( 2, [a,b,c] ).
+%%      [[b,a],[c,a],[c,b]]
+%%      '''
+-spec cnr(non_neg_integer(), [any()]) -> [[any()]].
+
+cnr(N, L) ->
+    cnr2(N, L, []).
+
+cnr2(0, _, Acc) -> [Acc];
+cnr2(_, [], _) -> [];
+cnr2(N, [H|T], Acc) ->
+    case T of
+        [] -> cnr2(N - 1, [], [H | Acc]);
+        [_|_] -> cnr2(N - 1, T, [H | Acc]) ++ cnr2(N, T, Acc)
+    end.

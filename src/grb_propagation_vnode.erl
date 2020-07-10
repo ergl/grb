@@ -47,6 +47,7 @@
 -define(stable_key, stable_vc).
 -define(uniform_key, uniform_vc).
 
+-type stable_matrix() :: #{replica_id() => vclock()}.
 -type global_known_matrix() :: #{{replica_id(), replica_id()} => grb_time:ts()}.
 -type blue_commit_logs() :: #{replica_id() => grb_blue_commit_log:t()}.
 
@@ -59,6 +60,10 @@
 
     propagate_interval :: non_neg_integer(),
     propagate_timer = undefined :: reference() | undefined,
+
+    %% All groups with f+1 replicas that include ourselves
+    fault_tolerant_groups = [] :: [[replica_id()]],
+    stable_matrix = #{} :: stable_matrix(),
 
     %% It doesn't make sense to append it if we're not connected to other clusters
     should_append_commit = true :: boolean(),
@@ -137,6 +142,10 @@ handle_command(learn_dc_id, _Sender, S) ->
     %% called after joining ring, this is now the correct id
     {reply, ok, S#state{local_replica=grb_dc_utils:replica_id()}};
 
+handle_command({learn_dc_groups, MyGroups}, _From, S) ->
+    %% called after connecting other replicas
+    {reply, ok, S#state{fault_tolerant_groups=MyGroups}};
+
 handle_command(start_propagate_timer, _From, S = #state{propagate_interval=Int, propagate_timer=undefined}) ->
     TRef = erlang:send_after(Int, self(), ?propagate_req),
     {reply, ok, S#state{propagate_timer=TRef}};
@@ -169,10 +178,14 @@ handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTa
     ok = update_known_vc(FromReplica, Ts, ClockTable),
     {noreply, S};
 
-handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S=#state{global_known_matrix=Matrix}) ->
-    NewMatrix = update_known_matrix(FromReplicaId, KnownVC, Matrix),
-    ok = compute_uniform_vc(FromReplicaId, StableVC),
-    {noreply, S#state{global_known_matrix=NewMatrix}};
+handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S=#state{clock_cache=ClockCache,
+                                                                                          stable_matrix=StableMatrix0,
+                                                                                          fault_tolerant_groups=Groups,
+                                                                                          global_known_matrix=KnownMatrix0}) ->
+
+    KnownMatrix = update_known_matrix(FromReplicaId, KnownVC, KnownMatrix0),
+    StableMatrix = update_uniform_vc(FromReplicaId, StableVC, StableMatrix0, ClockCache, Groups),
+    {noreply, S#state{global_known_matrix=KnownMatrix, stable_matrix=StableMatrix}};
 
 handle_command({append_blue, ReplicaId, KnownTime, _TxId, _WS, _CommitVC}, _Sender, S=#state{clock_cache=ClockTable,
                                                                                              should_append_commit=false}) ->
@@ -193,16 +206,18 @@ handle_command(Message, _Sender, State) ->
 handle_info(?propagate_req, State=#state{partition=P,
                                          local_replica=LocalId,
                                          clock_cache=ClockTable,
+                                         stable_matrix=StableMatrix0,
+                                         fault_tolerant_groups=Groups,
                                          propagate_timer=Timer,
                                          propagate_interval=Interval}) ->
 
     erlang:cancel_timer(Timer),
-    KnownTime = grb_main_vnode:get_known_time(P),
-    KnownVC = get_updated_known_vc(LocalId, KnownTime, ClockTable),
+    KnownVC = get_updated_known_vc(LocalId, grb_main_vnode:get_known_time(P), ClockTable),
     StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
-    ok = compute_uniform_vc(LocalId, StableVC),
-    NewMatrix = propagate_internal(KnownVC, StableVC, State),
-    {ok, State#state{global_known_matrix=NewMatrix,
+    GlobalMatrix = propagate_internal(KnownVC, StableVC, State),
+    StableMatrix = update_uniform_vc(LocalId, StableVC, StableMatrix0, ClockTable, Groups),
+    {ok, State#state{stable_matrix=StableMatrix,
+                     global_known_matrix=GlobalMatrix,
                      propagate_timer=erlang:send_after(Interval, self(), ?propagate_req)}};
 
 handle_info(Msg, State) ->
@@ -296,9 +311,31 @@ update_known_matrix(FromReplicaId, KnownVC, Matrix) ->
         Acc#{{FromReplicaId, AtReplica} => max(Ts, maps:get({FromReplicaId, AtReplica}, Acc, 0))}
     end, Matrix, grb_vclock:to_list(KnownVC)).
 
-%% todo(borja, uniformity)
-compute_uniform_vc(_SourceReplica, _StableVC) ->
-    ok.
+-spec update_uniform_vc(From :: replica_id(),
+                        StableVC :: vclock(),
+                        StableMatrix :: stable_matrix(),
+                        ClockCache :: cache(atom(), vclock()),
+                        Groups :: [[replica_id()]]) -> stable_matrix().
+
+update_uniform_vc(FromReplicaId, StableVC, StableMatrix0, ClockCache, Groups) ->
+    StableMatrix = StableMatrix0#{FromReplicaId => StableVC},
+    UniformVC0 = ets:lookup_element(ClockCache, ?uniform_key, 2),
+    UniformVC = compute_uniform_vc(UniformVC0, StableMatrix, Groups),
+    true = ets:update_element(ClockCache, ?uniform_key, {2, UniformVC}),
+    StableMatrix.
+
+-spec compute_uniform_vc(vclock(), stable_matrix(), [[replica_id()]]) -> vclock().
+compute_uniform_vc(UniformVC, StableMatrix, Groups) ->
+    Fresh = grb_vclock:new(),
+    VisibleBound = lists:foldl(fun(Group, Acc) ->
+        [H|T] = Group,
+        SVC = maps:get(H, StableMatrix, Fresh),
+        GroupMin = lists:foldl(fun(R, AccSVC) ->
+            grb_vclock:min(AccSVC, maps:get(R, StableMatrix, Fresh))
+        end, SVC, T),
+        grb_vclock:max(Acc, GroupMin)
+    end, Fresh, Groups),
+    grb_vclock:max(VisibleBound, UniformVC).
 
 %%%===================================================================
 %%% Util Functions
@@ -379,3 +416,17 @@ handle_overload_command(_, _, _) ->
 
 handle_overload_info(_, _Idx) ->
     ok.
+
+-ifdef(TEST).
+
+grb_propagation_vnode_compute_uniform_vc_test() ->
+    Matrix = #{
+        dc_id1 => #{dc_id1 => 2, dc_id2 => 2, dc_id3 => 1},
+        dc_id2 => #{dc_id1 => 2, dc_id2 => 3, dc_id3 => 1},
+        dc_id3 => #{dc_id1 => 1, dc_id2 => 2, dc_id3 => 2}
+    },
+    FGroups = [[dc_id1, dc_id2], [dc_id1, dc_id3]],
+    UniformVC = compute_uniform_vc(grb_vclock:new(), Matrix, FGroups),
+    ?assertEqual(#{dc_id1 => 2, dc_id2 => 2, dc_id3 => 1}, UniformVC).
+
+-endif.
