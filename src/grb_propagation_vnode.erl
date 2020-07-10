@@ -43,6 +43,10 @@
 -define(master, grb_propagation_vnode_master).
 -define(propagate_req, propagate_event).
 
+-define(known_key, known_vc).
+-define(stable_key, stable_vc).
+-define(uniform_key, uniform_vc).
+
 -type global_known_matrix() :: #{{replica_id(), replica_id()} => grb_time:ts()}.
 -type blue_commit_logs() :: #{replica_id() => grb_blue_commit_log:t()}.
 
@@ -67,11 +71,11 @@
 
 -spec uniform_vc(partition_id()) -> vclock().
 uniform_vc(Partition) ->
-    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), uniform_vc, 2).
+    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?uniform_key, 2).
 
 -spec stable_vc(partition_id()) -> vclock().
 stable_vc(Partition) ->
-    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), stable_vc, 2).
+    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?stable_key, 2).
 
 -spec update_stable_vc(partition_id(), vclock()) -> ok.
 update_stable_vc(Partition, SVC) ->
@@ -83,7 +87,7 @@ update_uniform_vc(Partition, SVC) ->
 
 -spec known_vc(partition_id()) -> vclock().
 known_vc(Partition) ->
-    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), known_vc, 2).
+    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?known_key, 2).
 
 -spec handle_blue_heartbeat(partition_id(), replica_id(), grb_time:ts()) -> ok.
 handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
@@ -111,9 +115,9 @@ start_vnode(I) ->
 init([Partition]) ->
     {ok, PropagateInterval} = application:get_env(grb, propagate_interval),
     ClockTable = new_cache(Partition, ?PARTITION_CLOCK_TABLE),
-    true = ets:insert(ClockTable, [{uniform_vc, grb_vclock:new()},
-                                   {stable_vc, grb_vclock:new()},
-                                   {known_vc, grb_vclock:new()}]),
+    true = ets:insert(ClockTable, [{?uniform_key, grb_vclock:new()},
+                                   {?stable_key, grb_vclock:new()},
+                                   {?known_key, grb_vclock:new()}]),
 
     {ok, #state{partition=Partition,
                 local_replica=grb_dc_utils:replica_id(), % ok to do this, we'll overwrite it after join
@@ -148,17 +152,17 @@ handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=TRef}) ->
     {reply, ok, S#state{propagate_timer=undefined}};
 
 handle_command({update_stable_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
-    OldSVC = ets:lookup_element(ClockTable, stable_vc, 2),
+    OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     %% Safe to update everywhere, caller has already ensured to not update the current replica
     NewSVC = grb_vclock:max(OldSVC, SVC),
-    true = ets:update_element(ClockTable, stable_vc, {2, NewSVC}),
+    true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
     {noreply, S};
 
 handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
-    OldSVC = ets:lookup_element(ClockTable, uniform_vc, 2),
+    OldSVC = ets:lookup_element(ClockTable, ?uniform_key, 2),
     %% Safe to update everywhere, caller has already ensured to not update the current replica
     NewSVC = grb_vclock:max(OldSVC, SVC),
-    true = ets:update_element(ClockTable, uniform_vc, {2, NewSVC}),
+    true = ets:update_element(ClockTable, ?uniform_key, {2, NewSVC}),
     {noreply, S};
 
 handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
@@ -195,7 +199,7 @@ handle_info(?propagate_req, State=#state{partition=P,
     erlang:cancel_timer(Timer),
     KnownTime = grb_main_vnode:get_known_time(P),
     KnownVC = get_updated_known_vc(LocalId, KnownTime, ClockTable),
-    StableVC = ets:lookup_element(ClockTable, stable_vc, 2),
+    StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     ok = compute_uniform_vc(LocalId, StableVC),
     NewMatrix = propagate_internal(KnownVC, StableVC, State),
     {ok, State#state{global_known_matrix=NewMatrix,
@@ -271,17 +275,17 @@ propagate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, KnownVC, Mat
 %% @doc Set knownVC[ReplicaId] <-max- Time
 -spec update_known_vc(replica_id(), grb_time:ts(), cache(atom(), vclock())) -> ok.
 update_known_vc(ReplicaId, Time, ClockTable) ->
-    Old = ets:lookup_element(ClockTable, known_vc, 2),
+    Old = ets:lookup_element(ClockTable, ?known_key, 2),
     New = grb_vclock:set_max_time(ReplicaId, Time, Old),
-    true = ets:update_element(ClockTable, known_vc, {2, New}),
+    true = ets:update_element(ClockTable, ?known_key, {2, New}),
     ok.
 
 %% @doc Same as update_known_vc/3, but return resulting knownVC
 -spec get_updated_known_vc(replica_id(), grb_time:ts(), cache(atom(), vclock())) -> vclock().
 get_updated_known_vc(ReplicaId, Time, ClockTable) ->
-    Old = ets:lookup_element(ClockTable, known_vc, 2),
+    Old = ets:lookup_element(ClockTable, ?known_key, 2),
     New = grb_vclock:set_max_time(ReplicaId, Time, Old),
-    true = ets:update_element(ClockTable, known_vc, {2, New}),
+    true = ets:update_element(ClockTable, ?known_key, {2, New}),
     New.
 
 -spec update_known_matrix(replica_id(), vclock(), global_known_matrix()) -> global_known_matrix().
