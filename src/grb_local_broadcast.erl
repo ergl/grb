@@ -258,6 +258,7 @@ terminate(_Reason, _S) ->
 generate_name(Node) ->
     list_to_atom("grb_local_broadcast_" ++ atom_to_list(Node)).
 
+%% todo(borja, red): Add "red" entry when computing this
 -spec compute_local_svc(replica_id(), [partition_id()]) -> vclock().
 compute_local_svc(ReplicaId, Partitions) ->
     AllReplicas = [ReplicaId | grb_dc_connection_manager:connected_replicas()],
@@ -275,6 +276,7 @@ compute_children_svc(ReplicaId, Children, AccSVC) ->
     AllReplicas = [ReplicaId | grb_dc_connection_manager:connected_replicas()],
     compute_svc(AllReplicas, Children, AccSVC).
 
+%% todo(borja, red): Add "red" entry when computing this
 -spec compute_svc([replica_id()], [vclock()], vclock()) -> vclock().
 compute_svc(AllReplicas, VCs, AccSVC) ->
     lists:foldl(fun(SVC, Acc) ->

@@ -165,9 +165,10 @@ handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTa
     ok = update_known_vc(FromReplica, Ts, ClockTable),
     {noreply, S};
 
-handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S) ->
-    ok = update_clocks_internal(FromReplicaId, KnownVC, StableVC),
-    {noreply, S};
+handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S=#state{global_known_matrix=Matrix}) ->
+    NewMatrix = update_known_matrix(FromReplicaId, KnownVC, Matrix),
+    ok = compute_uniform_vc(FromReplicaId, StableVC),
+    {noreply, S#state{global_known_matrix=NewMatrix}};
 
 handle_command({append_blue, ReplicaId, KnownTime, _TxId, _WS, _CommitVC}, _Sender, S=#state{clock_cache=ClockTable,
                                                                                              should_append_commit=false}) ->
@@ -283,10 +284,13 @@ get_updated_known_vc(ReplicaId, Time, ClockTable) ->
     true = ets:update_element(ClockTable, known_vc, {2, New}),
     New.
 
-%% todo(borja, uniformity)
-update_clocks_internal(SourceReplica, _KnownVC, StableVC) ->
-    ok = compute_uniform_vc(SourceReplica, StableVC),
-    ok.
+-spec update_known_matrix(replica_id(), vclock(), global_known_matrix()) -> global_known_matrix().
+update_known_matrix(FromReplicaId, KnownVC, Matrix) ->
+    %% globalKnownMatrix[FromReplicaId] <- KnownVC,
+    %% transformed into globalKnownMatrix[FromReplicaId][j] <- knownVC[j]
+    lists:foldl(fun({AtReplica, Ts}, Acc) ->
+        Acc#{{FromReplicaId, AtReplica} => max(Ts, maps:get({FromReplicaId, AtReplica}, Acc, 0))}
+    end, Matrix, grb_vclock:to_list(KnownVC)).
 
 %% todo(borja, uniformity)
 compute_uniform_vc(_SourceReplica, _StableVC) ->

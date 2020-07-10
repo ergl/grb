@@ -11,7 +11,8 @@
          max/2,
          min_at/3,
          max_at/3,
-         max_except/3]).
+         max_except/3,
+         to_list/1]).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -93,6 +94,9 @@ leq(Left, Right) ->
         get_time(Key, Left) =< get_time(Key, Right)
     end,
     lists:all(F, maps:keys(maps:merge(Left, Right))).
+
+-spec to_list(vc(T)) -> [{T, grb_time:ts()}].
+to_list(VC) -> maps:to_list(VC).
 
 -ifdef(TEST).
 
