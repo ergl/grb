@@ -137,7 +137,6 @@ handle_call(E, _From, S) ->
     {reply, ok, S}.
 
 handle_cast({clock_event, From, ChildSVC}, S=#state{self_name=SelfNode,
-                                                    self_replica=ReplicaId,
                                                     self_partitions=Partitions,
                                                     tree_state=RootState=#root_state{}}) ->
 
@@ -146,8 +145,8 @@ handle_cast({clock_event, From, ChildSVC}, S=#state{self_name=SelfNode,
     #root_state{children=Children, children_to_ack=N, children_acc=Acc} = RootState,
     NewRootState = case N of
         1 ->
-            LocalSVC = compute_local_svc(ReplicaId, Partitions),
-            GlobalSVC = compute_children_svc(ReplicaId, [ChildSVC | Acc], LocalSVC),
+            LocalSVC = compute_local_svc(Partitions),
+            GlobalSVC = compute_children_svc([ChildSVC | Acc], LocalSVC),
             ok = set_svc(Partitions, GlobalSVC),
             ok = send_to_children(SelfNode, Children, GlobalSVC),
             ?LOG_DEBUG("root node recomputing global stableVC as ~p, sending to ~p", [GlobalSVC, Children]),
@@ -158,7 +157,6 @@ handle_cast({clock_event, From, ChildSVC}, S=#state{self_name=SelfNode,
     {noreply, S#state{tree_state=NewRootState}};
 
 handle_cast({clock_event, From, ChildSVC}, S=#state{self_name=SelfNode,
-                                                    self_replica=ReplicaId,
                                                     self_partitions=Partitions,
                                                     tree_state=NodeState=#node_state{}}) ->
 
@@ -167,8 +165,8 @@ handle_cast({clock_event, From, ChildSVC}, S=#state{self_name=SelfNode,
     #node_state{parent=Parent, children=Children, children_to_ack=N, children_acc=Acc} = NodeState,
     NewNodeState = case N of
         1 ->
-            LocalSVC = compute_local_svc(ReplicaId, Partitions),
-            ChildrenSVC = compute_children_svc(ReplicaId, [ChildSVC | Acc], LocalSVC),
+            LocalSVC = compute_local_svc(Partitions),
+            ChildrenSVC = compute_children_svc([ChildSVC | Acc], LocalSVC),
             ?LOG_DEBUG("int node recomputing stableVC as ~p, sending to ~p", [ChildrenSVC, Parent]),
             ok = send_to_parent(SelfNode, Parent, ChildrenSVC),
             NodeState#node_state{children_acc=[], children_to_ack=length(Children)};
@@ -200,7 +198,6 @@ handle_cast(E, S) ->
 
 %% Send our local stableVC to our parent periodically
 handle_info(broadcast_clock, S=#state{self_name=SelfNode,
-                                      self_replica=ReplicaId,
                                       self_partitions=Partitions,
                                       tree_state=Leaf=#leaf_state{}}) ->
     #leaf_state{parent=Parent,
@@ -209,7 +206,7 @@ handle_info(broadcast_clock, S=#state{self_name=SelfNode,
 
     erlang:cancel_timer(TRef),
 
-    LocalSVC = compute_local_svc(ReplicaId, Partitions),
+    LocalSVC = compute_local_svc(Partitions),
     ok = send_to_parent(SelfNode, Parent, LocalSVC),
 
     ?LOG_DEBUG("leaf recomputing stableVC as ~p, sending to ~p", [LocalSVC, Parent]),
@@ -218,8 +215,7 @@ handle_info(broadcast_clock, S=#state{self_name=SelfNode,
     {noreply, S#state{tree_state=NewLeaf}};
 
 %% If singleton, just recalculate our local stableVC
-handle_info(broadcast_clock, S=#state{self_replica=ReplicaId,
-                                      self_partitions=Partitions,
+handle_info(broadcast_clock, S=#state{self_partitions=Partitions,
                                       tree_state=Single=#singleton_state{}}) ->
 
     #singleton_state{broadcast_timer=TRef,
@@ -227,7 +223,7 @@ handle_info(broadcast_clock, S=#state{self_replica=ReplicaId,
 
     erlang:cancel_timer(TRef),
 
-    LocalSVC = compute_local_svc(ReplicaId, Partitions),
+    LocalSVC = compute_local_svc(Partitions),
     ok = set_svc(Partitions, LocalSVC),
 
     ?LOG_DEBUG("singleton recomputing stableVC as ~p", [LocalSVC]),
@@ -258,9 +254,10 @@ terminate(_Reason, _S) ->
 generate_name(Node) ->
     list_to_atom("grb_local_broadcast_" ++ atom_to_list(Node)).
 
--spec compute_local_svc(replica_id(), [partition_id()]) -> vclock().
-compute_local_svc(ReplicaId, Partitions) ->
-    AllReplicas = [ReplicaId | grb_dc_connection_manager:connected_replicas()],
+%% todo(borja, red): Add "red" entry when computing this
+-spec compute_local_svc([partition_id()]) -> vclock().
+compute_local_svc(Partitions) ->
+    AllReplicas = grb_dc_manager:all_replicas(),
     lists:foldl(fun
         (Partition, undefined) ->
             grb_propagation_vnode:known_vc(Partition);
@@ -270,11 +267,12 @@ compute_local_svc(ReplicaId, Partitions) ->
             grb_vclock:min_at(AllReplicas, PSVC, Acc)
     end, undefined, Partitions).
 
--spec compute_children_svc(replica_id(), [vclock()], vclock()) -> vclock().
-compute_children_svc(ReplicaId, Children, AccSVC) ->
-    AllReplicas = [ReplicaId | grb_dc_connection_manager:connected_replicas()],
+-spec compute_children_svc([vclock()], vclock()) -> vclock().
+compute_children_svc(Children, AccSVC) ->
+    AllReplicas = grb_dc_manager:all_replicas(),
     compute_svc(AllReplicas, Children, AccSVC).
 
+%% todo(borja, red): Add "red" entry when computing this
 -spec compute_svc([replica_id()], [vclock()], vclock()) -> vclock().
 compute_svc(AllReplicas, VCs, AccSVC) ->
     lists:foldl(fun(SVC, Acc) ->

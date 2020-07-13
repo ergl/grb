@@ -7,9 +7,8 @@
 process(Promise, 'Load', #{bin_size := Size}) ->
     grb_promise:resolve(grb:load(Size), Promise);
 
-process(Promise, 'UniformBarrier', #{client_vc := _CVC, partition := _Partition}) ->
-    %% todo(borja, uniformity)
-    grb_promise:resolve(ok, Promise);
+process(Promise, 'UniformBarrier', #{client_vc := CVC, partition := Partition}) ->
+    grb:uniform_barrier(Promise, Partition, CVC);
 
 process(Promise, 'ConnectRequest', _) ->
     grb_promise:resolve(grb:connect(), Promise);

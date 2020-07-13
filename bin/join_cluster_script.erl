@@ -463,9 +463,9 @@ start_broadcast_tree(Nodes, Fanout) ->
 
 %% @doc Convert the list of given nodes and fanout into an n-ary tree of nodes
 -spec build_broadcast_tree(Nodes :: [node()],
-                          Fanout :: non_neg_integer()) -> {Root :: {node(), [node()]},
-                                                           Nodes :: [{node(), node(), [node()]}],
-                                                           Leafs :: [{node(), node()}]}.
+                           Fanout :: non_neg_integer()) -> {Root :: {node(), [node()]},
+                                                            Nodes :: [{node(), node(), [node()]}],
+                                                            Leafs :: [{node(), node()}]}.
 build_broadcast_tree(Nodes, Fanout) ->
     Depth = trunc(math:ceil(math:log(length(Nodes) * (Fanout - 1) + 1) / math:log(Fanout))),
     ListTable = ets:new(values, [ordered_set]),

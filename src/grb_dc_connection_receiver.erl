@@ -100,4 +100,7 @@ handle_request(Partition, SourceReplica, #blue_heartbeat{timestamp=Ts}) ->
     grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, Ts);
 
 handle_request(Partition, SourceReplica, #replicate_tx{tx_id=TxId, writeset=WS, commit_vc=VC}) ->
-    grb_main_vnode:handle_replicate(Partition, SourceReplica, TxId, WS, VC).
+    grb_main_vnode:handle_replicate(Partition, SourceReplica, TxId, WS, VC);
+
+handle_request(Partition, SourceReplica, #update_clocks{known_vc=KnownVC, stable_vc=StableVC}) ->
+    grb_propagation_vnode:handle_clock_update(Partition, SourceReplica, KnownVC, StableVC).
