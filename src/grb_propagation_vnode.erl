@@ -234,10 +234,13 @@ handle_info(?prune_req, State=#state{logs=Logs0,
                                      global_known_matrix=Matrix,
                                      prune_timer=Timer,
                                      prune_interval=Interval}) ->
+    ?LOG_DEBUG("Running prune on logs"),
     erlang:cancel_timer(Timer),
     RemoteReplicas = grb_dc_manager:remote_replicas(),
     Logs = maps:map(fun(Replica, CommitLog) ->
-        grb_blue_commit_log:remove_leq(min_global_matrix_ts(RemoteReplicas, Replica, Matrix), CommitLog)
+        MinTs = min_global_matrix_ts(RemoteReplicas, Replica, Matrix),
+        ?LOG_DEBUG("Min for replica ~p is ~p~n", [Replica, MinTs]),
+        grb_blue_commit_log:remove_leq(MinTs, CommitLog)
     end, Logs0),
     {ok, State#state{logs=Logs, prune_timer=erlang:send_after(Interval, self(), ?prune_req)}};
 
