@@ -234,14 +234,14 @@ propagate_internal(KnownVC, StableVC, #state{local_replica=LocalId,
                                              logs=Logs,
                                              global_known_matrix=Matrix}) ->
 
-    RemoteReplicas = grb_dc_connection_manager:connected_replicas(),
-    AllReplicas = [LocalId | RemoteReplicas],
+    AllReplicas = grb_dc_manager:all_replicas(),
+    ConnectedReplicas = grb_dc_connection_manager:connected_replicas(),
     lists:foldl(fun(TargetReplica, GlobalMatrix) ->
         %% piggy-back on this loop to send our clocks
         %% todo(borja, speed): piggy-back on a blue heartbeat inside propagate_to when ReplayReplica = LocalId?
         ok = grb_dc_connection_manager:send_clocks(TargetReplica, LocalId, Partition, KnownVC, StableVC),
         propagate_to(TargetReplica, AllReplicas, Partition, Logs, KnownVC, GlobalMatrix)
-    end, Matrix, RemoteReplicas).
+    end, Matrix, ConnectedReplicas).
 
 %% @doc Propagate transactions / heartbeats to the target replica.
 %%

@@ -2,6 +2,9 @@
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
+-define(ALL_REPLICAS, all_replicas).
+-define(REMOTE_REPLICAS, remote_replicas).
+
 %% API
 -export([start_background_processes/0,
          start_propagation_processes/0,
@@ -10,7 +13,9 @@
          replica_descriptor/0,
          connect_to_replicas/1,
          stop_background_processes/0,
-         stop_propagation_processes/0]).
+         stop_propagation_processes/0,
+         remote_replicas/0,
+         all_replicas/0]).
 
 %% All functions are called through erpc
 -ignore_xref([start_background_processes/0,
@@ -21,6 +26,15 @@
               connect_to_replicas/1,
               stop_background_processes/0,
               stop_propagation_processes/0]).
+
+-spec all_replicas() -> [replica_id()].
+all_replicas() ->
+    persistent_term:get({?MODULE, ?ALL_REPLICAS}, []).
+
+-spec remote_replicas() -> [replica_id()].
+remote_replicas() ->
+    persistent_term:get({?MODULE, ?REMOTE_REPLICAS}, []).
+
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% External API
@@ -56,8 +70,16 @@ disable_blue_append() ->
 
 -spec start_propagation_processes() -> ok.
 start_propagation_processes() ->
-    {ok, MyGroups} = compute_groups(grb_dc_utils:replica_id()),
-    ?LOG_DEBUG("Fault tolerant groups: ~p~n", [MyGroups]),
+    MyReplicaId = grb_dc_utils:replica_id(),
+    RemoteReplicas = grb_dc_connection_manager:connected_replicas(),
+
+    ok = persistent_term:put({?MODULE, ?REMOTE_REPLICAS}, RemoteReplicas),
+    ok = persistent_term:put({?MODULE, ?ALL_REPLICAS}, [MyReplicaId | RemoteReplicas]),
+    ?LOG_INFO("Persisted all replicas: ~p~n", [RemoteReplicas]),
+
+    {ok, MyGroups} = compute_groups(MyReplicaId, RemoteReplicas),
+    ?LOG_INFO("Fault tolerant groups: ~p~n", [MyGroups]),
+
     Res0 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, {learn_dc_groups, MyGroups}),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
     Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_propagate_timer),
@@ -174,15 +196,12 @@ connect_nodes_to_descriptor(Nodes, Desc=#replica_descriptor{replica_id=RemoteId}
 %%      This may be expensive, but it is only computed once.
 %%
 %%      todo(borja): Change this if we ever support dynamic join of new replicas
--spec compute_groups(replica_id()) -> {ok, [[replica_id()]]} | {error, not_connected}.
-compute_groups(LocalId) ->
-    case grb_dc_connection_manager:connected_replicas() of
-        [] -> {error, not_connected};
-        Replicas ->
-            %% Pick length(Replicas), since N=f+1, f = N-1
-            AllGroups = cnr(length(Replicas), [LocalId | Replicas]),
-            {ok, lists:filter(fun(L) -> lists:member(LocalId, L) end, AllGroups)}
-    end.
+-spec compute_groups(replica_id(), [replica_id()]) -> {ok, [[replica_id()]]} | {error, not_connected}.
+compute_groups(_LocalId, []) -> {error, not_connected};
+compute_groups(LocalId, RemoteReplicas) ->
+    %% Pick length(Replicas), since N=f+1, f = N-1
+    AllGroups = cnr(length(RemoteReplicas), [LocalId | RemoteReplicas]),
+    {ok, lists:filter(fun(L) -> lists:member(LocalId, L) end, AllGroups)}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Util Functions
