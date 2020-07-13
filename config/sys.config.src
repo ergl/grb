@@ -90,6 +90,18 @@
     %% However, we should introduce some jitter so the timers don't fire at
     %% the same time. At the same time, computing the clock is expensive, so
     %% we don't want to do it all the time.
-    {broadcast_clock_interval, ${BCAST_KNOWN_VC_INTERVAL_MS}}
+    {broadcast_clock_interval, ${BCAST_KNOWN_VC_INTERVAL_MS}},
+
+    %% Number of ms to wait before re-checking `wait` statements on OP_REQUEST
+    %% and COMMIT_BLUE. For OP_REQUEST, it will wait until knownVC[d] > snapshotVC[d],
+    %% which is bounded by the clock interval time, so we set it to the same value.
+    %% todo(borja): revisit
+    {op_prepare_wait_ms, ${BCAST_KNOWN_VC_INTERVAL_MS}},
+
+    %% Number of ms to wait before re-checking the `wait` statement on UNIFORM_BARRIER.
+    %% This waits until uniformVC[d] >= vc[d]. This will be bounded by the interal to
+    %% re-calculate the uniformVC at the current replica, so we set it to to the same
+    %% value. todo(borja): revisit
+    {uniform_barrier_wait_ms, ${REPLICATION_INTERVAL_MS}}
   ]}
 ].
