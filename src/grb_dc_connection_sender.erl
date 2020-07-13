@@ -12,7 +12,8 @@
 -export([start_link/3]).
 
 %% External API
--export([get_socket/1]).
+-export([get_socket/1,
+         close/1]).
 
 %% API
 -export([init/1,
@@ -42,6 +43,9 @@ start_link(ReplicaId, IP, Port) ->
 get_socket(Pid) ->
     gen_server:call(Pid, socket).
 
+close(Pid) ->
+    gen_server:call(Pid, close).
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -61,6 +65,9 @@ init([ReplicaId, IP, Port]) ->
 handle_call(socket, _From, S=#state{socket=Socket}) ->
     {reply, Socket, S};
 
+handle_call(close, _From, S) ->
+    {stop, normal, ok, S};
+
 handle_call(E, _From, S) ->
     ?LOG_WARNING("unexpected call: ~p~n", [E]),
     {reply, ok, S}.
@@ -70,16 +77,18 @@ handle_cast(E, S) ->
     {noreply, S}.
 
 handle_info({tcp, Socket, Data}, State=#state{socket=Socket}) ->
-    ?LOG_INFO("replication client received ~p", [Data]),
+    ?LOG_INFO("replication client received ~p, ignoring", [Data]),
     inet:setopts(Socket, [{active, once}]),
     {noreply, State};
 
-handle_info({tcp_closed, _Socket}, State) ->
+handle_info({tcp_closed, Socket}, State=#state{connected_dc=ReplicaId}) ->
     ?LOG_INFO("replication client received tcp_closed"),
+    ok = grb_dc_connection_manager:connection_closed(ReplicaId, Socket),
     {stop, normal, State};
 
-handle_info({tcp_error, _Socket, Reason}, State) ->
+handle_info({tcp_error, Socket, Reason}, State=#state{connected_dc=ReplicaId}) ->
     ?LOG_INFO("replication client received tcp_error ~p", [Reason]),
+    ok = grb_dc_connection_manager:connection_closed(ReplicaId, Socket),
     {stop, Reason, State};
 
 handle_info(timeout, State) ->
@@ -91,5 +100,8 @@ handle_info(E, S) ->
     {noreply, S}.
 
 terminate(_Reason, #state{socket=Socket}) ->
-    ok = gen_tcp:close(Socket),
-    ok.
+    try
+        ok = gen_tcp:close(Socket)
+    catch _:_ ->
+        ok
+    end.
