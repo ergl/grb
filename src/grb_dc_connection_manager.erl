@@ -109,16 +109,19 @@ add_replica_connections(Id, PartitionConnections) ->
 connected_replicas() ->
     ets:lookup_element(?REPLICAS_TABLE, ?REPLICAS_TABLE_KEY, 2).
 
--spec send_msg(replica_id(), partition_id(), any()) -> ok.
+-spec send_msg(replica_id(), partition_id(), any()) -> ok | {error, term()}.
 send_msg(Replica, Partition, Msg) ->
-    Sock = ets:lookup_element(?CONN_SOCKS_TABLE, {Partition, Replica}, 2),
-    ok = gen_tcp:send(Sock, Msg),
-    ok.
+    try
+        Sock = ets:lookup_element(?CONN_SOCKS_TABLE, {Partition, Replica}, 2),
+        gen_tcp:send(Sock, Msg)
+    catch _:_ ->
+        {error, gone}
+    end.
 
 -spec send_heartbeat(To :: replica_id(),
                      From :: replica_id(),
                      Partition :: partition_id(),
-                     Time :: grb_time:ts()) -> ok.
+                     Time :: grb_time:ts()) -> ok | {error, term()}.
 
 send_heartbeat(ToId, FromId, Partition, Time) ->
     ?LOG_DEBUG("Sending blue_hearbeat to ~p:~p on behalf of ~p: ~p", [ToId, Partition, FromId, Time]),
@@ -127,7 +130,7 @@ send_heartbeat(ToId, FromId, Partition, Time) ->
 -spec send_tx(From :: replica_id(),
               To :: replica_id(),
               Partition :: partition_id(),
-              Tx :: {term(), #{}, vclock()}) -> ok.
+              Tx :: {term(), #{}, vclock()}) -> ok | {error, term()}.
 
 send_tx(ToId, FromId, Partition, Transaction) ->
     ?LOG_DEBUG("Sending transaction to ~p:~p on behalf of ~p", [ToId, Partition, FromId, Transaction]),
@@ -137,7 +140,7 @@ send_tx(ToId, FromId, Partition, Transaction) ->
                   To :: replica_id(),
                   Partition :: partition_id(),
                   KnownVC :: vclock(),
-                  StableVC :: vclock()) -> ok.
+                  StableVC :: vclock()) -> ok | {error, term()}.
 
 send_clocks(ToId, FromId, Partition, KnownVC, StableVC) ->
     ?LOG_DEBUG("Sending clocks to ~p:~p", [ToId, Partition]),
@@ -191,9 +194,10 @@ handle_call({close, ReplicaId}, _From, State=#state{reverse_pid_index=Index}) ->
     true = ets:insert(?REPLICAS_TABLE, {?REPLICAS_TABLE_KEY, ordsets:del_element(ReplicaId, Replicas)}),
     Socks = ets:select(?CONN_SOCKS_TABLE, [{{{'_', ReplicaId}, '$1'}, [], ['$1']}]),
     _ = ets:select_delete(?CONN_SOCKS_TABLE, [{{{'_', ReplicaId}, '_'}, [], [true]}]),
-    [begin
-         ok = grb_dc_connection_sender:close(maps:get(S, Index))
-    end || S <- Socks],
+    [try
+         grb_dc_connection_sender:close(maps:get(S, Index))
+     catch _:_ -> ok
+     end || S <- Socks],
     {reply, ok, State#state{reverse_pid_index=maps:without(Socks, Index)}};
 
 handle_call(E, _From, S) ->
@@ -208,7 +212,7 @@ handle_cast({closed, ReplicaId, Socket}, State=#state{reverse_pid_index=Index}) 
     _ = ets:select_delete(?CONN_SOCKS_TABLE, [{{{'_', ReplicaId}, '_'}, [], [true]}]),
     [case S of
         Socket -> ok;
-        _ -> ok = grb_dc_connection_sender:close(maps:get(S, Index))
+        _ -> try grb_dc_connection_sender:close(maps:get(S, Index)) catch _:_ -> ok end
      end || S <- Socks],
     {noreply, State#state{reverse_pid_index=maps:without(Socks, Index)}};
 

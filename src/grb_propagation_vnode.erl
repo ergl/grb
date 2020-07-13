@@ -239,7 +239,8 @@ propagate_internal(KnownVC, StableVC, #state{local_replica=LocalId,
     lists:foldl(fun(TargetReplica, GlobalMatrix) ->
         %% piggy-back on this loop to send our clocks
         %% todo(borja, speed): piggy-back on a blue heartbeat inside propagate_to when ReplayReplica = LocalId?
-        ok = grb_dc_connection_manager:send_clocks(TargetReplica, LocalId, Partition, KnownVC, StableVC),
+        Res = grb_dc_connection_manager:send_clocks(TargetReplica, LocalId, Partition, KnownVC, StableVC),
+        ?LOG_DEBUG("send_clocks to ~p from ~p: ~p~n", [TargetReplica, LocalId, Res]),
         propagate_to(TargetReplica, AllReplicas, Partition, Logs, KnownVC, GlobalMatrix)
     end, Matrix, ConnectedReplicas).
 
@@ -277,11 +278,15 @@ propagate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, KnownVC, Mat
     ToSend = grb_blue_commit_log:get_bigger(LastSent, Log),
     case ToSend of
         [] ->
-            grb_dc_connection_manager:send_heartbeat(TargetReplica, RelayReplica, Partition, RelayKnownTime);
+            HBRes = grb_dc_connection_manager:send_heartbeat(TargetReplica, RelayReplica, Partition, RelayKnownTime),
+            ?LOG_DEBUG("blue_hb to ~p from ~p: ~p~n", [TargetReplica, RelayReplica, HBRes]),
+            ok;
         Txs ->
             %% Entries are already ordered to commit time at the replica of the log
             lists:foreach(fun(Tx) ->
-                grb_dc_connection_manager:send_tx(TargetReplica, RelayReplica, Partition, Tx)
+                TxRes = grb_dc_connection_manager:send_tx(TargetReplica, RelayReplica, Partition, Tx),
+                ?LOG_DEBUG("replicate to ~p from ~p: ~p~n", [TargetReplica, RelayReplica, TxRes]),
+                ok
             end, Txs)
     end,
     NewMatrix = MatrixAcc#{{TargetReplica, RelayReplica} => RelayKnownTime},
