@@ -16,10 +16,10 @@
 -type t() :: #state{}.
 
 %% API
-%% todo(borja, uniformity): Add prune (remove_lower/2) operation to committedBlue
 -export([new/1,
          insert/4,
-         get_bigger/2]).
+         get_bigger/2,
+         remove_leq/2]).
 
 -spec new(replica_id()) -> t().
 new(AtId) ->
@@ -43,6 +43,11 @@ get_bigger(Cutoff, [{Key, _} | _], Acc) when abs(Key) =< Cutoff ->
     Acc;
 get_bigger(Cutoff, [{Key, Val} | Rest], Acc) when abs(Key) > Cutoff ->
     get_bigger(Cutoff, Rest, [Val | Acc]).
+
+%% @doc Remove all entries with commit time at the created replica lower than `Timestamp`
+-spec remove_leq(grb_time:ts(), t()) -> t().
+remove_leq(Timestamp, S=#state{entries=Entries}) ->
+    S#state{entries=orddict:filter(fun(Key, _) -> abs(Key) > Timestamp end, Entries)}.
 
 -ifdef(TEST).
 
@@ -98,5 +103,57 @@ grb_blue_commit_log_get_bigger_unordered_test() ->
 
     SomeMatches = grb_blue_commit_log:get_bigger(5, Log),
     ?assertEqual(lists:sublist(SortedList, 6, 9), SomeMatches).
+
+grb_blue_commit_log_remove_leq_ordered_test() ->
+    MyReplicaID = '$dc_id',
+    Entries = lists:map(fun(V) ->
+        {ignore, #{}, grb_vclock:set_time(MyReplicaID, V, grb_vclock:new())}
+    end, lists:seq(1, 50)),
+    Log = grb_blue_commit_log:from_list(MyReplicaID, Entries),
+
+    Log1 = grb_blue_commit_log:remove_leq(0, Log),
+    ?assertEqual(Log, Log1),
+
+    Log2 = grb_blue_commit_log:remove_leq(50, Log),
+    ?assertEqual(grb_blue_commit_log:new(MyReplicaID), Log2),
+
+    Log3 = grb_blue_commit_log:remove_leq(25, Log),
+    %% The final log still has the entries 26 to 50
+    Resulting = grb_blue_commit_log:from_list(MyReplicaID, lists:sublist(Entries, 26, 50)),
+    ?assertEqual(Resulting, Log3).
+
+grb_blue_commit_log_remove_leq_unordered_test() ->
+    MyReplicaID = '$dc_id',
+    VClock = fun(N) -> grb_vclock:set_time(MyReplicaID, N, grb_vclock:new()) end,
+
+    Entries = [
+        {ignore, #{}, VClock(2)},
+        {ignore, #{}, VClock(1)},
+        {ignore, #{}, VClock(3)},
+        {ignore, #{}, VClock(4)},
+        {ignore, #{}, VClock(7)},
+        {ignore, #{}, VClock(5)},
+        {ignore, #{}, VClock(6)},
+        {ignore, #{}, VClock(9)},
+        {ignore, #{}, VClock(8)}
+    ],
+
+    Log = grb_blue_commit_log:from_list(MyReplicaID, Entries),
+
+    Log1 = grb_blue_commit_log:remove_leq(0, Log),
+    ?assertEqual(Log, Log1),
+
+    Log2 = grb_blue_commit_log:remove_leq(9, Log),
+    ?assertEqual(grb_blue_commit_log:new(MyReplicaID), Log2),
+
+    Log3 = grb_blue_commit_log:remove_leq(5, Log),
+    %% Same as above, in the same order, but removing elements lower or equal than 5
+    Resulting = grb_blue_commit_log:from_list(MyReplicaID, [
+        {ignore, #{}, VClock(7)},
+        {ignore, #{}, VClock(6)},
+        {ignore, #{}, VClock(9)},
+        {ignore, #{}, VClock(8)}
+    ]),
+    ?assertEqual(Resulting, Log3).
 
 -endif.

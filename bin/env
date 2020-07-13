@@ -41,6 +41,10 @@ if [ -z "$BCAST_KNOWN_VC_INTERVAL_MS" ]; then
   export BCAST_KNOWN_VC_INTERVAL_MS=5
 fi
 
+if [ -z "$COMMITTED_BLUE_PRUNE_INTERVAL_MS" ]; then
+  export COMMITTED_BLUE_PRUNE_INTERVAL_MS=50
+fi
+
 # Node config
 
 if [ -z "$IP" ]; then

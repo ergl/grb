@@ -102,6 +102,9 @@
     %% This waits until uniformVC[d] >= vc[d]. This will be bounded by the interal to
     %% re-calculate the uniformVC at the current replica, so we set it to to the same
     %% value. todo(borja): revisit
-    {uniform_barrier_wait_ms, ${REPLICATION_INTERVAL_MS}}
+    {uniform_barrier_wait_ms, ${REPLICATION_INTERVAL_MS}},
+
+    %% How often to prune the logs of all replicas
+    {prune_committed_blue_interval, ${COMMITTED_BLUE_PRUNE_INTERVAL_MS}}
   ]}
 ].

@@ -42,6 +42,7 @@
 
 -define(master, grb_propagation_vnode_master).
 -define(propagate_req, propagate_event).
+-define(prune_req, prune_event).
 
 -define(known_key, known_vc).
 -define(stable_key, stable_vc).
@@ -60,6 +61,9 @@
 
     propagate_interval :: non_neg_integer(),
     propagate_timer = undefined :: reference() | undefined,
+
+    prune_interval :: non_neg_integer(),
+    prune_timer = undefined :: reference() | undefined,
 
     %% All groups with f+1 replicas that include ourselves
     fault_tolerant_groups = [] :: [[replica_id()]],
@@ -119,6 +123,7 @@ start_vnode(I) ->
 
 init([Partition]) ->
     {ok, PropagateInterval} = application:get_env(grb, propagate_interval),
+    {ok, PruneInterval} = application:get_env(grb, prune_committed_blue_interval),
     ClockTable = new_cache(Partition, ?PARTITION_CLOCK_TABLE),
     true = ets:insert(ClockTable, [{?uniform_key, grb_vclock:new()},
                                    {?stable_key, grb_vclock:new()},
@@ -126,6 +131,7 @@ init([Partition]) ->
 
     {ok, #state{partition=Partition,
                 local_replica=grb_dc_utils:replica_id(), % ok to do this, we'll overwrite it after join
+                prune_interval=PruneInterval,
                 propagate_interval=PropagateInterval,
                 clock_cache=ClockTable}}.
 
@@ -146,19 +152,23 @@ handle_command({learn_dc_groups, MyGroups}, _From, S) ->
     %% called after connecting other replicas
     {reply, ok, S#state{fault_tolerant_groups=MyGroups}};
 
-handle_command(start_propagate_timer, _From, S = #state{propagate_interval=Int, propagate_timer=undefined}) ->
-    TRef = erlang:send_after(Int, self(), ?propagate_req),
-    {reply, ok, S#state{propagate_timer=TRef}};
+handle_command(start_propagate_timer, _From, S = #state{prune_interval=PruneInt, prune_timer=undefined,
+                                                        propagate_interval=PropInt, propagate_timer=undefined}) ->
 
-handle_command(start_propagate_timer, _From, S = #state{propagate_timer=_TRef}) ->
+    PruneTRef = erlang:send_after(PruneInt, self(), ?prune_req),
+    PropTRef = erlang:send_after(PropInt, self(), ?propagate_req),
+    {reply, ok, S#state{propagate_timer=PropTRef, prune_timer=PruneTRef}};
+
+handle_command(start_propagate_timer, _From, S = #state{propagate_timer=_PropTRef, prune_interval=_PruneTRef}) ->
     {reply, ok, S};
 
-handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=undefined}) ->
+handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=undefined, prune_timer=undefined}) ->
     {reply, ok, S};
 
-handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=TRef}) ->
-    erlang:cancel_timer(TRef),
-    {reply, ok, S#state{propagate_timer=undefined}};
+handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=PropTRef, prune_timer=PruneTRef}) ->
+    erlang:cancel_timer(PropTRef),
+    erlang:cancel_timer(PruneTRef),
+    {reply, ok, S#state{propagate_timer=undefined, prune_timer=undefined}};
 
 handle_command({update_stable_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
     OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
@@ -219,6 +229,17 @@ handle_info(?propagate_req, State=#state{partition=P,
     {ok, State#state{stable_matrix=StableMatrix,
                      global_known_matrix=GlobalMatrix,
                      propagate_timer=erlang:send_after(Interval, self(), ?propagate_req)}};
+
+handle_info(?prune_req, State=#state{logs=Logs0,
+                                     global_known_matrix=Matrix,
+                                     prune_timer=Timer,
+                                     prune_interval=Interval}) ->
+    erlang:cancel_timer(Timer),
+    RemoteReplicas = grb_dc_manager:remote_replicas(),
+    Logs = maps:map(fun(Replica, CommitLog) ->
+        grb_blue_commit_log:remove_leq(min_global_matrix_ts(RemoteReplicas, Replica, Matrix), CommitLog)
+    end, Logs0),
+    {ok, State#state{logs=Logs, prune_timer=erlang:send_after(Interval, self(), ?prune_req)}};
 
 handle_info(Msg, State) ->
     ?LOG_WARNING("unhandled_info ~p", [Msg]),
@@ -342,6 +363,26 @@ compute_uniform_vc(UniformVC, StableMatrix, Groups) ->
     end, Fresh, Groups),
     grb_vclock:max(VisibleBound, UniformVC).
 
+%% @doc Compute the lower bound of visible transactions from the globalKnownMatrix
+%%
+%%      min{ globalKnownMatrix[j][i] | j = 1..D, j /= d }
+%%      where i = SourceReplica
+%%            j = RemoteReplicas
+%%
+-spec min_global_matrix_ts([replica_id()], replica_id(), global_known_matrix()) -> grb_time:ts().
+min_global_matrix_ts(RemoteReplicas, SourceReplica, GlobalMatrix) ->
+    min_global_matrix_ts(RemoteReplicas, SourceReplica, GlobalMatrix, undefined).
+
+-spec min_global_matrix_ts([replica_id()], replica_id(), global_known_matrix(), grb_time:ts()) -> grb_time:ts().
+min_global_matrix_ts([], _SourceReplica, _GlobalMatrix, Min) -> Min;
+min_global_matrix_ts([RemoteReplica | Rest], SourceReplica, GlobalMatrix, Min) ->
+    Ts = maps:get({RemoteReplica, SourceReplica}, GlobalMatrix),
+    min_global_matrix_ts(Rest, SourceReplica, GlobalMatrix, min_ts(Ts, Min)).
+
+-spec min_ts(grb_time:ts(), grb_time:ts() | undefined) -> grb_time:ts().
+min_ts(Left, undefined) -> Left;
+min_ts(Left, Right) -> min(Left, Right).
+
 %%%===================================================================
 %%% Util Functions
 %%%===================================================================
@@ -433,5 +474,31 @@ grb_propagation_vnode_compute_uniform_vc_test() ->
     FGroups = [[dc_id1, dc_id2], [dc_id1, dc_id3]],
     UniformVC = compute_uniform_vc(grb_vclock:new(), Matrix, FGroups),
     ?assertEqual(#{dc_id1 => 2, dc_id2 => 2, dc_id3 => 1}, UniformVC).
+
+grb_propagation_vnode_min_global_matrix_ts_test() ->
+    Matrix = #{
+        {dc_id1, dc_id1} => 2,
+        {dc_id1, dc_id2} => 2,
+        {dc_id1, dc_id3} => 1,
+
+        {dc_id2, dc_id1} => 2,
+        {dc_id2, dc_id2} => 3,
+        {dc_id2, dc_id3} => 1,
+
+        {dc_id3, dc_id1} => 1,
+        {dc_id3, dc_id2} => 2,
+        {dc_id3, dc_id3} => 2
+    },
+
+    RemoteReplicas = [dc_id2, dc_id3],
+
+    MintAt1 = min_global_matrix_ts(RemoteReplicas, dc_id1, Matrix),
+    ?assertEqual(1, MintAt1),
+
+    MintAt2 = min_global_matrix_ts(RemoteReplicas, dc_id2, Matrix),
+    ?assertEqual(2, MintAt2),
+
+    MintAt3 = min_global_matrix_ts(RemoteReplicas, dc_id3, Matrix),
+    ?assertEqual(1, MintAt3).
 
 -endif.
