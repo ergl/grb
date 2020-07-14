@@ -52,7 +52,7 @@ load(Size) ->
 
 -spec uniform_barrier(grb_promise:t(), partition_id(), vclock()) -> ok.
 uniform_barrier(Promise, Partition, CVC) ->
-    ok = grb_partition_replica:uniform_barrier(Promise, Partition, CVC).
+    ok = grb_propagation_vnode:register_uniform_barrier(Promise, Partition, CVC).
 
 -spec start_transaction(partition_id(), vclock()) -> vclock().
 start_transaction(Partition, ClientVC) ->

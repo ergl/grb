@@ -15,7 +15,8 @@
          update_uniform_vc/2,
          handle_blue_heartbeat/3,
          handle_clock_update/4,
-         append_blue_commit/6]).
+         append_blue_commit/6,
+         register_uniform_barrier/3]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -48,6 +49,8 @@
 -define(stable_key, stable_vc).
 -define(uniform_key, uniform_vc).
 
+-define(PENDING_BARRIERS, uniform_barrier_table).
+
 -type stable_matrix() :: #{replica_id() => vclock()}.
 -type global_known_matrix() :: #{{replica_id(), replica_id()} => grb_time:ts()}.
 -type blue_commit_logs() :: #{replica_id() => grb_blue_commit_log:t()}.
@@ -71,7 +74,10 @@
 
     %% It doesn't make sense to append it if we're not connected to other clusters
     should_append_commit = true :: boolean(),
-    clock_cache :: cache(atom(), vclock())
+    clock_cache :: cache(atom(), vclock()),
+
+    %% List of pending uniform barriers by clients, recompute on uniformVC update
+    pending_barriers :: cache({grb_time:ts(), grb_promise:t()}, undefined)
 }).
 
 %%%===================================================================
@@ -114,6 +120,12 @@ append_blue_commit(ReplicaId, Partition, KnownTime, TxId, WS, CommitVC) ->
                                    {append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC},
                                    ?master).
 
+-spec register_uniform_barrier(grb_promise:t(), partition_id(), vclock()) -> ok.
+register_uniform_barrier(Promise, Partition, CVC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {uniform_barrier, Promise, CVC},
+                                   ?master).
+
 %%%===================================================================
 %%% api riak_core callbacks
 %%%===================================================================
@@ -129,11 +141,13 @@ init([Partition]) ->
                                    {?stable_key, grb_vclock:new()},
                                    {?known_key, grb_vclock:new()}]),
 
+    PendingBarriers = new_cache(Partition, ?PENDING_BARRIERS, [ordered_set, protected, named_table]),
     {ok, #state{partition=Partition,
                 local_replica=grb_dc_utils:replica_id(), % ok to do this, we'll overwrite it after join
                 prune_interval=PruneInterval,
                 propagate_interval=PropagateInterval,
-                clock_cache=ClockTable}}.
+                clock_cache=ClockTable,
+                pending_barriers=PendingBarriers}}.
 
 handle_command(ping, _Sender, State) ->
     {reply, {pong, node(), State#state.partition}, State};
@@ -188,13 +202,16 @@ handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTa
     ok = update_known_vc(FromReplica, Ts, ClockTable),
     {noreply, S};
 
-handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S=#state{clock_cache=ClockCache,
+handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S=#state{local_replica=LocalId,
+                                                                                          clock_cache=ClockCache,
+                                                                                          pending_barriers=PendingBarriers,
                                                                                           stable_matrix=StableMatrix0,
                                                                                           fault_tolerant_groups=Groups,
                                                                                           global_known_matrix=KnownMatrix0}) ->
 
     KnownMatrix = update_known_matrix(FromReplicaId, KnownVC, KnownMatrix0),
-    StableMatrix = update_uniform_vc(FromReplicaId, StableVC, StableMatrix0, ClockCache, Groups),
+    {UniformVC, StableMatrix} = update_uniform_vc(FromReplicaId, StableVC, StableMatrix0, ClockCache, Groups),
+    ok = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers),
     {noreply, S#state{global_known_matrix=KnownMatrix, stable_matrix=StableMatrix}};
 
 handle_command({append_blue, ReplicaId, KnownTime, _TxId, _WS, _CommitVC}, _Sender, S=#state{clock_cache=ClockTable,
@@ -209,6 +226,12 @@ handle_command({append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC}, _Sender,
     ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
     {noreply, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
 
+handle_command({uniform_barrier, Promise, CVC}, _Sender, S=#state{local_replica=LocalId, pending_barriers=Barriers}) ->
+    Timestamp = grb_vclock:get_time(LocalId, CVC),
+    %% Use the promise as key to prevent conflicts
+    true = ets:insert(Barriers, {{Timestamp, Promise}, undefined}),
+    {noreply, S};
+
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
@@ -216,6 +239,7 @@ handle_command(Message, _Sender, State) ->
 handle_info(?propagate_req, State=#state{partition=P,
                                          local_replica=LocalId,
                                          clock_cache=ClockTable,
+                                         pending_barriers=PendingBarriers,
                                          stable_matrix=StableMatrix0,
                                          fault_tolerant_groups=Groups,
                                          propagate_timer=Timer,
@@ -225,7 +249,8 @@ handle_info(?propagate_req, State=#state{partition=P,
     KnownVC = get_updated_known_vc(LocalId, grb_main_vnode:get_known_time(P), ClockTable),
     StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     GlobalMatrix = propagate_internal(KnownVC, StableVC, State),
-    StableMatrix = update_uniform_vc(LocalId, StableVC, StableMatrix0, ClockTable, Groups),
+    {UniformVC, StableMatrix} = update_uniform_vc(LocalId, StableVC, StableMatrix0, ClockTable, Groups),
+    ok = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers),
     {ok, State#state{stable_matrix=StableMatrix,
                      global_known_matrix=GlobalMatrix,
                      propagate_timer=erlang:send_after(Interval, self(), ?propagate_req)}};
@@ -251,6 +276,14 @@ handle_info(Msg, State) ->
 %%%===================================================================
 %%% internal functions
 %%%===================================================================
+
+-spec lift_pending_uniform_barriers(replica_id(), vclock(), cache(grb_time:ts(), grb_promise:t())) -> ok.
+lift_pending_uniform_barriers(ReplicaId, UniformVC, PendingBarriers) ->
+    Timestamp = grb_vclock:get_time(ReplicaId, UniformVC),
+    Pending = ets:select(PendingBarriers, [{ {{'$1', '$2'}, '_'}, [{'=<', '$1', {const, Timestamp}}], ['$2'] }]),
+    _ = ets:select_delete(PendingBarriers, [{ {{'$1', '_'}, '_'}, [{'=<', '$1', {const, Timestamp}}], [true] }]),
+    lists:foreach(fun(P) -> grb_promise:resolve(ok, P) end, Pending),
+    ok.
 
 -spec propagate_internal(vclock(), vclock(), #state{}) -> global_known_matrix().
 propagate_internal(KnownVC, StableVC, #state{local_replica=LocalId,
@@ -344,14 +377,14 @@ update_known_matrix(FromReplicaId, KnownVC, Matrix) ->
                         StableVC :: vclock(),
                         StableMatrix :: stable_matrix(),
                         ClockCache :: cache(atom(), vclock()),
-                        Groups :: [[replica_id()]]) -> stable_matrix().
+                        Groups :: [[replica_id()]]) -> {vclock(), stable_matrix()}.
 
 update_uniform_vc(FromReplicaId, StableVC, StableMatrix0, ClockCache, Groups) ->
     StableMatrix = StableMatrix0#{FromReplicaId => StableVC},
     UniformVC0 = ets:lookup_element(ClockCache, ?uniform_key, 2),
     UniformVC = compute_uniform_vc(UniformVC0, StableMatrix, Groups),
     true = ets:update_element(ClockCache, ?uniform_key, {2, UniformVC}),
-    StableMatrix.
+    {UniformVC, StableMatrix}.
 
 -spec compute_uniform_vc(vclock(), stable_matrix(), [[replica_id()]]) -> vclock().
 compute_uniform_vc(UniformVC, StableMatrix, Groups) ->

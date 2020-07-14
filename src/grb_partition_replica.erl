@@ -12,8 +12,7 @@
 -export([start_link/4]).
 
 %% protocol api
--export([uniform_barrier/3,
-         async_op/5,
+-export([async_op/5,
          decide_blue/3]).
 
 %% replica management API
@@ -37,7 +36,6 @@
     partition :: partition_id(),
 
     known_barrier_wait_ms :: non_neg_integer(),
-    uniform_barrier_wait_ms :: non_neg_integer(),
 
     %% Read replica of the opLog ETS table
     oplog_replica :: atom(),
@@ -107,12 +105,6 @@ replica_ready(Partition, N) ->
 %% Protocol API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec uniform_barrier(grb_promise:t(), partition_id(), vclock()) -> ok.
-uniform_barrier(Promise, Partition, CVC) ->
-    Target = random_replica(Partition),
-    ReplicaId = grb_dc_utils:replica_id(),
-    gen_server:cast(Target, {uniform_barrier, Promise, ReplicaId, CVC}).
-
 -spec async_op(grb_promise:t(), partition_id(), key(), vclock(), val()) -> ok.
 async_op(Promise, Partition, Key, VC, Val) ->
     Target = random_replica(Partition),
@@ -133,11 +125,9 @@ init([Partition, Id, Val, RedTs]) ->
     Self = generate_replica_name(Partition, Id),
     OpLog = grb_main_vnode:cache_name(Partition, ?OP_LOG_TABLE),
     {ok, OpWait} = application:get_env(grb, op_prepare_wait_ms),
-    {ok, UniformWait} = application:get_env(grb, uniform_barrier_wait_ms),
     {ok, #state{self = Self,
                 partition = Partition,
                 known_barrier_wait_ms=OpWait,
-                uniform_barrier_wait_ms=UniformWait,
                 oplog_replica = OpLog,
                 default_bottom_value=Val,
                 default_bottom_red=RedTs}}.
@@ -154,10 +144,6 @@ handle_call({update_default, Val, RedTs}, _From, S) ->
 handle_call(_Request, _From, _State) ->
     erlang:error(not_implemented).
 
-handle_cast({uniform_barrier, Promise, ReplicaId, CVC}, State=#state{partition=Partition, uniform_barrier_wait_ms=WaitMs}) ->
-    ok = uniform_barrier_wait(Promise, WaitMs, Partition, ReplicaId, CVC),
-    {noreply, State};
-
 handle_cast({perform_op, Promise, ReplicaId, Key, VC, Val}, State) ->
     ok = perform_op_internal(Promise, ReplicaId, Key, VC, Val, State),
     {noreply, State};
@@ -168,10 +154,6 @@ handle_cast({decide_blue, ReplicaId, TxId, VC}, State=#state{known_barrier_wait_
 
 handle_cast(_Request, _State) ->
     erlang:error(not_implemented).
-
-handle_info({retry_uniform_barrier, Promise, ReplicaId, CVC}, State=#state{partition=Partition, uniform_barrier_wait_ms=WaitMs}) ->
-    ok = uniform_barrier_wait(Promise, WaitMs, Partition, ReplicaId, CVC),
-    {noreply, State};
 
 handle_info({retry_op_wait, Promise, ReplicaId, Key, VC, Val}, State=#state{known_barrier_wait_ms=WaitMs}) ->
     ok = perform_op_wait(Promise, WaitMs, ReplicaId, Key, VC, Val, State),
@@ -188,29 +170,6 @@ handle_info(Info, State) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
--spec uniform_barrier_wait(grb_promise:t(), non_neg_integer(), partition_id(), replica_id(), vclock()) -> ok.
-uniform_barrier_wait(Promise, WaitMs, Partition, ReplicaId, CVC) ->
-    case check_uniform_vc(Partition, ReplicaId, CVC) of
-        not_ready ->
-            erlang:send_after(WaitMs, self(), {retry_uniform_barrier, Promise, ReplicaId, CVC}),
-            ok;
-        ready ->
-            grb_promise:resolve(ok, Promise)
-    end.
-
--spec check_uniform_vc(partition_id(), replica_id(), vclock()) -> ready | not_ready.
-check_uniform_vc(Partition, ReplicaId, CVC) ->
-    UniformVC = grb_propagation_vnode:uniform_vc(Partition),
-    UniformTime = grb_vclock:get_time(ReplicaId, UniformVC),
-    ClientTime = grb_vclock:get_time(ReplicaId, CVC),
-    case (UniformTime >= ClientTime) of
-        true ->
-            ready;
-        false ->
-            %% todo(borja, stat): log miss
-            not_ready
-    end.
 
 -spec perform_op_internal(Promise :: grb_promise:t(),
                           ReplicaId :: replica_id(),
