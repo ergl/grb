@@ -409,7 +409,7 @@ compute_uniform_vc(UniformVC, StableMatrix, Groups) ->
 min_global_matrix_ts(RemoteReplicas, SourceReplica, GlobalMatrix) ->
     min_global_matrix_ts(RemoteReplicas, SourceReplica, GlobalMatrix, undefined).
 
--spec min_global_matrix_ts([replica_id()], replica_id(), global_known_matrix(), grb_time:ts()) -> grb_time:ts().
+-spec min_global_matrix_ts([replica_id()], replica_id(), global_known_matrix(), grb_time:ts() | undefined) -> grb_time:ts().
 min_global_matrix_ts([], _SourceReplica, _GlobalMatrix, Min) -> Min;
 min_global_matrix_ts([RemoteReplica | Rest], SourceReplica, GlobalMatrix, Min) ->
     Ts = maps:get({RemoteReplica, SourceReplica}, GlobalMatrix),
