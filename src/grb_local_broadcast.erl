@@ -104,7 +104,7 @@ init([]) ->
 
 -spec init_state(#state{}) -> #state{}.
 init_state(S) ->
-    MyReplica = grb_dc_utils:replica_id(),
+    MyReplica = grb_dc_manager:replica_id(),
     MyPartitions = grb_dc_utils:my_partitions(),
     S#state{self_replica=MyReplica, self_partitions=MyPartitions}.
 

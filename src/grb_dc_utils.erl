@@ -1,8 +1,7 @@
 -module(grb_dc_utils).
 -include("grb.hrl").
 
--export([replica_id/0,
-         cluster_info/0,
+-export([cluster_info/0,
          my_bounded_ip/0,
          my_partitions/0,
          all_partitions/0,
@@ -24,12 +23,6 @@
               ready_ring_members/0]).
 
 -define(BUCKET, <<"grb">>).
-
-%% todo(borja, warn): Should persist this, Antidote says it can change
--spec replica_id() -> replica_id().
-replica_id() ->
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    riak_core_ring:cluster_name(Ring).
 
 -spec is_ring_owner() -> boolean().
 is_ring_owner() ->

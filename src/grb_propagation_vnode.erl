@@ -143,7 +143,7 @@ init([Partition]) ->
 
     PendingBarriers = new_cache(Partition, ?PENDING_BARRIERS, [ordered_set, protected, named_table]),
     {ok, #state{partition=Partition,
-                local_replica=grb_dc_utils:replica_id(), % ok to do this, we'll overwrite it after join
+                local_replica=undefined, % ok to do this, we'll overwrite it after join
                 prune_interval=PruneInterval,
                 propagate_interval=PropagateInterval,
                 clock_cache=ClockTable,
@@ -160,7 +160,7 @@ handle_command(disable_blue_append, _Sender, S) ->
 
 handle_command(learn_dc_id, _Sender, S) ->
     %% called after joining ring, this is now the correct id
-    {reply, ok, S#state{local_replica=grb_dc_utils:replica_id()}};
+    {reply, ok, S#state{local_replica=grb_dc_manager:replica_id()}};
 
 handle_command({learn_dc_groups, MyGroups}, _From, S) ->
     %% called after connecting other replicas

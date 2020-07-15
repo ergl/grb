@@ -56,7 +56,7 @@ uniform_barrier(Promise, Partition, CVC) ->
 
 -spec start_transaction(partition_id(), vclock()) -> vclock().
 start_transaction(Partition, ClientVC) ->
-    ReplicaId = grb_dc_utils:replica_id(),
+    ReplicaId = grb_dc_manager:replica_id(),
     %% First, update uniformVC everywhere but current replica
     UniformVC0 = grb_propagation_vnode:uniform_vc(Partition),
     UniformVC1 = grb_vclock:max_except(ReplicaId, UniformVC0, ClientVC),

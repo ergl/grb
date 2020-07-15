@@ -2,6 +2,7 @@
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
+-define(MY_REPLICA, my_replica).
 -define(ALL_REPLICAS, all_replicas).
 -define(REMOTE_REPLICAS, remote_replicas).
 
@@ -14,6 +15,7 @@
          connect_to_replicas/1,
          stop_background_processes/0,
          stop_propagation_processes/0,
+         replica_id/0,
          remote_replicas/0,
          all_replicas/0]).
 
@@ -26,6 +28,10 @@
               connect_to_replicas/1,
               stop_background_processes/0,
               stop_propagation_processes/0]).
+
+-spec replica_id() -> replica_id().
+replica_id() ->
+    persistent_term:get({?MODULE, ?MY_REPLICA}).
 
 -spec all_replicas() -> [replica_id()].
 all_replicas() ->
@@ -42,12 +48,19 @@ remote_replicas() ->
 
 -spec start_background_processes() -> ok.
 start_background_processes() ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    ReplicaId = riak_core_ring:cluster_name(Ring),
+    ok = persistent_term:put({?MODULE, ?MY_REPLICA}, ReplicaId),
+
     Res0 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_blue_hb_timer),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
+
     Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_replicas),
     ok = lists:foreach(fun({_, true}) -> ok end, Res1),
+
     Res2 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, learn_dc_id),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res2),
+
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
@@ -70,7 +83,7 @@ disable_blue_append() ->
 
 -spec start_propagation_processes() -> ok.
 start_propagation_processes() ->
-    MyReplicaId = grb_dc_utils:replica_id(),
+    MyReplicaId = replica_id(),
     RemoteReplicas = grb_dc_connection_manager:connected_replicas(),
 
     ok = persistent_term:put({?MODULE, ?REMOTE_REPLICAS}, RemoteReplicas),

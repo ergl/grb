@@ -63,7 +63,7 @@ get_known_time(Partition) ->
 
 -spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
 prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
-    ReplicaId = grb_dc_utils:replica_id(),
+    ReplicaId = grb_dc_manager:replica_id(),
     UniformVC0 = grb_propagation_vnode:uniform_vc(Partition),
     UniformVC1 = grb_vclock:max_except(ReplicaId, UniformVC0, SnapshotVC),
     ok = grb_propagation_vnode:update_uniform_vc(Partition, UniformVC1),
@@ -191,7 +191,7 @@ handle_info(?blue_tick_req, State=#state{partition=P,
                                          prepared_blue=PreparedBlue}) ->
     erlang:cancel_timer(Timer),
     KnownTime = compute_new_known_time(PreparedBlue),
-    ok = grb_propagation_vnode:handle_blue_heartbeat(P, grb_dc_utils:replica_id(), KnownTime),
+    ok = grb_propagation_vnode:handle_blue_heartbeat(P, grb_dc_manager:replica_id(), KnownTime),
     {ok, State#state{blue_tick_timer=erlang:send_after(Interval, self(), ?blue_tick_req)}};
 
 handle_info(Msg, State) ->

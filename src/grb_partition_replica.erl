@@ -108,13 +108,13 @@ replica_ready(Partition, N) ->
 -spec async_op(grb_promise:t(), partition_id(), key(), vclock(), val()) -> ok.
 async_op(Promise, Partition, Key, VC, Val) ->
     Target = random_replica(Partition),
-    ReplicaId = grb_dc_utils:replica_id(),
+    ReplicaId = grb_dc_manager:replica_id(),
     gen_server:cast(Target, {perform_op, Promise, ReplicaId, Key, VC, Val}).
 
 -spec decide_blue(partition_id(), _, vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->
     Target = random_replica(Partition),
-    ReplicaId = grb_dc_utils:replica_id(),
+    ReplicaId = grb_dc_manager:replica_id(),
     gen_server:cast(Target, {decide_blue, ReplicaId, TxId, VC}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
