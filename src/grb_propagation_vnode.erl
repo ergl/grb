@@ -227,8 +227,13 @@ handle_command({append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC}, _Sender,
     {noreply, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
 
 handle_command({uniform_barrier, Promise, Timestamp}, _Sender, S=#state{pending_barriers=Barriers}) ->
-    %% Use the promise as key to prevent conflicts
-    true = ets:insert(Barriers, {{Timestamp, Promise}, undefined}),
+    true = case ets:insert_new(Barriers, {Timestamp, [Promise]}) of
+        true ->
+            true;
+        false ->
+            %% If there's a barrier with this timestamp, append the promise to the list
+            1 =:= ets:select_replace(Barriers, [{ {Timestamp, '$2'}, [], [{ {Timestamp, [Promise | '$2']} }] }])
+    end,
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->
@@ -279,9 +284,9 @@ handle_info(Msg, State) ->
 -spec lift_pending_uniform_barriers(replica_id(), vclock(), cache(grb_time:ts(), grb_promise:t())) -> ok.
 lift_pending_uniform_barriers(ReplicaId, UniformVC, PendingBarriers) ->
     Timestamp = grb_vclock:get_time(ReplicaId, UniformVC),
-    Pending = ets:select(PendingBarriers, [{ {{'$1', '$2'}, '_'}, [{'=<', '$1', {const, Timestamp}}], ['$2'] }]),
-    _ = ets:select_delete(PendingBarriers, [{ {{'$1', '_'}, '_'}, [{'=<', '$1', {const, Timestamp}}], [true] }]),
-    lists:foreach(fun(P) -> grb_promise:resolve(ok, P) end, Pending),
+    PendingDeepList = ets:select(PendingBarriers, [{ {'$1', '$2'}, [{'=<', '$1', Timestamp}], ['$2'] }]),
+    _ = ets:select_delete(PendingBarriers, [{ {'$1', '$2'}, [{'=<', '$1', Timestamp}], [true] }]),
+    [ grb_promise:resolve(ok, P) || L <- PendingDeepList, P <- L],
     ok.
 
 -spec propagate_internal(vclock(), vclock(), #state{}) -> global_known_matrix().
