@@ -120,10 +120,10 @@ append_blue_commit(ReplicaId, Partition, KnownTime, TxId, WS, CommitVC) ->
                                    {append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC},
                                    ?master).
 
--spec register_uniform_barrier(grb_promise:t(), partition_id(), vclock()) -> ok.
-register_uniform_barrier(Promise, Partition, CVC) ->
+-spec register_uniform_barrier(grb_promise:t(), partition_id(), grb_time:ts()) -> ok.
+register_uniform_barrier(Promise, Partition, Timestamp) ->
     riak_core_vnode_master:command({Partition, node()},
-                                   {uniform_barrier, Promise, CVC},
+                                   {uniform_barrier, Promise, Timestamp},
                                    ?master).
 
 %%%===================================================================
@@ -226,8 +226,7 @@ handle_command({append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC}, _Sender,
     ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
     {noreply, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
 
-handle_command({uniform_barrier, Promise, CVC}, _Sender, S=#state{local_replica=LocalId, pending_barriers=Barriers}) ->
-    Timestamp = grb_vclock:get_time(LocalId, CVC),
+handle_command({uniform_barrier, Promise, Timestamp}, _Sender, S=#state{pending_barriers=Barriers}) ->
     %% Use the promise as key to prevent conflicts
     true = ets:insert(Barriers, {{Timestamp, Promise}, undefined}),
     {noreply, S};
