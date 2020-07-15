@@ -214,7 +214,7 @@ handle_info(broadcast_clock, S=#state{self_name=SelfNode,
     NewLeaf = Leaf#leaf_state{broadcast_timer=erlang:send_after(Int, self(), broadcast_clock)},
     {noreply, S#state{tree_state=NewLeaf}};
 
-%% If singleton, just recalculate our local stableVC
+%% If singleton, just recalculate our local stableVC and uniformVC (they are the same)
 handle_info(broadcast_clock, S=#state{self_partitions=Partitions,
                                       tree_state=Single=#singleton_state{}}) ->
 
@@ -225,8 +225,9 @@ handle_info(broadcast_clock, S=#state{self_partitions=Partitions,
 
     LocalSVC = compute_local_svc(Partitions),
     ok = set_svc(Partitions, LocalSVC),
+    ok = set_uvc(Partitions, LocalSVC),
 
-    ?LOG_DEBUG("singleton recomputing stableVC as ~p", [LocalSVC]),
+    ?LOG_DEBUG("singleton recomputing stableVC / uniformVC as ~p", [LocalSVC]),
 
     NewSingle = Single#singleton_state{broadcast_timer=erlang:send_after(Int, self(), broadcast_clock)},
     {noreply, S#state{tree_state=NewSingle}};
@@ -283,6 +284,13 @@ compute_svc(AllReplicas, VCs, AccSVC) ->
 set_svc(Partitions, StableVC) ->
     lists:foreach(fun(Partition) ->
         ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC)
+    end, Partitions).
+
+%% @doc Set the new uniformVC and signal uniform barriers
+-spec set_uvc([partition_id()], vclock()) -> ok.
+set_uvc(Partitions, StableVC) ->
+    lists:foreach(fun(Partition) ->
+        ok = grb_propagation_vnode:replace_uniform_vc(Partition, StableVC)
     end, Partitions).
 
 -spec send_to_parent(atom(), atom(), vclock()) -> ok.

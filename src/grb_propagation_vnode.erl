@@ -13,6 +13,7 @@
          update_stable_vc/2,
          uniform_vc/1,
          update_uniform_vc/2,
+         replace_uniform_vc/2,
          handle_blue_heartbeat/3,
          handle_clock_update/4,
          append_blue_commit/6,
@@ -99,6 +100,11 @@ update_stable_vc(Partition, SVC) ->
 -spec update_uniform_vc(partition_id(), vclock()) -> ok.
 update_uniform_vc(Partition, SVC) ->
     riak_core_vnode_master:command({Partition, node()}, {update_uniform_vc, SVC}, ?master).
+
+%% @doc Same as update_uniform_vc, but recompute uniform barriers
+-spec replace_uniform_vc(partition_id(), vclock()) -> ok.
+replace_uniform_vc(Partition, UniformVC) ->
+    riak_core_vnode_master:command({Partition, node()}, {replace_uniform_vc, UniformVC}, ?master).
 
 -spec known_vc(partition_id()) -> vclock().
 known_vc(Partition) ->
@@ -196,6 +202,15 @@ handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTabl
     %% Safe to update everywhere, caller has already ensured to not update the current replica
     NewSVC = grb_vclock:max(OldSVC, SVC),
     true = ets:update_element(ClockTable, ?uniform_key, {2, NewSVC}),
+    {noreply, S};
+
+handle_command({replace_uniform_vc, UniformVC}, _Sender, S=#state{local_replica=ReplicaId,
+                                                                  clock_cache=ClockTable,
+                                                                  pending_barriers=PendingBarriers}) ->
+    OldSVC = ets:lookup_element(ClockTable, ?uniform_key, 2),
+    NewSVC = grb_vclock:max(OldSVC, UniformVC),
+    true = ets:update_element(ClockTable, ?uniform_key, {2, NewSVC}),
+    ok = lift_pending_uniform_barriers(ReplicaId, NewSVC, PendingBarriers),
     {noreply, S};
 
 handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
