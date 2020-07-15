@@ -78,7 +78,7 @@
     clock_cache :: cache(atom(), vclock()),
 
     %% List of pending uniform barriers by clients, recompute on uniformVC update
-    pending_barriers :: cache({grb_time:ts(), grb_promise:t()}, undefined)
+    pending_barriers :: cache(grb_time:ts(), [grb_promise:t()])
 }).
 
 %%%===================================================================
@@ -242,13 +242,7 @@ handle_command({append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC}, _Sender,
     {noreply, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
 
 handle_command({uniform_barrier, Promise, Timestamp}, _Sender, S=#state{pending_barriers=Barriers}) ->
-    true = case ets:insert_new(Barriers, {Timestamp, [Promise]}) of
-        true ->
-            true;
-        false ->
-            %% If there's a barrier with this timestamp, append the promise to the list
-            1 =:= ets:select_replace(Barriers, [{ {Timestamp, '$2'}, [], [{ {Timestamp, [Promise | '$2']} }] }])
-    end,
+    true = insert_uniform_barrier(Promise, Timestamp, Barriers),
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->
@@ -295,6 +289,18 @@ handle_info(Msg, State) ->
 %%%===================================================================
 %%% internal functions
 %%%===================================================================
+
+%% Pinky promise, dialyzer doesn't catch that '$2' in the match specification is a list
+-dialyzer({no_improper_lists, insert_uniform_barrier/3}).
+-spec insert_uniform_barrier(grb_promise:t(), grb_time:ts(), cache(grb_time:ts(), [grb_promise:t()])) -> true.
+insert_uniform_barrier(Promise, Timestamp, Barriers) ->
+    case ets:insert_new(Barriers, {Timestamp, [Promise]}) of
+        true ->
+            true;
+        false ->
+            %% If there's a barrier with this timestamp, append the promise to the list
+            1 =:= ets:select_replace(Barriers, [{ {Timestamp, '$2'}, [], [{ {Timestamp, [Promise | '$2']} }] }])
+    end.
 
 -spec lift_pending_uniform_barriers(replica_id(), vclock(), cache(grb_time:ts(), grb_promise:t())) -> ok.
 lift_pending_uniform_barriers(ReplicaId, UniformVC, PendingBarriers) ->
