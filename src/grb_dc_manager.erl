@@ -35,7 +35,7 @@ replica_id() ->
 
 -spec all_replicas() -> [replica_id()].
 all_replicas() ->
-    persistent_term:get({?MODULE, ?ALL_REPLICAS}, []).
+    persistent_term:get({?MODULE, ?ALL_REPLICAS}, [replica_id()]).
 
 -spec remote_replicas() -> [replica_id()].
 remote_replicas() ->
