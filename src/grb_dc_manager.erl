@@ -9,6 +9,7 @@
 %% API
 -export([start_background_processes/0,
          start_propagation_processes/0,
+         persist_replica_info/0,
          enable_blue_append/0,
          disable_blue_append/0,
          replica_descriptor/0,
@@ -22,6 +23,7 @@
 %% All functions are called through erpc
 -ignore_xref([start_background_processes/0,
               start_propagation_processes/0,
+              persist_replica_info/0,
               enable_blue_append/0,
               disable_blue_append/0,
               replica_descriptor/0,
@@ -83,23 +85,38 @@ disable_blue_append() ->
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
     ok.
 
+%% @doc This is only called at the master node, but it should propagate everywhere
 -spec start_propagation_processes() -> ok.
 start_propagation_processes() ->
+    %% Persist replica info at every node in the cluster
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    LocalNodes = riak_core_ring:all_members(Ring),
+
+    Res0 = erpc:multicall(LocalNodes, ?MODULE, persist_replica_info, []),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res0),
+
+    %% Important, this is the same at all cluster nodes
     MyReplicaId = replica_id(),
     RemoteReplicas = grb_dc_connection_manager:connected_replicas(),
-
-    ok = persistent_term:put({?MODULE, ?REMOTE_REPLICAS}, RemoteReplicas),
-    ok = persistent_term:put({?MODULE, ?ALL_REPLICAS}, [MyReplicaId | RemoteReplicas]),
-    ?LOG_INFO("Persisted all replicas: ~p~n", [RemoteReplicas]),
 
     {ok, MyGroups} = compute_groups(MyReplicaId, RemoteReplicas),
     ?LOG_INFO("Fault tolerant groups: ~p~n", [MyGroups]),
 
-    Res0 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, {learn_dc_groups, MyGroups}),
-    ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
-    Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_propagate_timer),
+    Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, {learn_dc_groups, MyGroups}),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
+
+    Res2 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_propagate_timer),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res2),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
+    ok.
+
+-spec persist_replica_info() -> ok.
+persist_replica_info() ->
+    MyReplicaId = replica_id(),
+    RemoteReplicas = grb_dc_connection_manager:connected_replicas(),
+    ok = persistent_term:put({?MODULE, ?REMOTE_REPLICAS}, RemoteReplicas),
+    ok = persistent_term:put({?MODULE, ?ALL_REPLICAS}, [MyReplicaId | RemoteReplicas]),
+    ?LOG_INFO("Persisted all replicas: ~p~n", [RemoteReplicas]),
     ok.
 
 -spec stop_background_processes() -> ok.
