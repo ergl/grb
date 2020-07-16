@@ -50,11 +50,10 @@
 -define(stable_key, stable_vc).
 -define(uniform_key, uniform_vc).
 
--define(PENDING_BARRIERS, uniform_barrier_table).
-
 -type stable_matrix() :: #{replica_id() => vclock()}.
 -type global_known_matrix() :: #{{replica_id(), replica_id()} => grb_time:ts()}.
 -type blue_commit_logs() :: #{replica_id() => grb_blue_commit_log:t()}.
+-type uniform_barriers() :: orddict:orddict(grb_time:ts(), [grb_promise:t()]).
 
 -record(state, {
     partition :: partition_id(),
@@ -78,7 +77,7 @@
     clock_cache :: cache(atom(), vclock()),
 
     %% List of pending uniform barriers by clients, recompute on uniformVC update
-    pending_barriers :: cache(grb_time:ts(), [grb_promise:t()])
+    pending_barriers = [] :: uniform_barriers()
 }).
 
 %%%===================================================================
@@ -147,13 +146,11 @@ init([Partition]) ->
                                    {?stable_key, grb_vclock:new()},
                                    {?known_key, grb_vclock:new()}]),
 
-    PendingBarriers = new_cache(Partition, ?PENDING_BARRIERS, [ordered_set, protected, named_table]),
     {ok, #state{partition=Partition,
                 local_replica=undefined, % ok to do this, we'll overwrite it after join
                 prune_interval=PruneInterval,
                 propagate_interval=PropagateInterval,
-                clock_cache=ClockTable,
-                pending_barriers=PendingBarriers}}.
+                clock_cache=ClockTable}}.
 
 handle_command(ping, _Sender, State) ->
     {reply, {pong, node(), State#state.partition}, State};
@@ -206,12 +203,12 @@ handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTabl
 
 handle_command({replace_uniform_vc, UniformVC}, _Sender, S=#state{local_replica=ReplicaId,
                                                                   clock_cache=ClockTable,
-                                                                  pending_barriers=PendingBarriers}) ->
+                                                                  pending_barriers=PendingBarriers0}) ->
     OldSVC = ets:lookup_element(ClockTable, ?uniform_key, 2),
     NewSVC = grb_vclock:max(OldSVC, UniformVC),
     true = ets:update_element(ClockTable, ?uniform_key, {2, NewSVC}),
-    ok = lift_pending_uniform_barriers(ReplicaId, NewSVC, PendingBarriers),
-    {noreply, S};
+    PendingBarriers = lift_pending_uniform_barriers(ReplicaId, NewSVC, PendingBarriers0),
+    {noreply, S#state{pending_barriers=PendingBarriers}};
 
 handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
     ok = update_known_vc(FromReplica, Ts, ClockTable),
@@ -219,15 +216,15 @@ handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTa
 
 handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S=#state{local_replica=LocalId,
                                                                                           clock_cache=ClockCache,
-                                                                                          pending_barriers=PendingBarriers,
+                                                                                          pending_barriers=PendingBarriers0,
                                                                                           stable_matrix=StableMatrix0,
                                                                                           fault_tolerant_groups=Groups,
                                                                                           global_known_matrix=KnownMatrix0}) ->
 
     KnownMatrix = update_known_matrix(FromReplicaId, KnownVC, KnownMatrix0),
     {UniformVC, StableMatrix} = update_uniform_vc(FromReplicaId, StableVC, StableMatrix0, ClockCache, Groups),
-    ok = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers),
-    {noreply, S#state{global_known_matrix=KnownMatrix, stable_matrix=StableMatrix}};
+    PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
+    {noreply, S#state{global_known_matrix=KnownMatrix, stable_matrix=StableMatrix, pending_barriers=PendingBarriers}};
 
 handle_command({append_blue, ReplicaId, KnownTime, _TxId, _WS, _CommitVC}, _Sender, S=#state{clock_cache=ClockTable,
                                                                                              should_append_commit=false}) ->
@@ -242,8 +239,7 @@ handle_command({append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC}, _Sender,
     {noreply, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
 
 handle_command({uniform_barrier, Promise, Timestamp}, _Sender, S=#state{pending_barriers=Barriers}) ->
-    true = insert_uniform_barrier(Promise, Timestamp, Barriers),
-    {noreply, S};
+    {noreply, S#state{pending_barriers=insert_uniform_barrier(Promise, Timestamp, Barriers)}};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
@@ -252,7 +248,7 @@ handle_command(Message, _Sender, State) ->
 handle_info(?propagate_req, State=#state{partition=P,
                                          local_replica=LocalId,
                                          clock_cache=ClockTable,
-                                         pending_barriers=PendingBarriers,
+                                         pending_barriers=PendingBarriers0,
                                          stable_matrix=StableMatrix0,
                                          fault_tolerant_groups=Groups,
                                          propagate_timer=Timer,
@@ -263,8 +259,9 @@ handle_info(?propagate_req, State=#state{partition=P,
     StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     GlobalMatrix = propagate_internal(KnownVC, StableVC, State),
     {UniformVC, StableMatrix} = update_uniform_vc(LocalId, StableVC, StableMatrix0, ClockTable, Groups),
-    ok = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers),
+    PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
     {ok, State#state{stable_matrix=StableMatrix,
+                     pending_barriers=PendingBarriers,
                      global_known_matrix=GlobalMatrix,
                      propagate_timer=erlang:send_after(Interval, self(), ?propagate_req)}};
 
@@ -290,28 +287,28 @@ handle_info(Msg, State) ->
 %%% internal functions
 %%%===================================================================
 
-%% Pinky promise, dialyzer doesn't catch that '$2' in the match specification is a list
--dialyzer({no_improper_lists, insert_uniform_barrier/3}).
--spec insert_uniform_barrier(grb_promise:t(), grb_time:ts(), cache(grb_time:ts(), [grb_promise:t()])) -> true.
+-spec insert_uniform_barrier(grb_promise:t(), grb_time:ts(), uniform_barriers()) -> uniform_barriers().
 insert_uniform_barrier(Promise, Timestamp, Barriers) ->
-    case ets:insert_new(Barriers, {Timestamp, [Promise]}) of
-        true ->
-            true;
-        false ->
-            %% If there's a barrier with this timestamp, append the promise to the list
-            1 =:= ets:select_replace(Barriers, [{ {Timestamp, '$2'}, [], [{ {Timestamp, [Promise | '$2']} }] }])
+    case orddict:is_key(Timestamp, Barriers) of
+        true -> orddict:append(Timestamp, Promise, Barriers);
+        false -> orddict:store(Timestamp, [Promise], Barriers)
     end.
 
--spec lift_pending_uniform_barriers(replica_id(), vclock(), cache(grb_time:ts(), grb_promise:t())) -> ok.
+-spec lift_pending_uniform_barriers(replica_id(), vclock(), uniform_barriers()) -> uniform_barriers().
+lift_pending_uniform_barriers(_, _, []) -> [];
 lift_pending_uniform_barriers(ReplicaId, UniformVC, PendingBarriers) ->
     Timestamp = grb_vclock:get_time(ReplicaId, UniformVC),
-    PendingDeepList = ets:select(PendingBarriers, [{ {'$1', '_'}, [{'=<', '$1', Timestamp}], ['$_'] }]),
-    ?LOG_DEBUG("Lifting barriers ~p", [PendingDeepList]),
-    lists:foreach(fun({Ts, Promises}) ->
-        true = ets:delete(PendingBarriers, Ts),
-        lists:foreach(fun(P) -> grb_promise:resolve(ok, P) end, Promises)
-    end, PendingDeepList),
-    ok.
+    lift_pending_uniform_barriers(Timestamp, PendingBarriers).
+
+-spec lift_pending_uniform_barriers(grb_time:ts(), uniform_barriers()) -> uniform_barriers().
+lift_pending_uniform_barriers(_, []) -> [];
+
+lift_pending_uniform_barriers(Cutoff, [{Ts, Promises} | Rest]) when Ts =< Cutoff ->
+    lists:foreach(fun(P) -> grb_promise:resolve(ok, P) end, Promises),
+    lift_pending_uniform_barriers(Cutoff, Rest);
+
+lift_pending_uniform_barriers(Cutoff, [{Ts, _} | _]=Remaining) when Ts > Cutoff ->
+    Remaining.
 
 -spec propagate_internal(vclock(), vclock(), #state{}) -> global_known_matrix().
 propagate_internal(KnownVC, StableVC, #state{local_replica=LocalId,
