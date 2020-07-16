@@ -46,25 +46,27 @@ remote_replicas() ->
 %% External API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+%% @doc Should be called at every node in the cluster
 -spec start_background_processes() -> ok.
 start_background_processes() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     ReplicaId = riak_core_ring:cluster_name(Ring),
     ok = persistent_term:put({?MODULE, ?MY_REPLICA}, ReplicaId),
 
-    Res0 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_blue_hb_timer),
+    Res0 = grb_dc_utils:bcast_vnode_local_sync(grb_main_vnode_master, start_blue_hb_timer),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
 
-    Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_replicas),
+    Res1 = grb_dc_utils:bcast_vnode_local_sync(grb_main_vnode_master, start_replicas),
     ok = lists:foreach(fun({_, true}) -> ok end, Res1),
 
-    Res2 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, learn_dc_id),
+    Res2 = grb_dc_utils:bcast_vnode_local_sync(grb_propagation_vnode_master, learn_dc_id),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res2),
 
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
 %% @doc Enable partitions appending transactions to committedBlue (enabled by default)
+%%      Should only be called at the master node (and only be called when the cluster is only one node)
 -spec enable_blue_append() -> ok.
 enable_blue_append() ->
     Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, enable_blue_append),
@@ -102,9 +104,9 @@ start_propagation_processes() ->
 
 -spec stop_background_processes() -> ok.
 stop_background_processes() ->
-    Res0 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_blue_hb_timer),
+    Res0 = grb_dc_utils:bcast_vnode_local_sync(grb_main_vnode_master, stop_blue_hb_timer),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
-    Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, stop_replicas),
+    Res1 = grb_dc_utils:bcast_vnode_local_sync(grb_main_vnode_master, stop_replicas),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
