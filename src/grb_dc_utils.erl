@@ -2,7 +2,7 @@
 -include("grb.hrl").
 
 -export([cluster_info/0,
-         my_bounded_ip/0,
+         inter_dc_ip_port/0,
          my_partitions/0,
          all_partitions/0,
          key_location/1,
@@ -18,7 +18,7 @@
 
 %% Called via `erpc`
 -ignore_xref([is_ring_owner/0,
-              my_bounded_ip/0,
+              inter_dc_ip_port/0,
               pending_ring_changes/0,
               ready_ring_members/0]).
 
@@ -47,11 +47,12 @@ cluster_info() ->
     {NumPartitions, Nodes} = riak_core_ring:chash(Ring),
     {ok, ReplicaID, NumPartitions, Nodes}.
 
--spec my_bounded_ip() -> inet:ip_address().
-my_bounded_ip() ->
+-spec inter_dc_ip_port() -> {inet:ip_address(), inet:port_number()}.
+inter_dc_ip_port() ->
     {ok, IPString} = application:get_env(grb, bounded_ip),
     {ok, IP} = inet:parse_address(IPString),
-    IP.
+    {ok, Port} = application:get_env(grb, inter_dc_port),
+    {IP, Port}.
 
 -spec my_partitions() -> [partition_id()].
 my_partitions() ->

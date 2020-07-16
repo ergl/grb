@@ -143,15 +143,14 @@ stop_propagation_processes() ->
 %%
 -spec replica_descriptor() -> replica_descriptor().
 replica_descriptor() ->
-    {ok, Port} = application:get_env(grb, inter_dc_port),
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     Id = riak_core_ring:cluster_name(Ring),
     {NumPartitions, PartitionList} = riak_core_ring:chash(Ring),
     %% Convert a list of [{partition_id(), node()}, ...] into
     %% #{partition_id() => {inet:ip_address(), inet:port_number()}}
     {PartitionsWithInfo, _} = lists:foldl(fun({P, Node}, {PartitionInfo, IPMap}) ->
-        IP = maps:get(Node, IPMap, erpc:call(Node, grb_dc_utils, my_bounded_ip, [])),
-        {PartitionInfo#{P => {IP, Port}}, IPMap#{Node => IP}}
+        {IP, Port} = maps:get(Node, IPMap, erpc:call(Node, grb_dc_utils, inter_dc_ip_port, [])),
+        {PartitionInfo#{P => {IP, Port}}, IPMap#{Node => {IP, Port}}}
     end, {#{}, #{}}, PartitionList),
     #replica_descriptor{
         replica_id=Id,
