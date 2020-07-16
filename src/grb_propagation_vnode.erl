@@ -305,9 +305,12 @@ insert_uniform_barrier(Promise, Timestamp, Barriers) ->
 -spec lift_pending_uniform_barriers(replica_id(), vclock(), cache(grb_time:ts(), grb_promise:t())) -> ok.
 lift_pending_uniform_barriers(ReplicaId, UniformVC, PendingBarriers) ->
     Timestamp = grb_vclock:get_time(ReplicaId, UniformVC),
-    PendingDeepList = ets:select(PendingBarriers, [{ {'$1', '$2'}, [{'=<', '$1', Timestamp}], ['$2'] }]),
-    _ = ets:select_delete(PendingBarriers, [{ {'$1', '$2'}, [{'=<', '$1', Timestamp}], [true] }]),
-    [ grb_promise:resolve(ok, P) || L <- PendingDeepList, P <- L],
+    PendingDeepList = ets:select(PendingBarriers, [{ {'$1', '_'}, [{'=<', '$1', Timestamp}], ['$_'] }]),
+    ?LOG_DEBUG("Lifting barriers ~p", [PendingDeepList]),
+    lists:foreach(fun({Ts, Promises}) ->
+        true = ets:delete(PendingBarriers, Ts),
+        lists:foreach(fun(P) -> grb_promise:resolve(ok, P) end, Promises)
+    end, PendingDeepList),
     ok.
 
 -spec propagate_internal(vclock(), vclock(), #state{}) -> global_known_matrix().
