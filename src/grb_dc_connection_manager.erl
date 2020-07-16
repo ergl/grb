@@ -171,7 +171,7 @@ broadcast_tx(FromId, ToPartition, Transaction) ->
 init([]) ->
     ReplicaTable = ets:new(?REPLICAS_TABLE, [set, protected, named_table, {read_concurrency, true}]),
     true = ets:insert(?REPLICAS_TABLE, {?REPLICAS_TABLE_KEY, ordsets:new()}),
-    ConnPidTable = ets:new(?CONN_SOCKS_TABLE, [set, protected, named_table, {read_concurrency, true}]),
+    ConnPidTable = ets:new(?CONN_SOCKS_TABLE, [ordered_set, protected, named_table, {read_concurrency, true}]),
     {ok, #state{replicas=ReplicaTable,
                 connection_sockets=ConnPidTable}}.
 
