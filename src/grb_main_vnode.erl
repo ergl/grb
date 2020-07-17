@@ -272,9 +272,9 @@ new_cache(Partition, Name, Options) ->
 -spec cache_name(partition_id(), atom()) -> cache_id().
 cache_name(Partition, Name) ->
     BinNode = atom_to_binary(node(), latin1),
-    BiName = atom_to_binary(Name, latin1),
+    BinName = atom_to_binary(Name, latin1),
     BinPart = integer_to_binary(Partition),
-    TableName = <<BiName/binary, <<"-">>/binary, BinPart/binary, <<"@">>/binary, BinNode/binary>>,
+    TableName = <<BinName/binary, <<"-">>/binary, BinPart/binary, <<"@">>/binary, BinNode/binary>>,
     safe_bin_to_atom(TableName).
 
 -spec is_ready(cache_id()) -> boolean().
