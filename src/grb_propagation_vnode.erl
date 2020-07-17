@@ -13,7 +13,6 @@
          update_stable_vc/2,
          uniform_vc/1,
          update_uniform_vc/2,
-         replace_uniform_vc/2,
          handle_blue_heartbeat/3,
          handle_clock_update/4,
          append_blue_commit/6,
@@ -100,11 +99,6 @@ update_stable_vc(Partition, SVC) ->
 update_uniform_vc(Partition, SVC) ->
     riak_core_vnode_master:command({Partition, node()}, {update_uniform_vc, SVC}, ?master).
 
-%% @doc Same as update_uniform_vc, but recompute uniform barriers
--spec replace_uniform_vc(partition_id(), vclock()) -> ok.
-replace_uniform_vc(Partition, UniformVC) ->
-    riak_core_vnode_master:command({Partition, node()}, {replace_uniform_vc, UniformVC}, ?master).
-
 -spec known_vc(partition_id()) -> vclock().
 known_vc(Partition) ->
     ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?known_key, 2).
@@ -187,12 +181,19 @@ handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=PropTRef,
     erlang:cancel_timer(PruneTRef),
     {reply, ok, S#state{propagate_timer=undefined, prune_timer=undefined}};
 
-handle_command({update_stable_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
+handle_command({update_stable_vc, SVC}, _Sender, S=#state{local_replica=LocalId,
+                                                          clock_cache=ClockTable,
+                                                          stable_matrix=StableMatrix0,
+                                                          fault_tolerant_groups=Groups,
+                                                          pending_barriers=PendingBarriers0}) ->
+
     OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     %% Safe to update everywhere, caller has already ensured to not update the current replica
     NewSVC = grb_vclock:max(OldSVC, SVC),
     true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
-    {noreply, S};
+    {UniformVC, StableMatrix} = update_uniform_vc(LocalId, NewSVC, StableMatrix0, ClockTable, Groups),
+    PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
+    {noreply, S#state{stable_matrix=StableMatrix, pending_barriers=PendingBarriers}};
 
 handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
     OldSVC = ets:lookup_element(ClockTable, ?uniform_key, 2),
@@ -200,15 +201,6 @@ handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTabl
     NewSVC = grb_vclock:max(OldSVC, SVC),
     true = ets:update_element(ClockTable, ?uniform_key, {2, NewSVC}),
     {noreply, S};
-
-handle_command({replace_uniform_vc, UniformVC}, _Sender, S=#state{local_replica=ReplicaId,
-                                                                  clock_cache=ClockTable,
-                                                                  pending_barriers=PendingBarriers0}) ->
-    OldSVC = ets:lookup_element(ClockTable, ?uniform_key, 2),
-    NewSVC = grb_vclock:max(OldSVC, UniformVC),
-    true = ets:update_element(ClockTable, ?uniform_key, {2, NewSVC}),
-    PendingBarriers = lift_pending_uniform_barriers(ReplicaId, NewSVC, PendingBarriers0),
-    {noreply, S#state{pending_barriers=PendingBarriers}};
 
 handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
     ok = update_known_vc(FromReplica, Ts, ClockTable),
@@ -248,9 +240,6 @@ handle_command(Message, _Sender, State) ->
 handle_info(?propagate_req, State=#state{partition=P,
                                          local_replica=LocalId,
                                          clock_cache=ClockTable,
-                                         pending_barriers=PendingBarriers0,
-                                         stable_matrix=StableMatrix0,
-                                         fault_tolerant_groups=Groups,
                                          propagate_timer=Timer,
                                          propagate_interval=Interval}) ->
 
@@ -258,11 +247,7 @@ handle_info(?propagate_req, State=#state{partition=P,
     KnownVC = get_updated_known_vc(LocalId, grb_main_vnode:get_known_time(P), ClockTable),
     StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     GlobalMatrix = propagate_internal(KnownVC, StableVC, State),
-    {UniformVC, StableMatrix} = update_uniform_vc(LocalId, StableVC, StableMatrix0, ClockTable, Groups),
-    PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
-    {ok, State#state{stable_matrix=StableMatrix,
-                     pending_barriers=PendingBarriers,
-                     global_known_matrix=GlobalMatrix,
+    {ok, State#state{global_known_matrix=GlobalMatrix,
                      propagate_timer=erlang:send_after(Interval, self(), ?propagate_req)}};
 
 handle_info(?prune_req, State=#state{logs=Logs0,

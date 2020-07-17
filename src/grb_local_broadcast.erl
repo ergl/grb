@@ -147,7 +147,7 @@ handle_cast({clock_event, From, ChildSVC}, S=#state{self_name=SelfNode,
         1 ->
             LocalSVC = compute_local_svc(Partitions),
             GlobalSVC = compute_children_svc([ChildSVC | Acc], LocalSVC),
-            ok = set_svc(Partitions, GlobalSVC),
+            ok = update_stableVC(Partitions, GlobalSVC),
             ok = send_to_children(SelfNode, Children, GlobalSVC),
             ?LOG_DEBUG("root node recomputing global stableVC as ~p, sending to ~p", [GlobalSVC, Children]),
             RootState#root_state{children_acc=[], children_to_ack=length(Children)};
@@ -181,7 +181,7 @@ handle_cast({set_svc, Parent, ParentSVC}, S=#state{self_name=SelfNode,
                                                                           children=Children}}) ->
 
     ?LOG_DEBUG("int node received stableVC ~p from parent ~p", [ParentSVC, Parent]),
-    ok = set_svc(Partitions, ParentSVC),
+    ok = update_stableVC(Partitions, ParentSVC),
     ok = send_to_children(SelfNode, Children, ParentSVC),
     {noreply, S};
 
@@ -189,7 +189,7 @@ handle_cast({set_svc, Parent, ParentSVC}, S=#state{self_partitions=Partitions,
                                                    tree_state=#leaf_state{}}) ->
 
     ?LOG_DEBUG("leaf node received stableVC ~p from parent ~p", [ParentSVC, Parent]),
-    ok = set_svc(Partitions, ParentSVC),
+    ok = update_stableVC(Partitions, ParentSVC),
     {noreply, S};
 
 handle_cast(E, S) ->
@@ -214,7 +214,7 @@ handle_info(broadcast_clock, S=#state{self_name=SelfNode,
     NewLeaf = Leaf#leaf_state{broadcast_timer=erlang:send_after(Int, self(), broadcast_clock)},
     {noreply, S#state{tree_state=NewLeaf}};
 
-%% If singleton, just recalculate our local stableVC and uniformVC (they are the same)
+%% If singleton, just recalculate our local stableVC
 handle_info(broadcast_clock, S=#state{self_partitions=Partitions,
                                       tree_state=Single=#singleton_state{}}) ->
 
@@ -224,8 +224,7 @@ handle_info(broadcast_clock, S=#state{self_partitions=Partitions,
     erlang:cancel_timer(TRef),
 
     LocalSVC = compute_local_svc(Partitions),
-    ok = set_svc(Partitions, LocalSVC),
-    ok = set_uvc(Partitions, LocalSVC),
+    ok = update_stableVC(Partitions, LocalSVC),
 
     ?LOG_DEBUG("singleton recomputing stableVC / uniformVC as ~p", [LocalSVC]),
 
@@ -280,17 +279,15 @@ compute_svc(AllReplicas, VCs, AccSVC) ->
         grb_vclock:min_at(AllReplicas, SVC, Acc)
     end, AccSVC, VCs).
 
--spec set_svc([partition_id()], vclock()) -> ok.
-set_svc(Partitions, StableVC) ->
+%% @doc Update the stableVC of the given partitions
+%%
+%%      Will also recompute the uniformVC of the given partitions
+%%      as if we received the stableVC from a remote replica,
+%%      and lift the appropriate barriers
+-spec update_stableVC([partition_id()], vclock()) -> ok.
+update_stableVC(Partitions, StableVC) ->
     lists:foreach(fun(Partition) ->
         ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC)
-    end, Partitions).
-
-%% @doc Set the new uniformVC and signal uniform barriers
--spec set_uvc([partition_id()], vclock()) -> ok.
-set_uvc(Partitions, StableVC) ->
-    lists:foreach(fun(Partition) ->
-        ok = grb_propagation_vnode:replace_uniform_vc(Partition, StableVC)
     end, Partitions).
 
 -spec send_to_parent(atom(), atom(), vclock()) -> ok.
