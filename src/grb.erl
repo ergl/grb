@@ -54,7 +54,15 @@ load(Size) ->
 uniform_barrier(Promise, Partition, CVC) ->
     ReplicaId = grb_dc_manager:replica_id(),
     Timestamp = grb_vclock:get_time(ReplicaId, CVC),
-    ok = grb_propagation_vnode:register_uniform_barrier(Promise, Partition, Timestamp).
+    UniformTimestamp = grb_vclock:get_time(ReplicaId, grb_propagation_vnode:uniform_vc(Partition)),
+    case Timestamp =< UniformTimestamp of
+        true ->
+            %% fast-path uniform barrier if the check is true, don't wait until
+            %% the next uniformVC update to check
+            grb_promise:resolve(ok, Promise);
+        false ->
+            grb_propagation_vnode:register_uniform_barrier(Promise, Partition, Timestamp)
+    end.
 
 -spec start_transaction(partition_id(), vclock()) -> vclock().
 start_transaction(Partition, ClientVC) ->
