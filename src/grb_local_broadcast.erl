@@ -226,7 +226,7 @@ handle_info(broadcast_clock, S=#state{self_partitions=Partitions,
     LocalSVC = compute_local_svc(Partitions),
     ok = update_stableVC(Partitions, LocalSVC),
 
-    ?LOG_DEBUG("singleton recomputing stableVC / uniformVC as ~p", [LocalSVC]),
+    ?LOG_DEBUG("singleton recomputing stableVC as ~p", [LocalSVC]),
 
     NewSingle = Single#singleton_state{broadcast_timer=erlang:send_after(Int, self(), broadcast_clock)},
     {noreply, S#state{tree_state=NewSingle}};

@@ -9,6 +9,7 @@
 %% API
 -export([start_background_processes/0,
          start_propagation_processes/0,
+         single_replica_processes/0,
          persist_replica_info/0,
          enable_blue_append/0,
          disable_blue_append/0,
@@ -23,6 +24,7 @@
 %% All functions are called through erpc
 -ignore_xref([start_background_processes/0,
               start_propagation_processes/0,
+              single_replica_processes/0,
               persist_replica_info/0,
               enable_blue_append/0,
               disable_blue_append/0,
@@ -83,6 +85,19 @@ enable_blue_append() ->
 disable_blue_append() ->
     Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, disable_blue_append),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
+    ok.
+
+%% @doc Call if this cluster is the only replica in town
+-spec single_replica_processes() -> ok.
+single_replica_processes() ->
+    Res0 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, disable_blue_append),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
+
+    SingleDCGroups = [[replica_id()]],
+    Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, {learn_dc_groups, SingleDCGroups}),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
+
+    ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
 %% @doc This is only called at the master node, but it should propagate everywhere

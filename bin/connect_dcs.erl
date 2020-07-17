@@ -49,8 +49,8 @@ build_erlang_node_name(Node) ->
 
 parse_node_list([]) ->
     {error, emtpy_node_list};
-parse_node_list([_Node]) ->
-    {error, single_node_connect_dcs};
+parse_node_list([Node]) ->
+    {ok, [list_to_atom(Node)]};
 parse_node_list([_|_]=NodeListString) ->
     try
         Nodes = lists:foldl(fun(NodeString, Acc) ->
@@ -70,8 +70,8 @@ validate({error, Reason}) ->
     usage();
 
 validate({ok, [SingleNode]}) ->
-    io:format("Single-node cluster, disable blue append"),
-    ok = erpc:call(SingleNode, grb_dc_manager, disable_blue_append, []),
+    io:format("Single-node cluster, will disable blue append~n"),
+    ok = erpc:call(SingleNode, grb_dc_manager, single_replica_processes, []),
     halt();
 
 validate({ok, Nodes}) ->
