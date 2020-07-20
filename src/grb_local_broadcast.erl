@@ -13,7 +13,8 @@
               start_as_singleton/0,
               start_as_root/1,
               start_as_node/2,
-              start_as_leaf/1]).
+              start_as_leaf/1,
+              stop/0]).
 
 -export([start_link/0]).
 
@@ -21,7 +22,8 @@
 -export([start_as_singleton/0,
          start_as_root/1,
          start_as_node/2,
-         start_as_leaf/1]).
+         start_as_leaf/1,
+         stop/0]).
 
 %% API
 -export([init/1,
@@ -95,6 +97,11 @@ start_as_leaf(Parent) ->
     SelfNode = {global, generate_name(node())},
     gen_server:call(SelfNode, {init_leaf, generate_name(Parent)}).
 
+-spec stop() -> ok.
+stop() ->
+    SelfNode = {global, generate_name(node())},
+    gen_server:call(SelfNode, stop).
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -131,6 +138,17 @@ handle_call(init_singlenode, _From, S=#state{tree_state=undefined}) ->
     TRef = erlang:send_after(Interval, self(), broadcast_clock),
     Singleton = #singleton_state{broadcast_interval=Interval, broadcast_timer=TRef},
     {reply, ok, InitState#state{tree_state=Singleton}};
+
+handle_call(stop, _From, S=#state{tree_state=#leaf_state{}}) ->
+    {stop, normal, ok, S};
+
+handle_call(stop, _From, S=#state{tree_state=#singleton_state{}}) ->
+    {stop, normal, ok, S};
+
+handle_call(stop, _From, S) ->
+    %% If we're not leaf or single node, don't stop, because leafs might still send us messages
+    %% we will quit when the node goes down
+    {reply, ok, S};
 
 handle_call(E, _From, S) ->
     ?LOG_WARNING("unexpected call: ~p~n", [E]),
@@ -235,11 +253,15 @@ handle_info(E, S) ->
     ?LOG_WARNING("unexpected info: ~p at state ~p~n", [E, S]),
     {noreply, S}.
 
-terminate(_Reason, #state{tree_state=#leaf_state{broadcast_timer=TRef}}) ->
+terminate(_Reason,
+          #state{tree_state=#leaf_state{broadcast_timer=TRef}}) when TRef =/= undefined ->
+
     erlang:cancel_timer(TRef),
     ok;
 
-terminate(_Reason, #state{tree_state=#singleton_state{broadcast_timer=TRef}}) ->
+terminate(_Reason,
+          #state{tree_state=#singleton_state{broadcast_timer=TRef}}) when TRef =/= undefined ->
+
     erlang:cancel_timer(TRef),
     ok;
 
