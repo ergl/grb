@@ -292,10 +292,11 @@ handle_info(?uniform_req, State=#state{partition=P,
                                        uniform_interval=Interval}) ->
 
     erlang:cancel_timer(Timer),
+    ?LOG_DEBUG("starting uniform replication at ~p", [P]),
     KnownVC = get_updated_known_vc(LocalId, grb_main_vnode:get_known_time(P), ClockTable),
     GlobalMatrix = uniform_replicate_internal(KnownVC, State),
     {ok, State#state{global_known_matrix=GlobalMatrix,
-                     replication_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
+                     uniform_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
 
 handle_info(?prune_req, State=#state{logs=Logs0,
                                      global_known_matrix=Matrix,
@@ -370,7 +371,7 @@ replicate_internal(KnownVC, StableVC, #state{logs=Logs,
     ConnectedReplicas = grb_dc_connection_manager:connected_replicas(),
     lists:foldl(fun(TargetReplica, MatrixAcc) ->
         ThresholdTime = maps:get({TargetReplica, LocalId}, MatrixAcc, 0),
-        ?LOG_INFO("Treshold time for ~p: ~p~n", [TargetReplica, ThresholdTime]),
+        ?LOG_DEBUG("Treshold time for ~p: ~p~n", [TargetReplica, ThresholdTime]),
         ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
         case ToSend of
             [] ->
