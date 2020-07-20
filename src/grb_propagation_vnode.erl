@@ -237,17 +237,8 @@ handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTa
     ok = update_known_vc(FromReplica, Ts, ClockTable),
     {noreply, S};
 
-handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S=#state{local_replica=LocalId,
-                                                                                          clock_cache=ClockCache,
-                                                                                          pending_barriers=PendingBarriers0,
-                                                                                          stable_matrix=StableMatrix0,
-                                                                                          fault_tolerant_groups=Groups,
-                                                                                          global_known_matrix=KnownMatrix0}) ->
-
-    KnownMatrix = update_known_matrix(FromReplicaId, KnownVC, KnownMatrix0),
-    {UniformVC, StableMatrix} = update_uniform_vc(FromReplicaId, StableVC, StableMatrix0, ClockCache, Groups),
-    PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
-    {noreply, S#state{global_known_matrix=KnownMatrix, stable_matrix=StableMatrix, pending_barriers=PendingBarriers}};
+handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S) ->
+    {noreply, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
 
 handle_command({append_blue, ReplicaId, KnownTime, _TxId, _WS, _CommitVC}, _Sender, S=#state{clock_cache=ClockTable,
                                                                                              should_append_commit=false}) ->
@@ -334,6 +325,21 @@ lift_pending_uniform_barriers(Cutoff, [{Ts, Promises} | Rest]) when Ts =< Cutoff
 
 lift_pending_uniform_barriers(Cutoff, [{Ts, _} | _]=Remaining) when Ts > Cutoff ->
     Remaining.
+
+-spec update_clocks(replica_id(), vclock(), vclock(), state()) -> state().
+update_clocks(FromReplicaId, KnownVC, StableVC, S=#state{local_replica=LocalId,
+                                                         clock_cache=ClockCache,
+                                                         stable_matrix=StableMatrix0,
+                                                         fault_tolerant_groups=Groups,
+                                                         global_known_matrix=KnownMatrix0,
+                                                         pending_barriers=PendingBarriers0}) ->
+
+    KnownMatrix = update_known_matrix(FromReplicaId, KnownVC, KnownMatrix0),
+    {UniformVC, StableMatrix} = update_uniform_vc(FromReplicaId, StableVC, StableMatrix0, ClockCache, Groups),
+    PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
+    S#state{global_known_matrix=KnownMatrix,
+            stable_matrix=StableMatrix,
+            pending_barriers=PendingBarriers}.
 
 -spec propagate_internal(vclock(), vclock(), #state{}) -> global_known_matrix().
 propagate_internal(KnownVC, StableVC, #state{local_replica=LocalId,
