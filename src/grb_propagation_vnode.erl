@@ -42,8 +42,10 @@
               handle_info/2]).
 
 -define(master, grb_propagation_vnode_master).
--define(propagate_req, propagate_event).
+
 -define(prune_req, prune_event).
+-define(replication_req, replication_event).
+-define(uniform_req, uniform_replication_event).
 
 -define(known_key, known_vc).
 -define(stable_key, stable_vc).
@@ -61,9 +63,15 @@
     logs = #{} :: blue_commit_logs(),
     global_known_matrix = #{} :: global_known_matrix(),
 
-    propagate_interval :: non_neg_integer(),
-    propagate_timer = undefined :: reference() | undefined,
+    %% send our transactions / heartbeats to remote replicas
+    replication_interval :: non_neg_integer(),
+    replication_timer = undefined :: reference() | undefined,
 
+    %% relay transactions from other replicas
+    uniform_interval :: non_neg_integer(),
+    uniform_timer = undefined :: reference() | undefined,
+
+    %% prune committedBlue
     prune_interval :: non_neg_integer(),
     prune_timer = undefined :: reference() | undefined,
 
@@ -78,6 +86,8 @@
     %% List of pending uniform barriers by clients, recompute on uniformVC update
     pending_barriers = [] :: uniform_barriers()
 }).
+
+-type state() :: #state{}.
 
 %%%===================================================================
 %%% public api
@@ -133,8 +143,10 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
-    {ok, PropagateInterval} = application:get_env(grb, propagate_interval),
+    {ok, ReplInt} = application:get_env(grb, basic_replication_interval),
     {ok, PruneInterval} = application:get_env(grb, prune_committed_blue_interval),
+    {ok, UniformInterval} = application:get_env(grb, uniform_replication_interval),
+
     ClockTable = new_cache(Partition, ?PARTITION_CLOCK_TABLE),
     true = ets:insert(ClockTable, [{?uniform_key, grb_vclock:new()},
                                    {?stable_key, grb_vclock:new()},
@@ -143,7 +155,8 @@ init([Partition]) ->
     {ok, #state{partition=Partition,
                 local_replica=undefined, % ok to do this, we'll overwrite it after join
                 prune_interval=PruneInterval,
-                propagate_interval=PropagateInterval,
+                replication_interval=ReplInt,
+                uniform_interval=UniformInterval,
                 clock_cache=ClockTable}}.
 
 handle_command(ping, _Sender, State) ->
@@ -163,23 +176,32 @@ handle_command({learn_dc_groups, MyGroups}, _From, S) ->
     %% called after connecting other replicas
     {reply, ok, S#state{fault_tolerant_groups=MyGroups}};
 
-handle_command(start_propagate_timer, _From, S = #state{prune_interval=PruneInt, prune_timer=undefined,
-                                                        propagate_interval=PropInt, propagate_timer=undefined}) ->
+handle_command(start_propagate_timer, _From, State0) ->
+    State = case timers_set(State0) of
+        true -> State0;
+        false ->
+            State0#state{
+                prune_timer=erlang:send_after(State0#state.prune_interval, self(), ?prune_req),
+                uniform_timer=erlang:send_after(State0#state.uniform_interval, self(), ?uniform_req),
+                replication_timer=erlang:send_after(State0#state.replication_interval, self(), ?replication_req)
+            }
+    end,
+    {reply, ok, State};
 
-    PruneTRef = erlang:send_after(PruneInt, self(), ?prune_req),
-    PropTRef = erlang:send_after(PropInt, self(), ?propagate_req),
-    {reply, ok, S#state{propagate_timer=PropTRef, prune_timer=PruneTRef}};
-
-handle_command(start_propagate_timer, _From, S = #state{propagate_timer=_PropTRef, prune_interval=_PruneTRef}) ->
-    {reply, ok, S};
-
-handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=undefined, prune_timer=undefined}) ->
-    {reply, ok, S};
-
-handle_command(stop_propagate_timer, _From, S = #state{propagate_timer=PropTRef, prune_timer=PruneTRef}) ->
-    erlang:cancel_timer(PropTRef),
-    erlang:cancel_timer(PruneTRef),
-    {reply, ok, S#state{propagate_timer=undefined, prune_timer=undefined}};
+handle_command(stop_propagate_timer, _From, State0) ->
+    State = case timers_set(State0) of
+        false -> State0;
+        true ->
+            erlang:cancel_timer(State0#state.prune_timer),
+            erlang:cancel_timer(State0#state.uniform_timer),
+            erlang:cancel_timer(State0#state.replication_timer),
+            State0#state{
+                prune_timer=undefined,
+                uniform_timer=undefined,
+                replication_timer=undefined
+            }
+    end,
+    {reply, ok, State};
 
 handle_command({update_stable_vc, SVC}, _Sender, S=#state{local_replica=LocalId,
                                                           clock_cache=ClockTable,
@@ -237,18 +259,23 @@ handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
 
-handle_info(?propagate_req, State=#state{partition=P,
-                                         local_replica=LocalId,
-                                         clock_cache=ClockTable,
-                                         propagate_timer=Timer,
-                                         propagate_interval=Interval}) ->
+handle_info(?replication_req, State=#state{partition=P,
+                                           local_replica=LocalId,
+                                           clock_cache=ClockTable,
+                                           replication_timer=Timer,
+                                           replication_interval=Interval}) ->
 
     erlang:cancel_timer(Timer),
     KnownVC = get_updated_known_vc(LocalId, grb_main_vnode:get_known_time(P), ClockTable),
     StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     GlobalMatrix = propagate_internal(KnownVC, StableVC, State),
     {ok, State#state{global_known_matrix=GlobalMatrix,
-                     propagate_timer=erlang:send_after(Interval, self(), ?propagate_req)}};
+                     replication_timer=erlang:send_after(Interval, self(), ?replication_req)}};
+
+handle_info(?uniform_req, State=#state{uniform_timer=Timer, uniform_interval=Interval}) ->
+    erlang:cancel_timer(Timer),
+    %% todo(borja)
+    {ok, State#state{uniform_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
 
 handle_info(?prune_req, State=#state{logs=Logs0,
                                      global_known_matrix=Matrix,
@@ -271,6 +298,10 @@ handle_info(Msg, State) ->
 %%%===================================================================
 %%% internal functions
 %%%===================================================================
+
+-spec timers_set(state()) -> boolean().
+timers_set(#state{replication_timer=undefined, uniform_timer=undefined, prune_timer=undefined}) -> false;
+timers_set(_) -> true.
 
 -spec insert_uniform_barrier(grb_promise:t(), grb_time:ts(), uniform_barriers()) -> uniform_barriers().
 insert_uniform_barrier(Promise, Timestamp, Barriers) ->
