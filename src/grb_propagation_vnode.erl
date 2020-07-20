@@ -293,8 +293,7 @@ handle_info(?uniform_req, State=#state{partition=P,
 
     erlang:cancel_timer(Timer),
     KnownVC = get_updated_known_vc(LocalId, grb_main_vnode:get_known_time(P), ClockTable),
-    StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
-    GlobalMatrix = propagate_internal(KnownVC, StableVC, State),
+    GlobalMatrix = uniform_replicate_internal(KnownVC, State),
     {ok, State#state{global_known_matrix=GlobalMatrix,
                      replication_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
 
@@ -394,23 +393,18 @@ replicate_internal(KnownVC, StableVC, #state{logs=Logs,
         MatrixAcc#{{TargetReplica, LocalId} => grb_vclock:get_time(LocalId, KnownVC)}
     end, Matrix, ConnectedReplicas).
 
--spec propagate_internal(vclock(), vclock(), #state{}) -> global_known_matrix().
-propagate_internal(KnownVC, StableVC, #state{local_replica=LocalId,
-                                             partition=Partition,
-                                             logs=Logs,
-                                             global_known_matrix=Matrix}) ->
+-spec uniform_replicate_internal(vclock(), #state{}) -> global_known_matrix().
+uniform_replicate_internal(KnownVC, #state{logs=Logs,
+                                           partition=Partition,
+                                           global_known_matrix=Matrix}) ->
 
-    AllReplicas = grb_dc_manager:all_replicas(),
+    RemoteReplicas = grb_dc_manager:remote_replicas(),
     ConnectedReplicas = grb_dc_connection_manager:connected_replicas(),
     lists:foldl(fun(TargetReplica, GlobalMatrix) ->
-        %% piggy-back on this loop to send our clocks
-        %% todo(borja, speed): piggy-back on a blue heartbeat inside propagate_to when ReplayReplica = LocalId?
-        Res = grb_dc_connection_manager:send_clocks(TargetReplica, LocalId, Partition, KnownVC, StableVC),
-        ?LOG_DEBUG("send_clocks to ~p from ~p: ~p~n", [TargetReplica, LocalId, Res]),
-        propagate_to(TargetReplica, AllReplicas, Partition, Logs, KnownVC, GlobalMatrix)
+        ureplicate_to(TargetReplica, RemoteReplicas, Partition, Logs, KnownVC, GlobalMatrix)
     end, Matrix, ConnectedReplicas).
 
-%% @doc Propagate transactions / heartbeats to the target replica.
+%% @doc Replicate other's transactions / heartbeats to the target replica.
 %%
 %%      This will iterate over all the other connected replicas and fetch the
 %%      necessary transactions/replicas to relay to the target replica.
@@ -418,19 +412,21 @@ propagate_internal(KnownVC, StableVC, #state{local_replica=LocalId,
 %%      In effect, we re-send transactions from other replicas to the target,
 %%      to ensure that even if a replica goes down, if we received an update
 %%      from it, other replicas will see it.
--spec propagate_to(Target :: replica_id(),
-                   AllReplicas :: [replica_id()],
-                   LocalPartition :: partition_id(),
-                   Logs :: blue_commit_logs(),
-                   KnownVC :: vclock(),
-                   Matrix :: global_known_matrix()) -> global_known_matrix().
+-spec ureplicate_to(Target :: replica_id(),
+                    RemoteReplicas :: [replica_id()],
+                    LocalPartition :: partition_id(),
+                    Logs :: blue_commit_logs(),
+                    KnownVC :: vclock(),
+                    Matrix :: global_known_matrix()) -> global_known_matrix().
 
-propagate_to(_TargetReplica, [], _Partition, _Logs, _KnownVC, MatrixAcc) ->
+ureplicate_to(_TargetReplica, [], _Partition, _Logs, _KnownVC, MatrixAcc) ->
     MatrixAcc;
-propagate_to(TargetReplica, [TargetReplica | Rest], Partition, Logs, KnownVC, MatrixAcc) ->
-    %% skip ourselves
-    propagate_to(TargetReplica, Rest, Partition, Logs, KnownVC, MatrixAcc);
-propagate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, KnownVC, MatrixAcc) ->
+
+ureplicate_to(TargetReplica, [TargetReplica | Rest], Partition, Logs, KnownVC, MatrixAcc) ->
+    %% don't send back transactions to the sender, skip
+    ureplicate_to(TargetReplica, Rest, Partition, Logs, KnownVC, MatrixAcc);
+
+ureplicate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, KnownVC, MatrixAcc) ->
     %% tx <- { <_, _, VC> \in log[relay] | VC[relay] > globalMatrix[target, relay] }
     %% if tx =/= \emptyset
     %%     for all t \in tx (in t.VC[relay] order)
@@ -438,25 +434,24 @@ propagate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, KnownVC, Mat
     %% else
     %%     send HEARTBEAT(relay, knownVC[relay]) to target
     %% globalMatrix[target, relay] <- knownVC[relay]
-    RelayKnownTime = grb_vclock:get_time(RelayReplica, KnownVC),
-    Log = maps:get(RelayReplica, Logs),
-    LastSent = maps:get({TargetReplica, RelayReplica}, MatrixAcc, 0),
-    ToSend = grb_blue_commit_log:get_bigger(LastSent, Log),
+    HeartBeatTime = grb_vclock:get_time(RelayReplica, KnownVC),
+    ThresholdTime = maps:get({TargetReplica, RelayReplica}, MatrixAcc, 0),
+    ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, maps:get(RelayReplica, Logs)),
     case ToSend of
         [] ->
-            HBRes = grb_dc_connection_manager:send_heartbeat(TargetReplica, RelayReplica, Partition, RelayKnownTime),
-            ?LOG_DEBUG("blue_hb to ~p from ~p: ~p~n", [TargetReplica, RelayReplica, HBRes]),
+            HBRes = grb_dc_connection_manager:send_heartbeat(TargetReplica, RelayReplica, Partition, HeartBeatTime),
+            ?LOG_DEBUG("relay heartbeat to ~p from ~p: ~p~n", [TargetReplica, RelayReplica, HBRes]),
             ok;
         Txs ->
             %% Entries are already ordered to commit time at the replica of the log
             lists:foreach(fun(Tx) ->
                 TxRes = grb_dc_connection_manager:send_tx(TargetReplica, RelayReplica, Partition, Tx),
-                ?LOG_DEBUG("replicate to ~p from ~p: ~p~n", [TargetReplica, RelayReplica, TxRes]),
+                ?LOG_DEBUG("relay transaction to ~p from ~p: ~p~n", [TargetReplica, RelayReplica, TxRes]),
                 ok
             end, Txs)
     end,
-    NewMatrix = MatrixAcc#{{TargetReplica, RelayReplica} => RelayKnownTime},
-    propagate_to(TargetReplica, Rest, Partition, Logs, KnownVC, NewMatrix).
+    NewMatrix = MatrixAcc#{{TargetReplica, RelayReplica} => HeartBeatTime},
+    ureplicate_to(TargetReplica, Rest, Partition, Logs, KnownVC, NewMatrix).
 
 %% @doc Set knownVC[ReplicaId] <-max- Time
 -spec update_known_vc(replica_id(), grb_time:ts(), cache(atom(), vclock())) -> ok.
