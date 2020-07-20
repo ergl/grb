@@ -176,6 +176,15 @@ handle_command({learn_dc_groups, MyGroups}, _From, S) ->
     %% called after connecting other replicas
     {reply, ok, S#state{fault_tolerant_groups=MyGroups}};
 
+handle_command(populate_logs, _From, S=#state{logs=Logs0}) ->
+    %% called after connecting other replicas
+    %% populate log, avoid allocating on the replication path
+    AllReplicas = grb_dc_manager:all_replicas(),
+    Logs = lists:foldl(fun(Replica, LogAcc) ->
+        LogAcc#{Replica => grb_blue_commit_log:new(Replica)}
+    end, Logs0, AllReplicas),
+    {reply, ok, S#state{logs=Logs}};
+
 handle_command(start_propagate_timer, _From, State0) ->
     State = case timers_set(State0) of
         true -> State0;
@@ -248,7 +257,7 @@ handle_command({append_blue, ReplicaId, KnownTime, _TxId, _WS, _CommitVC}, _Send
 handle_command({append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC}, _Sender, S=#state{logs=Logs,
                                                                                           clock_cache=ClockTable,
                                                                                           should_append_commit=true})->
-    ReplicaLog = maps:get(ReplicaId, Logs, grb_blue_commit_log:new(ReplicaId)),
+    ReplicaLog = maps:get(ReplicaId, Logs),
     ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
     {noreply, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
 
@@ -371,7 +380,7 @@ propagate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, KnownVC, Mat
     %%     send HEARTBEAT(relay, knownVC[relay]) to target
     %% globalMatrix[target, relay] <- knownVC[relay]
     RelayKnownTime = grb_vclock:get_time(RelayReplica, KnownVC),
-    Log = maps:get(RelayReplica, Logs, grb_blue_commit_log:new(RelayReplica)),
+    Log = maps:get(RelayReplica, Logs),
     LastSent = maps:get({TargetReplica, RelayReplica}, MatrixAcc, 0),
     ToSend = grb_blue_commit_log:get_bigger(LastSent, Log),
     case ToSend of
@@ -453,7 +462,7 @@ min_global_matrix_ts(RemoteReplicas, SourceReplica, GlobalMatrix) ->
 -spec min_global_matrix_ts([replica_id()], replica_id(), global_known_matrix(), grb_time:ts() | undefined) -> grb_time:ts().
 min_global_matrix_ts([], _SourceReplica, _GlobalMatrix, Min) -> Min;
 min_global_matrix_ts([RemoteReplica | Rest], SourceReplica, GlobalMatrix, Min) ->
-    Ts = maps:get({RemoteReplica, SourceReplica}, GlobalMatrix),
+    Ts = maps:get({RemoteReplica, SourceReplica}, GlobalMatrix, 0),
     min_global_matrix_ts(Rest, SourceReplica, GlobalMatrix, min_ts(Ts, Min)).
 
 -spec min_ts(grb_time:ts(), grb_time:ts() | undefined) -> grb_time:ts().

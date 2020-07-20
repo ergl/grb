@@ -46,6 +46,7 @@ get_bigger(Cutoff, [{Key, Val} | Rest], Acc) when abs(Key) > Cutoff ->
 
 %% @doc Remove all entries with commit time at the created replica lower than `Timestamp`
 -spec remove_leq(grb_time:ts(), t()) -> t().
+remove_leq(_, S=#state{entries=[]}) -> S;
 remove_leq(Timestamp, S=#state{entries=Entries}) ->
     S#state{entries=orddict:filter(fun(Key, _) -> abs(Key) > Timestamp end, Entries)}.
 
