@@ -125,7 +125,7 @@ send_msg(Replica, Partition, Msg) ->
 
 send_heartbeat(ToId, FromId, Partition, Time) ->
     ?LOG_DEBUG("Sending blue_hearbeat to ~p:~p on behalf of ~p: ~p", [ToId, Partition, FromId, Time]),
-    send_msg(ToId, Partition, heartbeat(FromId, Partition, Time)).
+    send_msg(ToId, Partition, heartbeat_msg(FromId, Partition, Time)).
 
 -spec send_tx(From :: replica_id(),
               To :: replica_id(),
@@ -134,7 +134,7 @@ send_heartbeat(ToId, FromId, Partition, Time) ->
 
 send_tx(ToId, FromId, Partition, Transaction) ->
     ?LOG_DEBUG("Sending transaction to ~p:~p on behalf of ~p", [ToId, Partition, FromId, Transaction]),
-    send_msg(ToId, Partition, replicate_tx(FromId, Partition, Transaction)).
+    send_msg(ToId, Partition, replicate_tx_msg(FromId, Partition, Transaction)).
 
 -spec send_clocks(From :: replica_id(),
                   To :: replica_id(),
@@ -144,7 +144,7 @@ send_tx(ToId, FromId, Partition, Transaction) ->
 
 send_clocks(ToId, FromId, Partition, KnownVC, StableVC) ->
     ?LOG_DEBUG("Sending clocks to ~p:~p", [ToId, Partition]),
-    send_msg(ToId, Partition, clock_msg(FromId, Partition, KnownVC, StableVC)).
+    send_msg(ToId, Partition, update_clocks_msg(FromId, Partition, KnownVC, StableVC)).
 
 %% @doc Send a message to all replicas of the given partition
 -spec broadcast_msg(partition_id(), any()) -> ok.
@@ -158,11 +158,11 @@ broadcast_msg(Partition, Msg) ->
 
 -spec broadcast_heartbeat(replica_id(), partition_id(), grb_time:ts()) -> ok.
 broadcast_heartbeat(FromId, ToPartition, Time) ->
-    broadcast_msg(ToPartition, heartbeat(FromId, ToPartition, Time)).
+    broadcast_msg(ToPartition, heartbeat_msg(FromId, ToPartition, Time)).
 
 -spec broadcast_tx(replica_id(), partition_id(), {term(), #{}, vclock()}) -> ok.
 broadcast_tx(FromId, ToPartition, Transaction) ->
-    broadcast_msg(ToPartition, replicate_tx(FromId, ToPartition, Transaction)).
+    broadcast_msg(ToPartition, replicate_tx_msg(FromId, ToPartition, Transaction)).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
@@ -228,29 +228,16 @@ handle_info(E, S) ->
 %% internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec heartbeat(replica_id(), partition_id(), grb_time:ts()) -> binary().
-heartbeat(FromId, ToPartition, Timestamp) ->
-    dc_message(FromId, ToPartition, #blue_heartbeat{timestamp=Timestamp}).
+-spec heartbeat_msg(replica_id(), partition_id(), grb_time:ts()) -> binary().
+heartbeat_msg(FromId, ToPartition, Timestamp) ->
+    grb_dc_message_utils:encode_msg(FromId, ToPartition, #blue_heartbeat{timestamp=Timestamp}).
 
--spec replicate_tx(replica_id(), partition_id(), {term(), #{}, vclock()}) -> binary().
-replicate_tx(FromId, ToPartition, {TxId, WS, CommitVC}) ->
-    dc_message(FromId, ToPartition, #replicate_tx{tx_id=TxId,
-                                                  writeset=WS,
-                                                  commit_vc=CommitVC}).
+-spec replicate_tx_msg(replica_id(), partition_id(), {term(), #{}, vclock()}) -> binary().
+replicate_tx_msg(FromId, ToPartition, {TxId, WS, CommitVC}) ->
+    grb_dc_message_utils:encode_msg(FromId, ToPartition, #replicate_tx{tx_id=TxId,
+                                                                       writeset=WS,
+                                                                       commit_vc=CommitVC}).
 
--spec clock_msg(replica_id(), partition_id(), vclock(), vclock()) -> binary().
-clock_msg(FromId, ToPartition, KnownVC, StableVC) ->
-    dc_message(FromId, ToPartition, #update_clocks{known_vc=KnownVC, stable_vc=StableVC}).
-
--spec dc_message(replica_id(), partition_id(), term()) -> binary().
-dc_message(FromId, Partition, Payload) ->
-    PBin = pad(?PARTITION_BYTES, binary:encode_unsigned(Partition)),
-    Msg = #inter_dc_message{source_id=FromId, payload=Payload},
-    <<?VERSION:?VERSION_BITS, PBin/binary, (term_to_binary(Msg))/binary>>.
-
--spec pad(non_neg_integer(), binary()) -> binary().
-pad(Width, Binary) ->
-    case Width - byte_size(Binary) of
-        0 -> Binary;
-        N when N > 0-> <<0:(N*8), Binary/binary>>
-    end.
+-spec update_clocks_msg(replica_id(), partition_id(), vclock(), vclock()) -> binary().
+update_clocks_msg(FromId, ToPartition, KnownVC, StableVC) ->
+    grb_dc_message_utils:encode_msg(FromId, ToPartition, #update_clocks{known_vc=KnownVC, stable_vc=StableVC}).

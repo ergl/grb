@@ -65,10 +65,10 @@ terminate(_Reason, #state{socket=Socket, transport=Transport}) ->
     ok.
 
 handle_info(
-    {tcp, Socket, <<?VERSION:?VERSION_BITS, P:?PARTITION_BITS/big-unsigned-integer, Msg/binary>>},
+    {tcp, Socket, <<?VERSION:?VERSION_BITS, P:?PARTITION_BITS/big-unsigned-integer, Payload/binary>>},
     State = #state{socket=Socket, transport=Transport}
 ) ->
-    #inter_dc_message{source_id=SourceReplica, payload=Request} = binary_to_term(Msg),
+    {SourceReplica, Request} = grb_dc_message_utils:decode_payload(Payload),
     ?LOG_DEBUG("Received msg from ~p to ~p: ~p", [SourceReplica, P, Request]),
     ok = handle_request(P, SourceReplica, Request),
     Transport:setopts(Socket, [{active, once}]),

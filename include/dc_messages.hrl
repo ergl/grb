@@ -1,18 +1,16 @@
 -define(VERSION, 0).
 -define(VERSION_BYTES, 1).
 -define(VERSION_BITS, (?VERSION_BYTES * 8)).
+
 %% Riak partitions are 160-bit ints
 -define(PARTITION_BYTES, 20).
 -define(PARTITION_BITS, (?PARTITION_BYTES * 8)).
 
--record(update_clocks, {
-    known_vc :: vclock(),
-    stable_vc :: vclock()
-}).
-
--record(blue_heartbeat, {
-    timestamp :: grb_time:ts()
-}).
+%% Serialize messages as ints instead of records
+-define(MSG_KIND_BITS, 8).
+-define(REPL_TX_KIND, 0).
+-define(BLUE_HB_KIND, 1).
+-define(UPDTATE_CLOCK_KIND, 2).
 
 -record(replicate_tx, {
     tx_id :: term(),
@@ -20,11 +18,17 @@
     commit_vc :: vclock()
 }).
 
--type replica_message() :: #update_clocks{} | #blue_heartbeat{} | #replicate_tx{}.
-
--record(inter_dc_message, {
-    source_id :: replica_id(),
-    payload :: replica_message()
+-record(blue_heartbeat, {
+    timestamp :: grb_time:ts()
 }).
+
+-record(update_clocks, {
+    known_vc :: vclock(),
+    stable_vc :: vclock()
+}).
+
+-type replica_message() :: #replicate_tx{}
+                         | #blue_heartbeat{}
+                         | #update_clocks{}.
 
 -export_type([replica_message/0]).
