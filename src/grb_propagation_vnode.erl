@@ -268,14 +268,22 @@ handle_info(?replication_req, State=#state{partition=P,
     erlang:cancel_timer(Timer),
     KnownVC = get_updated_known_vc(LocalId, grb_main_vnode:get_known_time(P), ClockTable),
     StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
-    GlobalMatrix = propagate_internal(KnownVC, StableVC, State),
+    GlobalMatrix = replicate_internal(KnownVC, StableVC, State),
     {ok, State#state{global_known_matrix=GlobalMatrix,
                      replication_timer=erlang:send_after(Interval, self(), ?replication_req)}};
 
-handle_info(?uniform_req, State=#state{uniform_timer=Timer, uniform_interval=Interval}) ->
+handle_info(?uniform_req, State=#state{partition=P,
+                                       local_replica=LocalId,
+                                       clock_cache=ClockTable,
+                                       uniform_timer=Timer,
+                                       uniform_interval=Interval}) ->
+
     erlang:cancel_timer(Timer),
-    %% todo(borja)
-    {ok, State#state{uniform_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
+    KnownVC = get_updated_known_vc(LocalId, grb_main_vnode:get_known_time(P), ClockTable),
+    StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
+    GlobalMatrix = propagate_internal(KnownVC, StableVC, State),
+    {ok, State#state{global_known_matrix=GlobalMatrix,
+                     replication_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
 
 handle_info(?prune_req, State=#state{logs=Logs0,
                                      global_known_matrix=Matrix,
@@ -340,6 +348,37 @@ update_clocks(FromReplicaId, KnownVC, StableVC, S=#state{local_replica=LocalId,
     S#state{global_known_matrix=KnownMatrix,
             stable_matrix=StableMatrix,
             pending_barriers=PendingBarriers}.
+
+-spec replicate_internal(vclock(), vclock(), #state{}) -> global_known_matrix().
+replicate_internal(KnownVC, StableVC, #state{logs=Logs,
+                                             partition=Partition,
+                                             local_replica=LocalId,
+                                             global_known_matrix=Matrix}) ->
+    #{LocalId := LocalLog} = Logs,
+    HeartBeatTime = grb_vclock:get_time(LocalId, KnownVC),
+    ConnectedReplicas = grb_dc_connection_manager:connected_replicas(),
+    lists:foldl(fun(TargetReplica, MatrixAcc) ->
+        Res = grb_dc_connection_manager:send_clocks(TargetReplica, LocalId, Partition, KnownVC, StableVC),
+        ?LOG_DEBUG("broadcast clocks to ~p: ~p", [TargetReplica, Res]),
+
+        ThresholdTime = maps:get({TargetReplica, LocalId}, MatrixAcc, 0),
+        ?LOG_INFO("Treshold time for ~p: ~p~n", [TargetReplica, ThresholdTime]),
+
+        ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
+        case ToSend of
+            [] ->
+                HBRes = grb_dc_connection_manager:send_heartbeat(TargetReplica, LocalId, Partition, HeartBeatTime),
+                ?LOG_DEBUG("broadcast heartbeat ~p to ~p: ~p~n", [HeartBeatTime, TargetReplica, HBRes]),
+                ok;
+            Txs ->
+                lists:foreach(fun(Tx) ->
+                    TxRes = grb_dc_connection_manager:send_tx(TargetReplica, LocalId, Partition, Tx),
+                    ?LOG_DEBUG("broadcast transaction ~p to ~p: ~p~n", [Tx, TargetReplica, TxRes]),
+                    ok
+                end, Txs)
+        end,
+        MatrixAcc#{{TargetReplica, LocalId} => HeartBeatTime}
+    end, Matrix, ConnectedReplicas).
 
 -spec propagate_internal(vclock(), vclock(), #state{}) -> global_known_matrix().
 propagate_internal(KnownVC, StableVC, #state{local_replica=LocalId,
