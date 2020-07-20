@@ -120,14 +120,14 @@ handle_call({init_node, Parent, Children}, _From, S=#state{tree_state=undefined}
 
 handle_call({init_leaf, Parent}, _From, S=#state{tree_state=undefined}) ->
     InitState = init_state(S),
-    {ok, Interval}  = application:get_env(grb, broadcast_clock_interval),
+    {ok, Interval}  = application:get_env(grb, local_broadcast_interval),
     TRef = erlang:send_after(Interval, self(), broadcast_clock),
     Leaf = #leaf_state{parent=Parent, broadcast_interval=Interval, broadcast_timer=TRef},
     {reply, ok, InitState#state{tree_state=Leaf}};
 
 handle_call(init_singlenode, _From, S=#state{tree_state=undefined}) ->
     InitState = init_state(S),
-    {ok, Interval}  = application:get_env(grb, broadcast_clock_interval),
+    {ok, Interval}  = application:get_env(grb, local_broadcast_interval),
     TRef = erlang:send_after(Interval, self(), broadcast_clock),
     Singleton = #singleton_state{broadcast_interval=Interval, broadcast_timer=TRef},
     {reply, ok, InitState#state{tree_state=Singleton}};

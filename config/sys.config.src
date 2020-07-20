@@ -75,28 +75,17 @@
     %% sense to have a small interval here.
     {propagate_interval, ${REPLICATION_INTERVAL_MS}},
 
-    %% How often should we propagate clocks in the background?
-    %% This is used to update globalKnownMatrix, stableVC and
-    %% uniformVC, which controls which transactions from remote
-    %% replicas are made visible. Having a high interval here
-    %% won't harm local visibility for local transactions, since
-    %% transactions will propagate changes to stableVC/uniformVC
-    %% as they move between partitions, and keep their local
-    %% time for the local replica between transactions, which allows
-    %% for read-your-writes even if this interval is high.
+    %% How often should we propagate our knownVC to local partitions?
     %%
-    %% It makes sense for this interval to be similar to the propagate
-    %% interval, since it controls the visibility of incoming transactions.
-    %% However, we should introduce some jitter so the timers don't fire at
-    %% the same time. At the same time, computing the clock is expensive, so
-    %% we don't want to do it all the time.
-    {broadcast_clock_interval, ${BCAST_KNOWN_VC_INTERVAL_MS}},
+    %% This is used to update stableVC inside the local data center,
+    %% as well as the uniformVC entry for the local replica.
+    {local_broadcast_interval, ${BCAST_KNOWN_VC_INTERVAL_MS}},
 
     %% Number of ms to wait before re-checking `wait` statements on OP_REQUEST
     %% and COMMIT_BLUE. For OP_REQUEST, it will wait until knownVC[d] > snapshotVC[d],
     %% which is bounded by the clock interval time, so we set it to the same value.
     %% todo(borja): revisit
-    {op_prepare_wait_ms, ${BCAST_KNOWN_VC_INTERVAL_MS}},
+    {op_prepare_wait_ms, ${SELF_HB_INTERVAL_MS}},
 
     %% How often to prune the logs of all replicas
     {prune_committed_blue_interval, ${COMMITTED_BLUE_PRUNE_INTERVAL_MS}}
