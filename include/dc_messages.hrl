@@ -10,7 +10,8 @@
 -define(MSG_KIND_BITS, 8).
 -define(REPL_TX_KIND, 0).
 -define(BLUE_HB_KIND, 1).
--define(UPDTATE_CLOCK_KIND, 2).
+-define(UPDATE_CLOCK_KIND, 2).
+-define(UPDATE_CLOCK_HEARTBEAT_KIND, 3).
 
 -record(replicate_tx, {
     tx_id :: term(),
@@ -27,8 +28,14 @@
     stable_vc :: vclock()
 }).
 
+-record(update_clocks_heartbeat, {
+    known_vc :: vclock(),
+    stable_vc :: vclock()
+}).
+
 -type replica_message() :: #replicate_tx{}
                          | #blue_heartbeat{}
-                         | #update_clocks{}.
+                         | #update_clocks{}
+                         | #update_clocks_heartbeat{}.
 
 -export_type([replica_message/0]).

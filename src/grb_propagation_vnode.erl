@@ -15,6 +15,7 @@
          update_uniform_vc/2,
          handle_blue_heartbeat/3,
          handle_clock_update/4,
+         handle_clock_heartbeat_update/4,
          append_blue_commit/6,
          register_uniform_barrier/3]).
 
@@ -121,6 +122,13 @@ handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
 handle_clock_update(Partition, FromReplicaId, KnownVC, StableVC) ->
     riak_core_vnode_master:command({Partition, node()},
                                    {remote_clock_update, FromReplicaId, KnownVC, StableVC},
+                                   ?master).
+
+%% @doc Same as handle_clock_update/4, but treat knownVC as a blue heartbeat
+-spec handle_clock_heartbeat_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
+handle_clock_heartbeat_update(Partition, FromReplicaId, KnownVC, StableVC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {remote_clock_heartbeat_update, FromReplicaId, KnownVC, StableVC},
                                    ?master).
 
 -spec append_blue_commit(replica_id(), partition_id(), grb_time:ts(), term(), #{}, vclock()) -> ok.
@@ -240,6 +248,11 @@ handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTa
 handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S) ->
     {noreply, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
 
+handle_command({remote_clock_heartbeat_update, FromReplicaId, KnownVC, StableVC}, _Sender, S=#state{clock_cache=ClockCache}) ->
+    Timestamp = grb_vclock:get_time(FromReplicaId, KnownVC),
+    ok = update_known_vc(FromReplicaId, Timestamp, ClockCache),
+    {noreply, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
+
 handle_command({append_blue, ReplicaId, KnownTime, _TxId, _WS, _CommitVC}, _Sender, S=#state{clock_cache=ClockTable,
                                                                                              should_append_commit=false}) ->
     ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
@@ -355,29 +368,30 @@ replicate_internal(KnownVC, StableVC, #state{logs=Logs,
                                              local_replica=LocalId,
                                              global_known_matrix=Matrix}) ->
     #{LocalId := LocalLog} = Logs,
-    HeartBeatTime = grb_vclock:get_time(LocalId, KnownVC),
     ConnectedReplicas = grb_dc_connection_manager:connected_replicas(),
     lists:foldl(fun(TargetReplica, MatrixAcc) ->
-        Res = grb_dc_connection_manager:send_clocks(TargetReplica, LocalId, Partition, KnownVC, StableVC),
-        ?LOG_DEBUG("broadcast clocks to ~p: ~p", [TargetReplica, Res]),
-
         ThresholdTime = maps:get({TargetReplica, LocalId}, MatrixAcc, 0),
         ?LOG_INFO("Treshold time for ~p: ~p~n", [TargetReplica, ThresholdTime]),
-
         ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
         case ToSend of
             [] ->
-                HBRes = grb_dc_connection_manager:send_heartbeat(TargetReplica, LocalId, Partition, HeartBeatTime),
-                ?LOG_DEBUG("broadcast heartbeat ~p to ~p: ~p~n", [HeartBeatTime, TargetReplica, HBRes]),
+                %% piggy back clocks on top of the send_heartbeat message, avoid extra message on the wire
+                HBRes = grb_dc_connection_manager:send_clocks_heartbeat(TargetReplica, LocalId, Partition, KnownVC, StableVC),
+                ?LOG_DEBUG("broadcast clocks/heartbeat to ~p: ~p~n", [TargetReplica, HBRes]),
                 ok;
             Txs ->
+                %% can't merge with other messages here, send one before
+                %% we could piggy-back on top of the first tx, but w/ever
+                ClockRes = grb_dc_connection_manager:send_clocks(TargetReplica, LocalId, Partition, KnownVC, StableVC),
+                ?LOG_DEBUG("broadcast clocks to ~p: ~p~n", [TargetReplica, ClockRes]),
                 lists:foreach(fun(Tx) ->
                     TxRes = grb_dc_connection_manager:send_tx(TargetReplica, LocalId, Partition, Tx),
                     ?LOG_DEBUG("broadcast transaction ~p to ~p: ~p~n", [Tx, TargetReplica, TxRes]),
                     ok
                 end, Txs)
         end,
-        MatrixAcc#{{TargetReplica, LocalId} => HeartBeatTime}
+        %% todo(borja, speed): since we always send up to the same value, extract from matrix into single counter / vc
+        MatrixAcc#{{TargetReplica, LocalId} => grb_vclock:get_time(LocalId, KnownVC)}
     end, Matrix, ConnectedReplicas).
 
 -spec propagate_internal(vclock(), vclock(), #state{}) -> global_known_matrix().
