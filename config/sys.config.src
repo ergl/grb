@@ -70,10 +70,19 @@
     %% automatic ticks from time time.
     {self_blue_heartbeat_interval, ${SELF_HB_INTERVAL_MS}},
 
-    %% How often should we propagate transactions in the background?
-    %% The latency between replicas can be large, so it doesn't make
-    %% sense to have a small interval here.
-    {propagate_interval, ${REPLICATION_INTERVAL_MS}},
+    %% How often do we replicate _our_ transactions to other replicas?
+    {basic_replication_interval, ${REPLICATION_INTERVAL_MS}},
+
+    %% How often do we replicate _other's_ transactions to other replicas?
+    %% This is done in case of replica failure, to ensure that if we receive a
+    %% transaction, it will eventually get delivered to every replica.
+    %% It doesn't make sense to do this on every replication step, since it can
+    %% be expensive. We can set it so that most of the time, there won't be anything
+    %% to replicate (since we know about other's visibility level when they send us
+    %% their clocks, it can be high, say 5 seconds).
+    %% This avoids innecessary duplication of transactions in the wire and ensures
+    %% that we will only replicate transactions in the case of replica failure.
+    {uniform_replication_interval, ${UNIFORM_REPLICATION_INTERVAL_MS}},
 
     %% How often should we propagate our knownVC to local partitions?
     %%

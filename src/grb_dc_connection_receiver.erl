@@ -103,4 +103,7 @@ handle_request(Partition, SourceReplica, #replicate_tx{tx_id=TxId, writeset=WS, 
     grb_main_vnode:handle_replicate(Partition, SourceReplica, TxId, WS, VC);
 
 handle_request(Partition, SourceReplica, #update_clocks{known_vc=KnownVC, stable_vc=StableVC}) ->
-    grb_propagation_vnode:handle_clock_update(Partition, SourceReplica, KnownVC, StableVC).
+    grb_propagation_vnode:handle_clock_update(Partition, SourceReplica, KnownVC, StableVC);
+
+handle_request(Partition, SourceReplica, #update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}) ->
+    grb_propagation_vnode:handle_clock_heartbeat_update(Partition, SourceReplica, KnownVC, StableVC).

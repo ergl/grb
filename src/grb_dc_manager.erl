@@ -97,6 +97,9 @@ single_replica_processes() ->
     Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, {learn_dc_groups, SingleDCGroups}),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
 
+    Res2 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, populate_logs),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res2),
+
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
@@ -120,8 +123,11 @@ start_propagation_processes() ->
     Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, {learn_dc_groups, MyGroups}),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
 
-    Res2 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_propagate_timer),
+    Res2 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, populate_logs),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res2),
+
+    Res3 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_propagate_timer),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res3),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 

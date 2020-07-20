@@ -11,11 +11,10 @@
 %% External API
 -export([connect_to/1,
          connected_replicas/0,
-         send_heartbeat/4,
          send_tx/4,
          send_clocks/5,
-         broadcast_tx/3,
-         broadcast_heartbeat/3]).
+         send_heartbeat/4,
+         send_clocks_heartbeat/5]).
 
 %% Managemenet API
 -export([connection_closed/2,
@@ -109,7 +108,7 @@ add_replica_connections(Id, PartitionConnections) ->
 connected_replicas() ->
     ets:lookup_element(?REPLICAS_TABLE, ?REPLICAS_TABLE_KEY, 2).
 
--spec send_msg(replica_id(), partition_id(), any()) -> ok | {error, term()}.
+-spec send_msg(replica_id(), partition_id(), binary()) -> ok | {error, term()}.
 send_msg(Replica, Partition, Msg) ->
     try
         Sock = ets:lookup_element(?CONN_SOCKS_TABLE, {Partition, Replica}, 2),
@@ -146,23 +145,16 @@ send_clocks(ToId, FromId, Partition, KnownVC, StableVC) ->
     ?LOG_DEBUG("Sending clocks to ~p:~p", [ToId, Partition]),
     send_msg(ToId, Partition, update_clocks_msg(FromId, Partition, KnownVC, StableVC)).
 
-%% @doc Send a message to all replicas of the given partition
--spec broadcast_msg(partition_id(), any()) -> ok.
-broadcast_msg(Partition, Msg) ->
-    %% fixme(borja): This will throw if the underlying table has been deleted
-    %% This happens during system termination if stop_bg_processes is not called
-    %% before terminating the node
-    Socks = ets:select(?CONN_SOCKS_TABLE, [{{{Partition, '_'}, '$1'}, [], ['$1']}]),
-    lists:foreach(fun(S) -> gen_tcp:send(S, Msg) end, Socks),
-    ok.
+%% @doc Same as send_clocks/5, but let the remote node to use knownVC as a heartbeat
+-spec send_clocks_heartbeat(From :: replica_id(),
+                            To :: replica_id(),
+                            Partition :: partition_id(),
+                            KnownVC :: vclock(),
+                            StableVC :: vclock()) -> ok | {error, term()}.
 
--spec broadcast_heartbeat(replica_id(), partition_id(), grb_time:ts()) -> ok.
-broadcast_heartbeat(FromId, ToPartition, Time) ->
-    broadcast_msg(ToPartition, heartbeat_msg(FromId, ToPartition, Time)).
-
--spec broadcast_tx(replica_id(), partition_id(), {term(), #{}, vclock()}) -> ok.
-broadcast_tx(FromId, ToPartition, Transaction) ->
-    broadcast_msg(ToPartition, replicate_tx_msg(FromId, ToPartition, Transaction)).
+send_clocks_heartbeat(ToId, FromId, Partition, KnownVC, StableVC) ->
+    ?LOG_DEBUG("Sending clocks/heartbeat to ~p:~p", [ToId, Partition]),
+    send_msg(ToId, Partition, update_clocks_heartbeat_msg(FromId, Partition, KnownVC, StableVC)).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
@@ -240,4 +232,10 @@ replicate_tx_msg(FromId, ToPartition, {TxId, WS, CommitVC}) ->
 
 -spec update_clocks_msg(replica_id(), partition_id(), vclock(), vclock()) -> binary().
 update_clocks_msg(FromId, ToPartition, KnownVC, StableVC) ->
-    grb_dc_message_utils:encode_msg(FromId, ToPartition, #update_clocks{known_vc=KnownVC, stable_vc=StableVC}).
+    grb_dc_message_utils:encode_msg(FromId, ToPartition, #update_clocks{known_vc=KnownVC,
+                                                                        stable_vc=StableVC}).
+
+-spec update_clocks_heartbeat_msg(replica_id(), partition_id(), vclock(), vclock()) -> binary().
+update_clocks_heartbeat_msg(FromId, ToPartition, KnownVC, StableVC) ->
+    grb_dc_message_utils:encode_msg(FromId, ToPartition, #update_clocks_heartbeat{known_vc=KnownVC,
+                                                                                  stable_vc=StableVC}).
