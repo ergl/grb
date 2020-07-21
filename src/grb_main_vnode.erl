@@ -75,9 +75,16 @@ prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
 
 -spec handle_replicate(partition_id(), replica_id(), term(), #{}, vclock()) -> ok.
 handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {handle_remote_tx, SourceReplica, TxId, WS, VC},
-                                   ?master).
+    CommitTime = grb_vclock:get_time(SourceReplica, VC),
+    KnownTime = grb_vclock:get_time(SourceReplica, grb_propagation_vnode:known_vc(Partition)),
+    case KnownTime < CommitTime of
+        false ->
+            ok; %% de-dup, we already received this
+        true ->
+            riak_core_vnode_master:command({Partition, node()},
+                                           {handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC},
+                                           ?master)
+    end.
 
 %%%===================================================================
 %%% api riak_core callbacks
@@ -173,10 +180,9 @@ handle_command({decide_blue, ReplicaId, TxId, VC}, _From, State) ->
     NewState = decide_blue_internal(ReplicaId, TxId, VC, State),
     {noreply, NewState};
 
-handle_command({handle_remote_tx, SourceReplica, TxId, WS, VC}, _From, S=#state{partition=P,
-                                                                                op_log=OpLog,
-                                                                                op_log_size=LogSize}) ->
-    CommitTime = grb_vclock:get_time(SourceReplica, VC),
+handle_command({handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC}, _From, S=#state{partition=P,
+                                                                                            op_log=OpLog,
+                                                                                            op_log_size=LogSize}) ->
     ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
     ok = grb_propagation_vnode:append_blue_commit(SourceReplica, P, CommitTime, TxId, WS, VC),
     {noreply, S};
