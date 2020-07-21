@@ -152,8 +152,8 @@ do_join([MainNode | _] = Nodes, Fanout) ->
 
 -spec start_background_processes(node()) -> ok.
 start_background_processes(Node) ->
-    io:format("~p~n", [?FUNCTION_NAME]),
     BackgroundReady = fun() ->
+        io:format("start_background_processes~n"),
         try
             ok = erpc:call(Node, grb_dc_manager, start_background_processes, []),
             true
