@@ -138,6 +138,7 @@ do_join(N=[SingleNode], Fanout) ->
 do_join([MainNode | _] = Nodes, Fanout) ->
     lists:foreach(fun(N) -> erlang:set_cookie(N, grb_cookie) end, Nodes),
     ok = join_cluster(Nodes),
+    io:format("Starting background processes~n"),
     Result = erpc:multicall(Nodes, grb_dc_manager, start_background_processes, []),
     case lists:all(fun({ok, ok}) -> true; (_) -> false end, Result) of
         true ->
@@ -147,7 +148,7 @@ do_join([MainNode | _] = Nodes, Fanout) ->
             ok = wait_until_master_ready(MainNode),
             io:format("Successfully joined nodes ~p~n", [Nodes]);
         false ->
-            io:fwrite(standard_error, "start_bg_processes failed with ~p, aborting~n", [Result]),
+            io:fwrite(standard_error, "start_background_processes failed with ~p, aborting~n", [Result]),
             halt(1)
     end.
 
@@ -255,16 +256,18 @@ commit_plan(Node) ->
 %%
 -spec wait_until_no_pending_changes([node()]) -> ok | fail.
 wait_until_no_pending_changes([MainNode | _] = Nodes) when is_list(Nodes) ->
+    io:format("~p~n", [?FUNCTION_NAME]),
     NoPendingHandoffs = fun() ->
         rpc:multicall(Nodes, riak_core_vnode_manager, force_handoffs, []),
         {Rings, BadNodes} = rpc:multicall(Nodes, riak_core_ring_manager, get_raw_ring, []),
         io:format("Check no pending handoffs (badnodes: ~p)...~n", [BadNodes]),
         case BadNodes of
             [] ->
-                lists:all(fun({ok, Ring}) ->
+                Res = lists:all(fun({ok, Ring}) ->
                     [] =:= rpc:call(MainNode, riak_core_ring, pending_changes, [Ring])
-                          end, Rings);
-
+                end, Rings),
+                io:format("Pending changes: ~p~n", [Res]),
+                Res;
             _ ->
                 false
         end
@@ -371,6 +374,7 @@ wait_until_nodes_ready([MainNode | _] = Nodes) ->
 %% @doc Wait until all nodes agree about all ownership views
 -spec wait_until_nodes_agree_about_ownership([node()]) -> boolean().
 wait_until_nodes_agree_about_ownership(Nodes) ->
+    io:format("~p~n", [?FUNCTION_NAME]),
     SortedNodes = lists:usort(Nodes),
     true = lists:all(fun(Node) ->
         Res = wait_until(fun() ->
@@ -395,6 +399,7 @@ wait_until_nodes_agree_about_ownership(Nodes) ->
 %%      converged (ie. `riak_core_ring:is_ready' returns `true').
 -spec wait_until_ring_converged([node()]) -> ok.
 wait_until_ring_converged([MainNode | _] = Nodes) ->
+    io:format("~p~n", [?FUNCTION_NAME]),
     true = lists:all(fun(Node) ->
         case wait_until(fun() -> is_ring_ready(Node, MainNode) end) of
             ok ->
@@ -408,10 +413,10 @@ wait_until_ring_converged([MainNode | _] = Nodes) ->
 
 %% @private
 is_ring_ready(Node, MainNode) ->
+    io:format("~p~n", [?FUNCTION_NAME]),
     case rpc:call(Node, riak_core_ring_manager, get_raw_ring, []) of
         {ok, Ring} ->
             rpc:call(MainNode, riak_core_ring, ring_ready, [Ring]);
-
         _ ->
             false
     end.
