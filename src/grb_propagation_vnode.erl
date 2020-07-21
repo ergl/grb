@@ -116,7 +116,13 @@ known_vc(Partition) ->
 
 -spec handle_blue_heartbeat(partition_id(), replica_id(), grb_time:ts()) -> ok.
 handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
-    riak_core_vnode_master:command({Partition, node()}, {blue_hb, ReplicaId, Ts}, ?master).
+    KnownTime = grb_vclock:get_time(ReplicaId, known_vc(Partition)),
+    case KnownTime < Ts of
+        false ->
+            ok; %% de-dup, ignore message
+        true ->
+            riak_core_vnode_master:command({Partition, node()}, {blue_hb, ReplicaId, Ts}, ?master)
+    end.
 
 -spec handle_clock_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
 handle_clock_update(Partition, FromReplicaId, KnownVC, StableVC) ->
