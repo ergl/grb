@@ -138,19 +138,31 @@ do_join(N=[SingleNode], Fanout) ->
 do_join([MainNode | _] = Nodes, Fanout) ->
     lists:foreach(fun(N) -> erlang:set_cookie(N, grb_cookie) end, Nodes),
     ok = join_cluster(Nodes),
+
     io:format("Starting background processes~n"),
-    Result = erpc:multicall(Nodes, grb_dc_manager, start_background_processes, []),
-    case lists:all(fun({ok, ok}) -> true; (_) -> false end, Result) of
-        true ->
-            io:format("Started background processes, starting broadcast tree~n"),
-            ok = start_broadcast_tree(Nodes, Fanout),
-            io:format("Started broadcast tree, checking master ready~n"),
-            ok = wait_until_master_ready(MainNode),
-            io:format("Successfully joined nodes ~p~n", [Nodes]);
-        false ->
-            io:fwrite(standard_error, "start_background_processes failed with ~p, aborting~n", [Result]),
-            halt(1)
-    end.
+    ok = start_background_processes(MainNode),
+
+    io:format("Started background processes, starting broadcast tree~n"),
+    ok = start_broadcast_tree(Nodes, Fanout),
+
+    io:format("Started broadcast tree, checking master ready~n"),
+    ok = wait_until_master_ready(MainNode),
+
+    io:format("Successfully joined nodes ~p~n", [Nodes]).
+
+-spec start_background_processes(node()) -> ok.
+start_background_processes(Node) ->
+    io:format("~p~n", [?FUNCTION_NAME]),
+    BackgroundReady = fun() ->
+        try
+            ok = erpc:call(Node, grb_dc_manager, start_background_processes, []),
+            true
+        catch _:_ ->
+            io:format("Error on start_background_processes, retrying~n"),
+            false
+        end
+    end,
+    wait_until(BackgroundReady).
 
 %% @doc Build clusters out of the given node list
 -spec join_cluster(list(atom())) -> ok.
@@ -266,12 +278,12 @@ wait_until_no_pending_changes([MainNode | _] = Nodes) when is_list(Nodes) ->
                 Res = lists:all(fun({ok, Ring}) ->
                     [] =:= rpc:call(MainNode, riak_core_ring, pending_changes, [Ring])
                 end, Rings),
-                io:format("Pending changes: ~p~n", [Res]),
+                io:format("All nodes with no pending changes: ~p~n", [Res]),
                 Res;
             _ ->
                 false
         end
-                        end,
+    end,
 
     wait_until(NoPendingHandoffs);
 

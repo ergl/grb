@@ -8,6 +8,7 @@
 
 %% API
 -export([start_background_processes/0,
+         persist_self_replica_info/0,
          start_propagation_processes/0,
          single_replica_processes/0,
          persist_replica_info/0,
@@ -23,6 +24,7 @@
 
 %% All functions are called through erpc
 -ignore_xref([start_background_processes/0,
+              persist_self_replica_info/0,
               start_propagation_processes/0,
               single_replica_processes/0,
               persist_replica_info/0,
@@ -50,21 +52,23 @@ remote_replicas() ->
 %% External API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-%% @doc Should be called at every node in the cluster
+%% @doc This is only called at the master node, but it should propagate everywhere
 -spec start_background_processes() -> ok.
 start_background_processes() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    ReplicaId = riak_core_ring:cluster_name(Ring),
-    ok = persistent_term:put({?MODULE, ?MY_REPLICA}, ReplicaId),
+    LocalNodes = riak_core_ring:all_members(Ring),
 
-    Res0 = grb_dc_utils:bcast_vnode_local_sync(grb_main_vnode_master, start_blue_hb_timer),
+    Res0 = erpc:multicall(LocalNodes, ?MODULE, persist_self_replica_info, []),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
 
-    Res1 = grb_dc_utils:bcast_vnode_local_sync(grb_main_vnode_master, start_replicas),
-    ok = lists:foreach(fun({_, true}) -> ok end, Res1),
+    Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_blue_hb_timer, 1000),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
 
-    Res2 = grb_dc_utils:bcast_vnode_local_sync(grb_propagation_vnode_master, learn_dc_id),
-    ok = lists:foreach(fun({_, ok}) -> ok end, Res2),
+    Res2 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_replicas, 1000),
+    ok = lists:foreach(fun({_, true}) -> ok end, Res2),
+
+    Res3 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, learn_dc_id, 1000),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res3),
 
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
@@ -129,6 +133,13 @@ start_propagation_processes() ->
     Res3 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_propagate_timer),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res3),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
+    ok.
+
+-spec persist_self_replica_info() -> ok.
+persist_self_replica_info() ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    ReplicaId = riak_core_ring:cluster_name(Ring),
+    ok = persistent_term:put({?MODULE, ?MY_REPLICA}, ReplicaId),
     ok.
 
 -spec persist_replica_info() -> ok.
