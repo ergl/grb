@@ -82,7 +82,6 @@ start_transaction(Partition, ClientVC) ->
 
 -else.
 
-
 start_transaction(Partition, ClientVC) ->
     UpdatedUniformVC = grb_propagation_vnode:merge_remote_uniform_vc(Partition, ClientVC),
     SVC = grb_vclock:max(ClientVC, UpdatedUniformVC),

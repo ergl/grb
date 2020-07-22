@@ -221,32 +221,11 @@ handle_command(populate_logs, _From, S=#state{logs=Logs0}) ->
     end, Logs0, AllReplicas),
     {reply, ok, S#state{logs=Logs}};
 
-handle_command(start_propagate_timer, _From, State0) ->
-    State = case timers_set(State0) of
-        true -> State0;
-        false ->
-            State0#state{
-                prune_timer=erlang:send_after(State0#state.prune_interval, self(), ?prune_req),
-                uniform_timer=erlang:send_after(State0#state.uniform_interval, self(), ?uniform_req),
-                replication_timer=erlang:send_after(State0#state.replication_interval, self(), ?replication_req)
-            }
-    end,
-    {reply, ok, State};
+handle_command(start_propagate_timer, _From, State) ->
+    {reply, ok, start_propagation_timers(State)};
 
-handle_command(stop_propagate_timer, _From, State0) ->
-    State = case timers_set(State0) of
-        false -> State0;
-        true ->
-            erlang:cancel_timer(State0#state.prune_timer),
-            erlang:cancel_timer(State0#state.uniform_timer),
-            erlang:cancel_timer(State0#state.replication_timer),
-            State0#state{
-                prune_timer=undefined,
-                uniform_timer=undefined,
-                replication_timer=undefined
-            }
-    end,
-    {reply, ok, State};
+handle_command(stop_propagate_timer, _From, State) ->
+    {reply, ok, stop_propagation_timers(State)};
 
 handle_command({update_stable_vc, SVC}, _Sender, State) ->
     {noreply, update_stable_vc_internal(SVC, State)};
@@ -297,8 +276,7 @@ handle_info(?replication_req, State=#state{partition=P,
 
     erlang:cancel_timer(Timer),
     KnownVC = get_updated_known_vc(LocalId, grb_main_vnode:get_known_time(P), ClockTable),
-    StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
-    GlobalMatrix = replicate_internal(KnownVC, StableVC, State),
+    GlobalMatrix = replicate_internal(KnownVC, State),
     {ok, State#state{global_known_matrix=GlobalMatrix,
                      replication_timer=erlang:send_after(Interval, self(), ?replication_req)}};
 
@@ -337,9 +315,70 @@ handle_info(Msg, State) ->
 %%% internal functions
 %%%===================================================================
 
+-spec start_propagation_timers(state()) -> state().
+-spec stop_propagation_timers(state()) -> state().
 -spec timers_set(state()) -> boolean().
+
+-ifdef(BASIC_REPLICATION).
+
+start_propagation_timers(State) ->
+    case timers_set(State) of
+        true -> State;
+        false ->
+            State#state{
+                prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
+                replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req)
+            }
+    end.
+
+
+stop_propagation_timers(State) ->
+    case timers_set(State) of
+        false -> State;
+        true ->
+            erlang:cancel_timer(State#state.prune_timer),
+            erlang:cancel_timer(State#state.replication_timer),
+            State#state{
+                prune_timer=undefined,
+                replication_timer=undefined
+            }
+    end.
+
+timers_set(#state{replication_timer=undefined, prune_timer=undefined}) -> false;
+timers_set(_) -> true.
+
+-else.
+
+start_propagation_timers(State) ->
+    case timers_set(State) of
+        true -> State;
+        false ->
+            State#state{
+                prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
+                uniform_timer=erlang:send_after(State#state.uniform_interval, self(), ?uniform_req),
+                replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req)
+            }
+    end.
+
+
+stop_propagation_timers(State) ->
+    case timers_set(State) of
+        false -> State;
+        true ->
+            erlang:cancel_timer(State#state.prune_timer),
+            erlang:cancel_timer(State#state.uniform_timer),
+            erlang:cancel_timer(State#state.replication_timer),
+            State#state{
+                prune_timer=undefined,
+                uniform_timer=undefined,
+                replication_timer=undefined
+            }
+    end.
+
 timers_set(#state{replication_timer=undefined, uniform_timer=undefined, prune_timer=undefined}) -> false;
 timers_set(_) -> true.
+
+-endif.
 
 -spec update_stable_vc_internal(vclock(), state()) -> state().
 -ifdef(BASIC_REPLICATION).
@@ -407,37 +446,81 @@ update_clocks(FromReplicaId, KnownVC, StableVC, S=#state{local_replica=LocalId,
             stable_matrix=StableMatrix,
             pending_barriers=PendingBarriers}.
 
--spec replicate_internal(vclock(), vclock(), #state{}) -> global_known_matrix().
-replicate_internal(KnownVC, StableVC, #state{logs=Logs,
-                                             partition=Partition,
-                                             local_replica=LocalId,
-                                             global_known_matrix=Matrix}) ->
+%% todo(borja): On basic, don't prune, but remove from log instead (change timers_set / start_times to ignore prune timer)
+-spec replicate_internal(vclock(), state()) -> global_known_matrix().
+replicate_internal(KnownVC, #state{logs=Logs,
+                                   partition=Partition,
+                                   local_replica=LocalId,
+                                   clock_cache=ClockCache,
+                                   global_known_matrix=Matrix}) ->
+
     #{LocalId := LocalLog} = Logs,
+    HeartbeatTime = grb_vclock:get_time(LocalId, KnownVC),
     ConnectedReplicas = grb_dc_connection_manager:connected_replicas(),
+
     lists:foldl(fun(TargetReplica, MatrixAcc) ->
         ThresholdTime = maps:get({TargetReplica, LocalId}, MatrixAcc, 0),
         ?LOG_DEBUG("Treshold time for ~p: ~p~n", [TargetReplica, ThresholdTime]),
         ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
         case ToSend of
             [] ->
-                %% piggy back clocks on top of the send_heartbeat message, avoid extra message on the wire
-                HBRes = grb_dc_connection_manager:send_clocks_heartbeat(TargetReplica, LocalId, Partition, KnownVC, StableVC),
-                ?LOG_DEBUG("broadcast clocks/heartbeat to ~p: ~p~n", [TargetReplica, HBRes]),
-                ok;
-            Txs ->
-                %% can't merge with other messages here, send one before
-                %% we could piggy-back on top of the first tx, but w/ever
-                ClockRes = grb_dc_connection_manager:send_clocks(TargetReplica, LocalId, Partition, KnownVC, StableVC),
-                ?LOG_DEBUG("broadcast clocks to ~p: ~p~n", [TargetReplica, ClockRes]),
-                lists:foreach(fun(Tx) ->
-                    TxRes = grb_dc_connection_manager:send_tx(TargetReplica, LocalId, Partition, Tx),
-                    ?LOG_DEBUG("broadcast transaction ~p to ~p: ~p~n", [Tx, TargetReplica, TxRes]),
-                    ok
-                end, Txs)
+                ok = send_heartbeat(TargetReplica, LocalId, Partition, HeartbeatTime, KnownVC, ClockCache);
+            Transactions ->
+                ok = send_transactions(TargetReplica, LocalId, Partition, Transactions, KnownVC, ClockCache)
         end,
-        %% todo(borja, speed): since we always send up to the same value, extract from matrix into single counter / vc
-        MatrixAcc#{{TargetReplica, LocalId} => grb_vclock:get_time(LocalId, KnownVC)}
+        MatrixAcc#{{TargetReplica, LocalId} => HeartbeatTime}
     end, Matrix, ConnectedReplicas).
+
+-spec send_heartbeat(TargetReplica :: replica_id(),
+                     LocalReplica :: replica_id(),
+                     Partition :: partition_id(),
+                     HeartbeatTime :: grb_time:ts(),
+                     KnownVC :: vclock(),
+                     ClockCache :: cache(atom(), vclock())) -> ok.
+
+-spec send_transactions(TargetReplica :: replica_id(),
+                        LocalReplica :: replica_id(),
+                        Partition :: partition_id(),
+                        Transactions :: [{term(), #{}, vclock()}, ...],
+                        KnownVC :: vclock(),
+                        ClockCache :: cache(atom(), vclock())) -> ok.
+
+-ifdef(BASIC_REPLICATION).
+
+send_heartbeat(TargetReplica, LocalReplica, Partition, HeartbeatTime, _KnownVC, _ClockCache) ->
+    HBRes = grb_dc_connection_manager:send_heartbeat(TargetReplica, LocalReplica, Partition, HeartbeatTime),
+    ?LOG_DEBUG("basic broadcast heartbeat to ~p: ~p~n", [TargetReplica, HBRes]),
+    ok.
+
+send_transactions(TargetReplica, LocalReplica, Partition, Transactions, _KnownVC, _ClockCache) ->
+    lists:foreach(fun(Tx) ->
+        TxRes = grb_dc_connection_manager:send_tx(TargetReplica, LocalReplica, Partition, Tx),
+        ?LOG_DEBUG("basic broadcast transaction ~p to ~p: ~p~n", [Tx, TargetReplica, TxRes]),
+        ok
+    end, Transactions).
+
+-else.
+
+send_heartbeat(TargetReplica, LocalReplica, Partition, _HeartbeatTime, KnownVC, ClockCache) ->
+    StableVC = ets:lookup_element(ClockCache, ?stable_key, 2),
+    %% piggy back clocks on top of the send_heartbeat message, avoid extra message on the wire
+    HBRes = grb_dc_connection_manager:send_clocks_heartbeat(TargetReplica, LocalReplica, Partition, KnownVC, StableVC),
+    ?LOG_DEBUG("broadcast clocks/heartbeat to ~p: ~p~n", [TargetReplica, HBRes]),
+    ok.
+
+send_transactions(TargetReplica, LocalReplica, Partition, Transactions, KnownVC, ClockCache) ->
+    StableVC = ets:lookup_element(ClockCache, ?stable_key, 2),
+    %% can't merge with other messages here, send one before
+    %% we could piggy-back on top of the first tx, but w/ever
+    ClockRes = grb_dc_connection_manager:send_clocks(TargetReplica, LocalReplica, Partition, KnownVC, StableVC),
+    ?LOG_DEBUG("broadcast clocks to ~p: ~p~n", [TargetReplica, ClockRes]),
+    lists:foreach(fun(Tx) ->
+        TxRes = grb_dc_connection_manager:send_tx(TargetReplica, LocalReplica, Partition, Tx),
+        ?LOG_DEBUG("broadcast transaction ~p to ~p: ~p~n", [Tx, TargetReplica, TxRes]),
+        ok
+    end, Transactions).
+
+-endif.
 
 -spec uniform_replicate_internal(vclock(), #state{}) -> global_known_matrix().
 uniform_replicate_internal(KnownVC, #state{logs=Logs,
