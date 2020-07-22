@@ -69,7 +69,7 @@ handle_call(close, _From, S) ->
     {stop, normal, ok, S};
 
 handle_call(E, _From, S) ->
-    ?LOG_WARNING("unexpected call: ~p~n", [E]),
+    ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
 handle_cast(E, S) ->

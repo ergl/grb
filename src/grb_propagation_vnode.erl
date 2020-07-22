@@ -176,6 +176,10 @@ init([Partition]) ->
 handle_command(ping, _Sender, State) ->
     {reply, {pong, node(), State#state.partition}, State};
 
+handle_command(is_ready, _Sender, State) ->
+    Ready = lists:all(fun is_ready/1, [State#state.clock_cache]),
+    {reply, Ready, State};
+
 handle_command(enable_blue_append, _Sender, S) ->
     {reply, ok, S#state{should_append_commit=true}};
 
@@ -564,6 +568,10 @@ safe_bin_to_atom(Bin) ->
         {'EXIT', _} -> binary_to_atom(Bin, latin1);
         Atom -> Atom
     end.
+
+-spec is_ready(cache_id()) -> boolean().
+is_ready(Table) ->
+    undefined =/= ets:info(Table).
 
 %%%===================================================================
 %%% stub riak_core callbacks

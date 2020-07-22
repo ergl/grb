@@ -193,7 +193,7 @@ handle_call({close, ReplicaId}, _From, State=#state{reverse_pid_index=Index}) ->
     {reply, ok, State#state{reverse_pid_index=maps:without(Socks, Index)}};
 
 handle_call(E, _From, S) ->
-    ?LOG_WARNING("unexpected call: ~p~n", [E]),
+    ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
 handle_cast({closed, ReplicaId, Socket}, State=#state{reverse_pid_index=Index}) ->

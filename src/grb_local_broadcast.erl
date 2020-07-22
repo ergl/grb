@@ -151,7 +151,7 @@ handle_call(stop, _From, S) ->
     {reply, ok, S};
 
 handle_call(E, _From, S) ->
-    ?LOG_WARNING("unexpected call: ~p~n", [E]),
+    ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
 handle_cast({clock_event, From, ChildSVC}, S=#state{self_name=SelfNode,

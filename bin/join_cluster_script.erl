@@ -128,8 +128,11 @@ prepare({ok, Nodes, Fanout}) ->
     do_join(Nodes, Fanout).
 
 do_join(N=[SingleNode], Fanout) ->
-    io:format("Started background processes, checking master ready~n"),
+    io:format("Checking that vnodes are ready...~n"),
+    ok = wait_until_vnodes_ready(SingleNode),
+    io:format("Node ready, starting background processes~n"),
     erpc:call(SingleNode, grb_dc_manager, start_background_processes, []),
+    io:format("starting broadcast tree~n"),
     ok = start_broadcast_tree(N, Fanout),
     ok = wait_until_master_ready(SingleNode),
     io:format("Successfully joined nodes ~p~n", [N]),
@@ -437,18 +440,38 @@ is_ring_ready(Node, MainNode) ->
 wait_until_master_ready(MasterNode) ->
     wait_until(fun() -> check_ready(MasterNode) end).
 
+wait_until_vnodes_ready(Node) ->
+    wait_until(fun() -> check_vnodes(Node) end).
+
+check_vnodes(Node) ->
+    io:format("[vnodes ready] Checking ~p~n", [Node]),
+    Res0 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_propagation_vnode_master, is_ready]),
+    Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, is_ready]),
+    PropReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res0),
+    MainReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res1),
+    Ready = PropReady andalso MainReady,
+    case Ready of
+        true ->
+            io:format("Vnodes ready at ~w~n", [Node]);
+        false ->
+            io:format("Vnodes not yet ready at ~w~n", [Node])
+    end,
+    Ready.
+
 %% @doc This function provides the same functionality as wait_ready_nodes
 %% except it takes as input a sinlge physical node instead of a list
 -spec check_ready(node()) -> boolean().
 check_ready(Node) ->
     io:format("[master ready] Checking ~p~n", [Node]),
 
-    Res0 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, is_ready]),
-    Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, replicas_ready]),
-    VNodeReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res0),
-    ReadReplicasReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res1),
+    Res0 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_propagation_vnode_master, is_ready]),
+    Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, is_ready]),
+    Res2 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, replicas_ready]),
+    PropVnodeReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res0),
+    VNodeReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res1),
+    ReadReplicasReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res2),
 
-    NodeReady = VNodeReady andalso ReadReplicasReady,
+    NodeReady = PropVnodeReady andalso VNodeReady andalso ReadReplicasReady,
     case NodeReady of
         true ->
             io:format("Node ~w is ready! ~n~n", [Node]);
