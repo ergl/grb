@@ -29,6 +29,9 @@ dialyzer:
 debug:
 	$(REBAR) as debug_log compile
 
+cure:
+	$(REBAR) as basic_replication compile
+
 clean:
 	$(REBAR) clean --all
 
@@ -37,6 +40,9 @@ rel: compile
 
 debugrel:
 	$(REBAR) as debug_log release -n grb
+
+curerel:
+	$(REBAR) as basic_replication release -n grb
 
 debugrel-clean:
 	rm -rf _build/debug_log/rel
