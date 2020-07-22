@@ -67,16 +67,16 @@ ct_test:
 	$(REBAR) ct
 
 dev1-rel:
-	$(REBAR) as debug_log release -n grb_local1
+	$(REBAR) as $(DEV_PROFILE) release -n grb_local1
 
 dev2-rel:
-	$(REBAR) as debug_log release -n grb_local2
+	$(REBAR) as $(DEV_PROFILE) release -n grb_local2
 
 dev3-rel:
-	$(REBAR) as debug_log release -n grb_local3
+	$(REBAR) as $(DEV_PROFILE) release -n grb_local3
 
 dev4-rel:
-	$(REBAR) as debug_log release -n grb_local4
+	$(REBAR) as $(DEV_PROFILE) release -n grb_local4
 
 devrel: dev1-rel dev2-rel dev3-rel dev4-rel
 
