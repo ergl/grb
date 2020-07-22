@@ -10,9 +10,11 @@
 %% Public API
 -export([known_vc/1,
          stable_vc/1,
-         update_stable_vc/2,
          uniform_vc/1,
+         update_stable_vc/2,
          update_uniform_vc/2,
+         merge_remote_stable_vc/2,
+         merge_remote_uniform_vc/2,
          handle_blue_heartbeat/3,
          handle_clock_update/4,
          handle_clock_heartbeat_update/4,
@@ -94,25 +96,41 @@
 %%% public api
 %%%===================================================================
 
--spec uniform_vc(partition_id()) -> vclock().
-uniform_vc(Partition) ->
-    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?uniform_key, 2).
+-spec known_vc(partition_id()) -> vclock().
+known_vc(Partition) ->
+    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?known_key, 2).
 
 -spec stable_vc(partition_id()) -> vclock().
 stable_vc(Partition) ->
     ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?stable_key, 2).
 
+-spec uniform_vc(partition_id()) -> vclock().
+uniform_vc(Partition) ->
+    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?uniform_key, 2).
+
 -spec update_stable_vc(partition_id(), vclock()) -> ok.
 update_stable_vc(Partition, SVC) ->
     riak_core_vnode_master:command({Partition, node()}, {update_stable_vc, SVC}, ?master).
+
+%% @doc Update the stableVC at all replicas but the current one, return result
+-spec merge_remote_stable_vc(partition_id(), vclock()) -> vclock().
+merge_remote_stable_vc(Partition, VC) ->
+    S0 = stable_vc(Partition),
+    S1 = grb_vclock:max_except(grb_dc_manager:replica_id(), S0, VC),
+    update_stable_vc(Partition, S1),
+    S1.
 
 -spec update_uniform_vc(partition_id(), vclock()) -> ok.
 update_uniform_vc(Partition, SVC) ->
     riak_core_vnode_master:command({Partition, node()}, {update_uniform_vc, SVC}, ?master).
 
--spec known_vc(partition_id()) -> vclock().
-known_vc(Partition) ->
-    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?known_key, 2).
+%% @doc Update the uniformVC at all replicas but the current one, return result
+-spec merge_remote_uniform_vc(partition_id(), vclock()) -> vclock().
+merge_remote_uniform_vc(Partition, VC) ->
+    S0 = uniform_vc(Partition),
+    S1 = grb_vclock:max_except(grb_dc_manager:replica_id(), S0, VC),
+    update_uniform_vc(Partition, S1),
+    S1.
 
 -spec handle_blue_heartbeat(partition_id(), replica_id(), grb_time:ts()) -> ok.
 handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
@@ -230,19 +248,8 @@ handle_command(stop_propagate_timer, _From, State0) ->
     end,
     {reply, ok, State};
 
-handle_command({update_stable_vc, SVC}, _Sender, S=#state{local_replica=LocalId,
-                                                          clock_cache=ClockTable,
-                                                          stable_matrix=StableMatrix0,
-                                                          fault_tolerant_groups=Groups,
-                                                          pending_barriers=PendingBarriers0}) ->
-
-    OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
-    %% Safe to update everywhere, caller has already ensured to not update the current replica
-    NewSVC = grb_vclock:max(OldSVC, SVC),
-    true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
-    {UniformVC, StableMatrix} = update_uniform_vc(LocalId, NewSVC, StableMatrix0, ClockTable, Groups),
-    PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
-    {noreply, S#state{stable_matrix=StableMatrix, pending_barriers=PendingBarriers}};
+handle_command({update_stable_vc, SVC}, _Sender, State) ->
+    {noreply, update_stable_vc_internal(SVC, State)};
 
 handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
     OldSVC = ets:lookup_element(ClockTable, ?uniform_key, 2),
@@ -333,6 +340,34 @@ handle_info(Msg, State) ->
 -spec timers_set(state()) -> boolean().
 timers_set(#state{replication_timer=undefined, uniform_timer=undefined, prune_timer=undefined}) -> false;
 timers_set(_) -> true.
+
+-spec update_stable_vc_internal(vclock(), state()) -> state().
+-ifdef(BASIC_REPLICATION).
+
+update_stable_vc_internal(VC, S=#state{clock_cache=ClockTable}) ->
+    OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
+    %% Safe to update everywhere, caller has already ensured to not update the current replica
+    NewSVC = grb_vclock:max(OldSVC, VC),
+    true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
+    S.
+
+-else.
+
+update_stable_vc_internal(VC, S=#state{local_replica=LocalId,
+                                       clock_cache=ClockTable,
+                                       stable_matrix=StableMatrix0,
+                                       fault_tolerant_groups=Groups,
+                                       pending_barriers=PendingBarriers0}) ->
+
+    OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
+    %% Safe to update everywhere, caller has already ensured to not update the current replica
+    NewSVC = grb_vclock:max(OldSVC, VC),
+    true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
+    {UniformVC, StableMatrix} = update_uniform_vc(LocalId, NewSVC, StableMatrix0, ClockTable, Groups),
+    PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
+    S#state{stable_matrix=StableMatrix, pending_barriers=PendingBarriers}.
+
+-endif.
 
 -spec insert_uniform_barrier(grb_promise:t(), grb_time:ts(), uniform_barriers()) -> uniform_barriers().
 insert_uniform_barrier(Promise, Timestamp, Barriers) ->

@@ -65,15 +65,23 @@ get_known_time(Partition) ->
 
 -spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
 prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
-    ReplicaId = grb_dc_manager:replica_id(),
-    UniformVC0 = grb_propagation_vnode:uniform_vc(Partition),
-    UniformVC1 = grb_vclock:max_except(ReplicaId, UniformVC0, SnapshotVC),
-    ok = grb_propagation_vnode:update_uniform_vc(Partition, UniformVC1),
     Ts = grb_time:timestamp(),
+    ok = update_prepare_clocks(Partition, SnapshotVC),
     ok = riak_core_vnode_master:command({Partition, node()},
                                         {prepare_blue, TxId, WriteSet, Ts},
                                         ?master),
     Ts.
+
+-spec update_prepare_clocks(partition_id(), vclock()) -> ok.
+-ifdef(BASIC_REPLICATION).
+update_prepare_clocks(Partition, SnapshotVC) ->
+    _ = grb_propagation_vnode:merge_remote_stable_vc(Partition, SnapshotVC),
+    ok.
+-else.
+update_prepare_clocks(Partition, SnapshotVC) ->
+    _ = grb_propagation_vnode:merge_remote_uniform_vc(Partition, SnapshotVC),
+    ok.
+-endif.
 
 -spec handle_replicate(partition_id(), replica_id(), term(), #{}, vclock()) -> ok.
 handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->

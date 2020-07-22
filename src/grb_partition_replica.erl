@@ -178,11 +178,19 @@ handle_info(Info, State) ->
                           Val :: val(),
                           State :: #state{}) -> ok.
 
+-ifdef(BASIC_REPLICATION).
+
 perform_op_internal(Promise, ReplicaId, Key, SnapshotVC, Val, State=#state{partition=Partition, known_barrier_wait_ms=WaitMs}) ->
-    UniformVC0 = grb_propagation_vnode:uniform_vc(Partition),
-    UniformVC1 = grb_vclock:max_except(ReplicaId, UniformVC0, SnapshotVC),
-    ok = grb_propagation_vnode:update_uniform_vc(Partition, UniformVC1),
+    _ = grb_propagation_vnode:merge_remote_stable_vc(Partition, SnapshotVC),
     perform_op_wait(Promise, WaitMs, ReplicaId, Key, SnapshotVC, Val, State).
+
+-else.
+
+perform_op_internal(Promise, ReplicaId, Key, SnapshotVC, Val, State=#state{partition=Partition, known_barrier_wait_ms=WaitMs}) ->
+    _ = grb_propagation_vnode:merge_remote_uniform_vc(Partition, SnapshotVC),
+    perform_op_wait(Promise, WaitMs, ReplicaId, Key, SnapshotVC, Val, State).
+
+-endif.
 
 -spec perform_op_wait(Promise :: grb_promise:t(),
                       WaitMs :: non_neg_integer(),
