@@ -68,7 +68,7 @@
 
 -record(state, {
     partition :: partition_id(),
-    local_replica :: replica_id(),
+    local_replica :: replica_id() | undefined,
 
     logs = #{} :: blue_commit_logs(),
     global_known_matrix = #{} :: global_known_matrix(),
@@ -135,13 +135,13 @@ merge_remote_stable_vc(Partition, VC) ->
     S1.
 
 %% @doc Let the partition know that the remote replica has received up to AckTime
--spec handle_ack(replica_id(), partition_id(), grb_time:ts()) -> ok.
-handle_ack(ReplicaId, Partition, AckTime) ->
+-spec handle_ack(partition_id(), replica_id(), grb_time:ts()) -> ok.
+handle_ack(Partition, ReplicaId, AckTime) ->
     riak_core_vnode_master:command({Partition, node()}, {handle_ack, ReplicaId, AckTime}, ?master).
 
 %% @doc Let the partition know that the remote replica has received up to AckTime, also count Timestamp as a heartbeat
--spec handle_ack_heartbeat(replica_id(), partition_id(), grb_time:ts(), grb_time:ts()) -> ok.
-handle_ack_heartbeat(ReplicaId, Partition, Timestamp, AckTime) ->
+-spec handle_ack_heartbeat(partition_id(), replica_id(), grb_time:ts(), grb_time:ts()) -> ok.
+handle_ack_heartbeat(Partition, ReplicaId, Timestamp, AckTime) ->
     riak_core_vnode_master:command({Partition, node()}, {handle_ack_hb, ReplicaId, Timestamp, AckTime}, ?master).
 
 %%%===================================================================

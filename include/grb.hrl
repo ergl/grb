@@ -17,8 +17,7 @@
 -type effect() :: atom().
 -type transaction_type() :: red | blue.
 
-%% it's a tuple, really, but we don't want the application to know anything about it
--type replica_id() :: term().
+-type replica_id() :: {atom(), erlang:timestamp()}.
 -type vclock() :: grb_vclock:vc(replica_id() | atom()).
 %% the entry for red transactions in the clock
 -define(RED_REPLICA, red).
