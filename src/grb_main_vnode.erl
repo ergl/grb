@@ -190,12 +190,9 @@ handle_command({decide_blue, ReplicaId, TxId, VC}, _From, State) ->
     NewState = decide_blue_internal(ReplicaId, TxId, VC, State),
     {noreply, NewState};
 
-handle_command({handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC}, _From, S=#state{partition=P,
-                                                                                            op_log=OpLog,
-                                                                                            op_log_size=LogSize}) ->
-    ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
-    ok = grb_propagation_vnode:append_blue_commit(SourceReplica, P, CommitTime, TxId, WS, VC),
-    {noreply, S};
+handle_command({handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC}, _From, State) ->
+    ok = handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, State),
+    {noreply, State};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
@@ -213,6 +210,27 @@ handle_info(?blue_tick_req, State=#state{partition=P,
 handle_info(Msg, State) ->
     ?LOG_WARNING("unhandled_info ~p", [Msg]),
     {ok, State}.
+
+-spec handle_remote_tx_internal(replica_id(), term(), #{}, grb_time:ts(), vclock(), state()) -> ok.
+-ifdef(BASIC_REPLICATION).
+
+handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partition=Partition,
+                                                                          op_log=OperationLog,
+                                                                          op_log_size=LogSize}) ->
+    ok = update_partition_state(TxId, WS, VC, OperationLog, LogSize),
+    ok = grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, CommitTime),
+    ok.
+
+-else.
+
+handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partition=Partition,
+                                                                          op_log=OperationLog,
+                                                                          op_log_size=LogSize}) ->
+    ok = update_partition_state(TxId, WS, VC, OperationLog, LogSize),
+    ok = grb_propagation_vnode:append_blue_commit(SourceReplica, Partition, CommitTime, TxId, WS, VC),
+    ok.
+
+-endif.
 
 -spec decide_blue_internal(replica_id(), term(), vclock(), #state{}) -> #state{}.
 decide_blue_internal(ReplicaId, TxId, VC, S=#state{partition=SelfPartition,
