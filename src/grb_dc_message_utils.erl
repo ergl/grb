@@ -26,7 +26,13 @@ encode_payload(Replica, #update_clocks{known_vc=KnownVC, stable_vc=StableVC}) ->
     {?UPDATE_CLOCK_KIND, term_to_binary({Replica, KnownVC, StableVC})};
 
 encode_payload(Replica, #update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}) ->
-    {?UPDATE_CLOCK_HEARTBEAT_KIND, term_to_binary({Replica, KnownVC, StableVC})}.
+    {?UPDATE_CLOCK_HEARTBEAT_KIND, term_to_binary({Replica, KnownVC, StableVC})};
+
+encode_payload(Replica, #basic_rcv_ack{ack_timestamp=AckTs}) ->
+    {?BASIC_RCV_ACK, term_to_binary({Replica, AckTs})};
+
+encode_payload(Replica, #basic_rcv_ack_hb{timestamp=Ts, ack_timestamp=AckTs}) ->
+    {?BASIC_RCV_ACK_HB, term_to_binary({Replica, Ts, AckTs})}.
 
 -spec decode_payload(binary()) -> {replica_id(), replica_message()}.
 decode_payload(<<?REPL_TX_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
@@ -43,7 +49,15 @@ decode_payload(<<?UPDATE_CLOCK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
 
 decode_payload(<<?UPDATE_CLOCK_HEARTBEAT_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {FromReplica, KnownVC, StableVC} = binary_to_term(Payload),
-    {FromReplica, #update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}}.
+    {FromReplica, #update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}};
+
+decode_payload(<<?BASIC_RCV_ACK:?MSG_KIND_BITS, Payload/binary>>) ->
+    {FromPreplica, AckTs} = binary_to_term(Payload),
+    {FromPreplica, #basic_rcv_ack{ack_timestamp=AckTs}};
+
+decode_payload(<<?BASIC_RCV_ACK_HB:?MSG_KIND_BITS, Payload/binary>>) ->
+    {FromPreplica, Ts, AckTs} = binary_to_term(Payload),
+    {FromPreplica, #basic_rcv_ack_hb{timestamp=Ts, ack_timestamp=AckTs}}.
 
 %% Util functions
 
@@ -64,7 +78,9 @@ grb_dc_message_utils_test() ->
         #blue_heartbeat{timestamp=10},
         #update_clocks{known_vc=VC, stable_vc=VC},
         #update_clocks_heartbeat{known_vc=VC, stable_vc=VC},
-        #replicate_tx{tx_id=ignore, writeset=#{foo => bar}, commit_vc=VC}
+        #replicate_tx{tx_id=ignore, writeset=#{foo => bar}, commit_vc=VC},
+        #basic_rcv_ack{ack_timestamp=10},
+        #basic_rcv_ack_hb{timestamp=10, ack_timestamp=20}
     ],
 
     lists:foreach(fun(Partition) ->

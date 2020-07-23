@@ -14,7 +14,9 @@
          send_tx/4,
          send_clocks/5,
          send_heartbeat/4,
-         send_clocks_heartbeat/5]).
+         send_clocks_heartbeat/5,
+         send_ack/4,
+         send_ack_heartbeat/5]).
 
 %% Managemenet API
 -export([connection_closed/2,
@@ -125,6 +127,28 @@ send_msg(Replica, Partition, Msg) ->
 send_heartbeat(ToId, FromId, Partition, Time) ->
     ?LOG_DEBUG("Sending blue_hearbeat to ~p:~p on behalf of ~p: ~p", [ToId, Partition, FromId, Time]),
     send_msg(ToId, Partition, heartbeat_msg(FromId, Partition, Time)).
+
+%% @doc Let the remote replica we have received up to AckTime from them, useful for pruning
+-spec send_ack(To :: replica_id(),
+               From :: replica_id(),
+               Partition :: partition_id(),
+               AckTime :: grb_time:ts()) -> ok | {error, term()}.
+
+send_ack(ToId, FromId, Partition, AckTime) ->
+    send_msg(ToId, Partition,
+             grb_dc_message_utils:encode_msg(FromId, Partition, #basic_rcv_ack{ack_timestamp=AckTime})).
+
+%% @doc Same as send_ack/4, but piggy-back a blue heartbeat
+-spec send_ack_heartbeat(To :: replica_id(),
+                         From :: replica_id(),
+                         Partition :: partition_id(),
+                         Time :: grb_time:ts(),
+                         AckTime :: grb_time:ts()) -> ok | {error, term()}.
+
+send_ack_heartbeat(ToId, FromId, Partition, Time, AckTime) ->
+    send_msg(ToId, Partition,
+             grb_dc_message_utils:encode_msg(FromId, Partition, #basic_rcv_ack_hb{timestamp=Time,
+                                                                                  ack_timestamp=AckTime})).
 
 -spec send_tx(From :: replica_id(),
               To :: replica_id(),

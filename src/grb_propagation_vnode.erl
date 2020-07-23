@@ -15,7 +15,9 @@
 
 %% Basic Replication API
 
--export([merge_remote_stable_vc/2]).
+-export([merge_remote_stable_vc/2,
+         handle_ack/3,
+         handle_ack_heartbeat/4]).
 
 %% Uniform Replication API
 -export([uniform_vc/1,
@@ -131,6 +133,16 @@ merge_remote_stable_vc(Partition, VC) ->
     S1 = grb_vclock:max_except(grb_dc_manager:replica_id(), S0, VC),
     update_stable_vc(Partition, S1),
     S1.
+
+%% @doc Let the partition know that the remote replica has received up to AckTime
+-spec handle_ack(replica_id(), partition_id(), grb_time:ts()) -> ok.
+handle_ack(ReplicaId, Partition, AckTime) ->
+    riak_core_vnode_master:command({Partition, node()}, {handle_ack, ReplicaId, AckTime}, ?master).
+
+%% @doc Let the partition know that the remote replica has received up to AckTime, also count Timestamp as a heartbeat
+-spec handle_ack_heartbeat(replica_id(), partition_id(), grb_time:ts(), grb_time:ts()) -> ok.
+handle_ack_heartbeat(ReplicaId, Partition, Timestamp, AckTime) ->
+    riak_core_vnode_master:command({Partition, node()}, {handle_ack_hb, ReplicaId, Timestamp, AckTime}, ?master).
 
 %%%===================================================================
 %%% uniform replication api
@@ -251,6 +263,17 @@ handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTabl
     NewSVC = grb_vclock:max(OldSVC, SVC),
     true = ets:update_element(ClockTable, ?uniform_key, {2, NewSVC}),
     {noreply, S};
+
+handle_command({handle_ack, FromReplica, AckTime}, _Sender, S=#state{local_replica=LocalId, global_known_matrix=Matrix0}) ->
+    Matrix = Matrix0#{{FromReplica, LocalId} => AckTime},
+    {noreply, S#state{global_known_matrix=Matrix}};
+
+handle_command({handle_ack_hb, FromReplica, Timestamp, AckTime}, _Sender, S=#state{local_replica=LocalId,
+                                                                                   clock_cache=ClockTable,
+                                                                                   global_known_matrix=Matrix0}) ->
+    ok = update_known_vc(FromReplica, Timestamp, ClockTable),
+    Matrix = Matrix0#{{FromReplica, LocalId} => AckTime},
+    {noreply, S#state{global_known_matrix=Matrix}};
 
 handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
     ok = update_known_vc(FromReplica, Ts, ClockTable),
@@ -461,7 +484,6 @@ update_clocks(FromReplicaId, KnownVC, StableVC, S=#state{local_replica=LocalId,
             stable_matrix=StableMatrix,
             pending_barriers=PendingBarriers}.
 
-%% todo(borja): On basic, don't prune, but remove from log instead (change timers_set / start_times to ignore prune timer)
 -spec replicate_internal(vclock(), state()) -> global_known_matrix().
 replicate_internal(KnownVC, #state{logs=Logs,
                                    partition=Partition,
@@ -470,70 +492,72 @@ replicate_internal(KnownVC, #state{logs=Logs,
                                    global_known_matrix=Matrix}) ->
 
     #{LocalId := LocalLog} = Logs,
-    HeartbeatTime = grb_vclock:get_time(LocalId, KnownVC),
-    ConnectedReplicas = grb_dc_connection_manager:connected_replicas(),
+    lists:foldl(fun(Target, Acc) ->
+        replicate_fold_fun(Target, LocalId, Partition, KnownVC, LocalLog, ClockCache, Acc)
+    end, Matrix, grb_dc_connection_manager:connected_replicas()).
 
-    lists:foldl(fun(TargetReplica, MatrixAcc) ->
-        ThresholdTime = maps:get({TargetReplica, LocalId}, MatrixAcc, 0),
-        ?LOG_DEBUG("Treshold time for ~p: ~p~n", [TargetReplica, ThresholdTime]),
-        ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
-        case ToSend of
-            [] ->
-                ok = send_heartbeat(TargetReplica, LocalId, Partition, HeartbeatTime, KnownVC, ClockCache);
-            Transactions ->
-                ok = send_transactions(TargetReplica, LocalId, Partition, Transactions, KnownVC, ClockCache)
-        end,
-        MatrixAcc#{{TargetReplica, LocalId} => HeartbeatTime}
-    end, Matrix, ConnectedReplicas).
-
--spec send_heartbeat(TargetReplica :: replica_id(),
-                     LocalReplica :: replica_id(),
-                     Partition :: partition_id(),
-                     HeartbeatTime :: grb_time:ts(),
-                     KnownVC :: vclock(),
-                     ClockCache :: cache(atom(), vclock())) -> ok.
-
--spec send_transactions(TargetReplica :: replica_id(),
-                        LocalReplica :: replica_id(),
-                        Partition :: partition_id(),
-                        Transactions :: [{term(), #{}, vclock()}, ...],
-                        KnownVC :: vclock(),
-                        ClockCache :: cache(atom(), vclock())) -> ok.
+-spec replicate_fold_fun(To :: replica_id(),
+                         From :: replica_id(),
+                         Partition :: partition_id(),
+                         KnownVC :: vclock(),
+                         LocalLog :: grb_blue_commit_log:t(),
+                         ClockCache :: cache(atom(), vclock()),
+                         GlobalMatrix :: global_known_matrix()) -> global_known_matrix().
 
 -ifdef(BASIC_REPLICATION).
 
-send_heartbeat(TargetReplica, LocalReplica, Partition, HeartbeatTime, _KnownVC, _ClockCache) ->
-    HBRes = grb_dc_connection_manager:send_heartbeat(TargetReplica, LocalReplica, Partition, HeartbeatTime),
-    ?LOG_DEBUG("basic broadcast heartbeat to ~p: ~p~n", [TargetReplica, HBRes]),
-    ok.
+replicate_fold_fun(TargetReplica, SourceReplica, Partition, KnownVC, LocalLog, _ClockCache, GlobalMatrix) ->
+    LocalTime = grb_vclock:get_time(SourceReplica, KnownVC),
+    %% What's the last that we have received from Target, send it to them so that they know how to prune
+    AckTime = maps:get({SourceReplica, TargetReplica}, GlobalMatrix, 0),
+    ThresholdTime = maps:get({TargetReplica, SourceReplica}, GlobalMatrix, 0),
+    ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
+    case ToSend of
+        [] ->
+            %% piggy back remote ack with a blue heartbeat
+            HBRes = grb_dc_connection_manager:send_ack_heartbeat(TargetReplica, SourceReplica,
+                                                                 Partition, LocalTime, AckTime),
+            ?LOG_DEBUG("send basic heartbeat/ack to ~p: ~p~n", [TargetReplica, HBRes]),
+            ok;
 
-send_transactions(TargetReplica, LocalReplica, Partition, Transactions, _KnownVC, _ClockCache) ->
-    lists:foreach(fun(Tx) ->
-        TxRes = grb_dc_connection_manager:send_tx(TargetReplica, LocalReplica, Partition, Tx),
-        ?LOG_DEBUG("basic broadcast transaction ~p to ~p: ~p~n", [Tx, TargetReplica, TxRes]),
-        ok
-    end, Transactions).
+        Transactions ->
+            %% can't merge with other messages here, send one before
+            %% we could piggy-back on top of the first tx, but w/ever
+            AckRes = grb_dc_connection_manager:send_ack(TargetReplica, SourceReplica, Partition, AckTime),
+            ?LOG_DEBUG("send basic ack to ~p: ~p~n", [TargetReplica, AckRes]),
+            lists:foreach(fun(Tx) ->
+                TxRes = grb_dc_connection_manager:send_tx(TargetReplica, SourceReplica, Partition, Tx),
+                ?LOG_DEBUG("send basic transaction ~p to ~p: ~p~n", [Tx, TargetReplica, TxRes]),
+                ok
+            end, Transactions)
+    end,
+    GlobalMatrix#{{TargetReplica, SourceReplica} => LocalTime}.
 
 -else.
 
-send_heartbeat(TargetReplica, LocalReplica, Partition, _HeartbeatTime, KnownVC, ClockCache) ->
+replicate_fold_fun(TargetReplica, SourceReplica, Partition, KnownVC, LocalLog, ClockCache, GlobalMatrix) ->
+    LocalTime = grb_vclock:get_time(SourceReplica, KnownVC),
     StableVC = ets:lookup_element(ClockCache, ?stable_key, 2),
-    %% piggy back clocks on top of the send_heartbeat message, avoid extra message on the wire
-    HBRes = grb_dc_connection_manager:send_clocks_heartbeat(TargetReplica, LocalReplica, Partition, KnownVC, StableVC),
-    ?LOG_DEBUG("broadcast clocks/heartbeat to ~p: ~p~n", [TargetReplica, HBRes]),
-    ok.
-
-send_transactions(TargetReplica, LocalReplica, Partition, Transactions, KnownVC, ClockCache) ->
-    StableVC = ets:lookup_element(ClockCache, ?stable_key, 2),
-    %% can't merge with other messages here, send one before
-    %% we could piggy-back on top of the first tx, but w/ever
-    ClockRes = grb_dc_connection_manager:send_clocks(TargetReplica, LocalReplica, Partition, KnownVC, StableVC),
-    ?LOG_DEBUG("broadcast clocks to ~p: ~p~n", [TargetReplica, ClockRes]),
-    lists:foreach(fun(Tx) ->
-        TxRes = grb_dc_connection_manager:send_tx(TargetReplica, LocalReplica, Partition, Tx),
-        ?LOG_DEBUG("broadcast transaction ~p to ~p: ~p~n", [Tx, TargetReplica, TxRes]),
-        ok
-    end, Transactions).
+    ThresholdTime = maps:get({TargetReplica, SourceReplica}, GlobalMatrix, 0),
+    ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
+    case ToSend of
+        [] ->
+            %% piggy back clocks on top of the send_heartbeat message, avoid extra message on the wire
+            HBRes = grb_dc_connection_manager:send_clocks_heartbeat(TargetReplica, SourceReplica, Partition, KnownVC, StableVC),
+            ?LOG_DEBUG("send clocks/heartbeat to ~p: ~p~n", [TargetReplica, HBRes]),
+            ok;
+        Transactions ->
+            %% can't merge with other messages here, send one before
+            %% we could piggy-back on top of the first tx, but w/ever
+            ClockRes = grb_dc_connection_manager:send_clocks(TargetReplica, SourceReplica, Partition, KnownVC, StableVC),
+            ?LOG_DEBUG("send clocks to ~p: ~p~n", [TargetReplica, ClockRes]),
+            lists:foreach(fun(Tx) ->
+                TxRes = grb_dc_connection_manager:send_tx(TargetReplica, SourceReplica, Partition, Tx),
+                ?LOG_DEBUG("send transaction ~p to ~p: ~p~n", [Tx, TargetReplica, TxRes]),
+                ok
+            end, Transactions)
+    end,
+    GlobalMatrix#{{TargetReplica, SourceReplica} => LocalTime}.
 
 -endif.
 
