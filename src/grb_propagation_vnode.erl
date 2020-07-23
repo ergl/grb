@@ -425,7 +425,7 @@ prune_commit_logs(LocalId, Matrix, CommitLogs) ->
     RemoteReplicas = grb_dc_manager:remote_replicas(),
     #{LocalId := LocalLog} = CommitLogs,
     MinTs = min_global_matrix_ts(RemoteReplicas, LocalId, Matrix),
-    ?LOG_DEBUG("Min for replica ~p is ~p~n", [Replica, MinTs]),
+    ?LOG_DEBUG("Min for replica ~p is ~p~n", [LocalId, MinTs]),
     CommitLogs#{LocalId => grb_blue_commit_log:remove_leq(MinTs, LocalLog)}.
 
 -else.
