@@ -631,29 +631,33 @@ grb_propagation_vnode_compute_uniform_vc_test() ->
     ?assertEqual(#{dc_id1 => 2, dc_id2 => 2, dc_id3 => 1}, UniformVC).
 
 grb_propagation_vnode_min_global_matrix_ts_test() ->
+    DC1 = dc_id1, DC2 = dc_id2, DC3 = dc_id3,
     Matrix = #{
-        {dc_id1, dc_id1} => 2,
-        {dc_id1, dc_id2} => 2,
-        {dc_id1, dc_id3} => 1,
+        {DC1, DC1} => 4,
+        {DC1, DC2} => 5,
+        {DC1, DC3} => 10,
 
-        {dc_id2, dc_id1} => 2,
-        {dc_id2, dc_id2} => 3,
-        {dc_id2, dc_id3} => 1,
+        {DC2, DC1} => 4,
+        {DC2, DC2} => 7,
+        {DC2, DC3} => 12,
 
-        {dc_id3, dc_id1} => 1,
-        {dc_id3, dc_id2} => 2,
-        {dc_id3, dc_id3} => 2
+        {DC3, DC1} => 3,
+        {DC3, DC2} => 5,
+        {DC3, DC3} => 12
     },
 
-    RemoteReplicas = [dc_id2, dc_id3],
-
-    MintAt1 = min_global_matrix_ts(RemoteReplicas, dc_id1, Matrix),
-    ?assertEqual(1, MintAt1),
-
-    MintAt2 = min_global_matrix_ts(RemoteReplicas, dc_id2, Matrix),
-    ?assertEqual(2, MintAt2),
-
-    MintAt3 = min_global_matrix_ts(RemoteReplicas, dc_id3, Matrix),
-    ?assertEqual(1, MintAt3).
+    AllReplicas = [DC1, DC2, DC3],
+    lists:foreach(fun(AtReplica) ->
+        Remotes = AllReplicas -- [AtReplica],
+        Mins = [ min_global_matrix_ts(Remotes, R, Matrix) || R <- AllReplicas ],
+        case AtReplica of
+            DC1 ->
+                ?assertEqual([3, 5, 12], Mins);
+            DC2 ->
+                ?assertEqual([3, 5, 10], Mins);
+            DC3 ->
+                ?assertEqual([4, 5, 10], Mins)
+        end
+    end, AllReplicas).
 
 -endif.
