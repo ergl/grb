@@ -840,4 +840,51 @@ grb_propagation_vnode_min_global_matrix_ts_test() ->
         end
     end, AllReplicas).
 
+grb_propagation_vnode_prune_commit_logs_test() ->
+    DC1 = dc_id1, DC2 = dc_id2, DC3 = dc_id3,
+    VClock = fun(R, N) -> grb_vclock:set_time(R, N, grb_vclock:new()) end,
+
+    Matrix = #{
+        {DC1, DC1} => 4,
+        {DC1, DC2} => 5,
+        {DC1, DC3} => 10,
+
+        {DC2, DC1} => 4,
+        {DC2, DC2} => 7,
+        {DC2, DC3} => 12,
+
+        {DC3, DC1} => 3,
+        {DC3, DC2} => 5,
+        {DC3, DC3} => 12
+    },
+
+    Logs = #{
+        DC1 => grb_blue_commit_log:from_list(DC1, [{ignore, #{}, VClock(DC1, 3)}, {ignore, #{}, VClock(DC1, 4)}]),
+        DC2 => grb_blue_commit_log:from_list(DC2, [{ignore, #{}, VClock(DC2, 2)}, {ignore, #{}, VClock(DC2, 5)}]),
+        DC3 => grb_blue_commit_log:from_list(DC3, [{ignore, #{}, VClock(DC3, 10)}, {ignore, #{}, VClock(DC3, 12)}])
+    },
+
+    AllReplicas = [DC1, DC2, DC3],
+    lists:foreach(fun(AtReplica) ->
+        Remotes = AllReplicas -- [AtReplica],
+        #{ DC1 := Log1 , DC2 := Log2, DC3 := Log3 } = maps:map(fun(R, CLog) ->
+            MinTs = min_global_matrix_ts(Remotes, R, Matrix),
+            grb_blue_commit_log:remove_leq(MinTs, CLog)
+        end, Logs),
+        case AtReplica of
+            DC1 ->
+                ?assertEqual([{ignore, #{}, VClock(DC1, 4)}], grb_blue_commit_log:get_bigger(0, Log1)),
+                ?assertEqual([], grb_blue_commit_log:get_bigger(0, Log2)),
+                ?assertEqual([], grb_blue_commit_log:get_bigger(0, Log3));
+            DC2 ->
+                ?assertEqual([{ignore, #{}, VClock(DC1, 4)}], grb_blue_commit_log:get_bigger(0, Log1)),
+                ?assertEqual([], grb_blue_commit_log:get_bigger(0, Log2)),
+                ?assertEqual([{ignore, #{}, VClock(DC3, 12)}], grb_blue_commit_log:get_bigger(0, Log3));
+            DC3 ->
+                ?assertEqual([], grb_blue_commit_log:get_bigger(0, Log1)),
+                ?assertEqual([], grb_blue_commit_log:get_bigger(0, Log2)),
+                ?assertEqual([{ignore, #{}, VClock(DC3, 12)}], grb_blue_commit_log:get_bigger(0, Log3))
+        end
+    end, AllReplicas).
+
 -endif.

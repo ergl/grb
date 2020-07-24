@@ -67,6 +67,7 @@ attach:
 
 test:
 	${REBAR} eunit skip_deps=true
+	${REBAR} as basic_replication eunit skip_deps=true
 	escript -c bin/join_cluster_script.erl eunit
 
 ct_test:
