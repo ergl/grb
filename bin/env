@@ -24,7 +24,7 @@ if [ -z "$INTER_DC_PORT" ]; then
 fi
 
 if [ -z "$VSN_LOG_SIZE" ]; then
-  export VSN_LOG_SIZE=50
+  export VSN_LOG_SIZE=25
 fi
 
 # Timer config
