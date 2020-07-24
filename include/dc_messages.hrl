@@ -13,10 +13,6 @@
 -define(UPDATE_CLOCK_KIND, 2).
 -define(UPDATE_CLOCK_HEARTBEAT_KIND, 3).
 
-%% For basic replication, ack the last we know from remote replica
--define(BASIC_RCV_ACK, 4).
--define(BASIC_RCV_ACK_HB, 5).
-
 -record(replicate_tx, {
     tx_id :: term(),
     writeset :: #{},
@@ -37,20 +33,9 @@
     stable_vc :: vclock()
 }).
 
--record(basic_rcv_ack, {
-    ack_timestamp :: grb_time:ts()
-}).
-
--record(basic_rcv_ack_hb, {
-    timestamp :: grb_time:ts(),
-    ack_timestamp :: grb_time:ts()
-}).
-
 -type replica_message() :: #replicate_tx{}
                          | #blue_heartbeat{}
                          | #update_clocks{}
-                         | #update_clocks_heartbeat{}
-                         | #basic_rcv_ack{}
-                         | #basic_rcv_ack_hb{}.
+                         | #update_clocks_heartbeat{}.
 
 -export_type([replica_message/0]).

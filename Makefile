@@ -25,6 +25,7 @@ xref:
 
 dialyzer:
 	$(REBAR) dialyzer
+	$(REBAR) as basic_replication dialyzer
 
 debug:
 	$(REBAR) as debug_log compile

@@ -106,10 +106,4 @@ handle_request(Partition, SourceReplica, #update_clocks{known_vc=KnownVC, stable
     grb_propagation_vnode:handle_clock_update(Partition, SourceReplica, KnownVC, StableVC);
 
 handle_request(Partition, SourceReplica, #update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}) ->
-    grb_propagation_vnode:handle_clock_heartbeat_update(Partition, SourceReplica, KnownVC, StableVC);
-
-handle_request(Partition, SourceReplica, #basic_rcv_ack{ack_timestamp=AckTs}) ->
-    grb_propagation_vnode:handle_ack(Partition, SourceReplica, AckTs);
-
-handle_request(Partition, SourceReplica, #basic_rcv_ack_hb{timestamp=Ts, ack_timestamp=AckTs}) ->
-    grb_propagation_vnode:handle_ack_heartbeat(Partition, SourceReplica, Ts, AckTs).
+    grb_propagation_vnode:handle_clock_heartbeat_update(Partition, SourceReplica, KnownVC, StableVC).

@@ -15,9 +15,7 @@
 
 %% Basic Replication API
 
--export([merge_remote_stable_vc/2,
-         handle_ack/3,
-         handle_ack_heartbeat/4]).
+-export([merge_remote_stable_vc/2]).
 
 %% Uniform Replication API
 -export([uniform_vc/1,
@@ -71,6 +69,8 @@
     local_replica :: replica_id() | undefined,
 
     logs = #{} :: blue_commit_logs(),
+    %% only used in basic replication mode
+    basic_last_sent = 0 :: grb_time:ts(),
     global_known_matrix = #{} :: global_known_matrix(),
 
     %% send our transactions / heartbeats to remote replicas
@@ -133,16 +133,6 @@ merge_remote_stable_vc(Partition, VC) ->
     S1 = grb_vclock:max_except(grb_dc_manager:replica_id(), S0, VC),
     update_stable_vc(Partition, S1),
     S1.
-
-%% @doc Let the partition know that the remote replica has received up to AckTime
--spec handle_ack(partition_id(), replica_id(), grb_time:ts()) -> ok.
-handle_ack(Partition, ReplicaId, AckTime) ->
-    riak_core_vnode_master:command({Partition, node()}, {handle_ack, ReplicaId, AckTime}, ?master).
-
-%% @doc Let the partition know that the remote replica has received up to AckTime, also count Timestamp as a heartbeat
--spec handle_ack_heartbeat(partition_id(), replica_id(), grb_time:ts(), grb_time:ts()) -> ok.
-handle_ack_heartbeat(Partition, ReplicaId, Timestamp, AckTime) ->
-    riak_core_vnode_master:command({Partition, node()}, {handle_ack_hb, ReplicaId, Timestamp, AckTime}, ?master).
 
 %%%===================================================================
 %%% uniform replication api
@@ -264,17 +254,6 @@ handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTabl
     true = ets:update_element(ClockTable, ?uniform_key, {2, NewSVC}),
     {noreply, S};
 
-handle_command({handle_ack, FromReplica, AckTime}, _Sender, S=#state{local_replica=LocalId, global_known_matrix=Matrix0}) ->
-    Matrix = Matrix0#{{FromReplica, LocalId} => AckTime},
-    {noreply, S#state{global_known_matrix=Matrix}};
-
-handle_command({handle_ack_hb, FromReplica, Timestamp, AckTime}, _Sender, S=#state{local_replica=LocalId,
-                                                                                   clock_cache=ClockTable,
-                                                                                   global_known_matrix=Matrix0}) ->
-    ok = update_known_vc(FromReplica, Timestamp, ClockTable),
-    Matrix = Matrix0#{{FromReplica, LocalId} => AckTime},
-    {noreply, S#state{global_known_matrix=Matrix}};
-
 handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
     ok = update_known_vc(FromReplica, Ts, ClockTable),
     {noreply, S};
@@ -314,9 +293,8 @@ handle_info(?replication_req, State=#state{partition=P,
 
     erlang:cancel_timer(Timer),
     KnownVC = get_updated_known_vc(LocalId, grb_main_vnode:get_known_time(P), ClockTable),
-    GlobalMatrix = replicate_internal(KnownVC, State),
-    {ok, State#state{global_known_matrix=GlobalMatrix,
-                     replication_timer=erlang:send_after(Interval, self(), ?replication_req)}};
+    NewState = replicate_internal(KnownVC, State),
+    {ok, NewState#state{replication_timer=erlang:send_after(Interval, self(), ?replication_req)}};
 
 handle_info(?uniform_req, State=#state{partition=P,
                                        local_replica=LocalId,
@@ -360,7 +338,6 @@ start_propagation_timers(State) ->
         true -> State;
         false ->
             State#state{
-                prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
                 replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req)
             }
     end.
@@ -370,15 +347,13 @@ stop_propagation_timers(State) ->
     case timers_set(State) of
         false -> State;
         true ->
-            erlang:cancel_timer(State#state.prune_timer),
             erlang:cancel_timer(State#state.replication_timer),
             State#state{
-                prune_timer=undefined,
                 replication_timer=undefined
             }
     end.
 
-timers_set(#state{replication_timer=undefined, prune_timer=undefined}) -> false;
+timers_set(#state{replication_timer=undefined}) -> false;
 timers_set(_) -> true.
 
 -else.
@@ -418,18 +393,6 @@ timers_set(_) -> true.
                         Matrix :: global_known_matrix(),
                         Logs :: blue_commit_logs()) -> blue_commit_logs().
 
--ifdef(BASIC_REPLICATION).
-
-prune_commit_logs(LocalId, Matrix, CommitLogs) ->
-    ?LOG_DEBUG("Running prune on logs"),
-    RemoteReplicas = grb_dc_manager:remote_replicas(),
-    #{LocalId := LocalLog} = CommitLogs,
-    MinTs = min_global_matrix_ts(RemoteReplicas, LocalId, Matrix),
-    ?LOG_DEBUG("Min for replica ~p is ~p~n", [LocalId, MinTs]),
-    CommitLogs#{LocalId => grb_blue_commit_log:remove_leq(MinTs, LocalLog)}.
-
--else.
-
 prune_commit_logs(_LocalId, Matrix, CommitLogs) ->
     ?LOG_DEBUG("Running prune on logs"),
     RemoteReplicas = grb_dc_manager:remote_replicas(),
@@ -438,8 +401,6 @@ prune_commit_logs(_LocalId, Matrix, CommitLogs) ->
         ?LOG_DEBUG("Min for replica ~p is ~p~n", [Replica, MinTs]),
         grb_blue_commit_log:remove_leq(MinTs, CommitLog)
     end, CommitLogs).
-
--endif.
 
 -spec update_stable_vc_internal(vclock(), state()) -> state().
 -ifdef(BASIC_REPLICATION).
@@ -507,80 +468,70 @@ update_clocks(FromReplicaId, KnownVC, StableVC, S=#state{local_replica=LocalId,
             stable_matrix=StableMatrix,
             pending_barriers=PendingBarriers}.
 
--spec replicate_internal(vclock(), state()) -> global_known_matrix().
-replicate_internal(KnownVC, #state{logs=Logs,
-                                   partition=Partition,
-                                   local_replica=LocalId,
-                                   clock_cache=ClockCache,
-                                   global_known_matrix=Matrix}) ->
-
-    #{LocalId := LocalLog} = Logs,
-    lists:foldl(fun(Target, Acc) ->
-        replicate_fold_fun(Target, LocalId, Partition, KnownVC, LocalLog, ClockCache, Acc)
-    end, Matrix, grb_dc_connection_manager:connected_replicas()).
-
--spec replicate_fold_fun(To :: replica_id(),
-                         From :: replica_id(),
-                         Partition :: partition_id(),
-                         KnownVC :: vclock(),
-                         LocalLog :: grb_blue_commit_log:t(),
-                         ClockCache :: cache(atom(), vclock()),
-                         GlobalMatrix :: global_known_matrix()) -> global_known_matrix().
-
+-spec replicate_internal(vclock(), state()) -> state().
 -ifdef(BASIC_REPLICATION).
 
-replicate_fold_fun(TargetReplica, SourceReplica, Partition, KnownVC, LocalLog, _ClockCache, GlobalMatrix) ->
-    LocalTime = grb_vclock:get_time(SourceReplica, KnownVC),
-    %% What's the last that we have received from Target, send it to them so that they know how to prune
-    AckTime = maps:get({SourceReplica, TargetReplica}, GlobalMatrix, 0),
-    ThresholdTime = maps:get({TargetReplica, SourceReplica}, GlobalMatrix, 0),
-    ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
-    case ToSend of
-        [] ->
-            %% piggy back remote ack with a blue heartbeat
-            HBRes = grb_dc_connection_manager:send_ack_heartbeat(TargetReplica, SourceReplica,
-                                                                 Partition, LocalTime, AckTime),
-            ?LOG_DEBUG("send basic heartbeat/ack to ~p: ~p~n", [TargetReplica, HBRes]),
-            ok;
+replicate_internal(KnownVC, S=#state{logs=Logs,
+                                     partition=Partition,
+                                     local_replica=LocalId,
+                                     basic_last_sent=LastSent}) ->
 
-        Transactions ->
-            %% can't merge with other messages here, send one before
-            %% we could piggy-back on top of the first tx, but w/ever
-            AckRes = grb_dc_connection_manager:send_ack(TargetReplica, SourceReplica, Partition, AckTime),
-            ?LOG_DEBUG("send basic ack to ~p: ~p~n", [TargetReplica, AckRes]),
-            lists:foreach(fun(Tx) ->
-                TxRes = grb_dc_connection_manager:send_tx(TargetReplica, SourceReplica, Partition, Tx),
-                ?LOG_DEBUG("send basic transaction ~p to ~p: ~p~n", [Tx, TargetReplica, TxRes]),
-                ok
-            end, Transactions)
-    end,
-    GlobalMatrix#{{TargetReplica, SourceReplica} => LocalTime}.
+    #{LocalId := LocalLog0} = Logs,
+    LocalTime = grb_vclock:get_time(LocalId, KnownVC),
+    {ToSend, LocalLog} = grb_blue_commit_log:remove_bigger(LastSent, LocalLog0),
+    lists:foreach(fun(Target) ->
+        case ToSend of
+            [] ->
+                HBRes = grb_dc_connection_manager:send_heartbeat(Target, LocalId, Partition, LocalTime),
+                ?LOG_DEBUG("send basic heartbeat to ~p: ~p~n", [Target, HBRes]),
+                ok;
+            Transactions ->
+                lists:foreach(fun(Tx) ->
+                    TxRes = grb_dc_connection_manager:send_tx(Target, LocalId, Partition, Tx),
+                    ?LOG_DEBUG("send transaction ~p to ~p: ~p~n", [Tx, Target, TxRes]),
+                    ok
+                end, Transactions)
+        end
+    end, grb_dc_connection_manager:connected_replicas()),
+
+    S#state{basic_last_sent=LocalTime, logs=Logs#{LocalId => LocalLog}}.
 
 -else.
 
-replicate_fold_fun(TargetReplica, SourceReplica, Partition, KnownVC, LocalLog, ClockCache, GlobalMatrix) ->
-    LocalTime = grb_vclock:get_time(SourceReplica, KnownVC),
+replicate_internal(KnownVC, S=#state{logs=Logs,
+                                     partition=Partition,
+                                     local_replica=LocalId,
+                                     clock_cache=ClockCache,
+                                     global_known_matrix=Matrix0}) ->
+
+    #{LocalId := LocalLog} = Logs,
+    LocalTime = grb_vclock:get_time(LocalId, KnownVC),
     StableVC = ets:lookup_element(ClockCache, ?stable_key, 2),
-    ThresholdTime = maps:get({TargetReplica, SourceReplica}, GlobalMatrix, 0),
-    ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
-    case ToSend of
-        [] ->
-            %% piggy back clocks on top of the send_heartbeat message, avoid extra message on the wire
-            HBRes = grb_dc_connection_manager:send_clocks_heartbeat(TargetReplica, SourceReplica, Partition, KnownVC, StableVC),
-            ?LOG_DEBUG("send clocks/heartbeat to ~p: ~p~n", [TargetReplica, HBRes]),
-            ok;
-        Transactions ->
-            %% can't merge with other messages here, send one before
-            %% we could piggy-back on top of the first tx, but w/ever
-            ClockRes = grb_dc_connection_manager:send_clocks(TargetReplica, SourceReplica, Partition, KnownVC, StableVC),
-            ?LOG_DEBUG("send clocks to ~p: ~p~n", [TargetReplica, ClockRes]),
-            lists:foreach(fun(Tx) ->
-                TxRes = grb_dc_connection_manager:send_tx(TargetReplica, SourceReplica, Partition, Tx),
-                ?LOG_DEBUG("send transaction ~p to ~p: ~p~n", [Tx, TargetReplica, TxRes]),
-                ok
-            end, Transactions)
-    end,
-    GlobalMatrix#{{TargetReplica, SourceReplica} => LocalTime}.
+
+    Matrix = lists:foldl(fun(Target, AccMatrix) ->
+        ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
+        ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
+        case ToSend of
+            [] ->
+                %% piggy back clocks on top of the send_heartbeat message, avoid extra message on the wire
+                HBRes = grb_dc_connection_manager:send_clocks_heartbeat(Target, LocalId, Partition, KnownVC, StableVC),
+                ?LOG_DEBUG("send clocks/heartbeat to ~p: ~p~n", [Target, HBRes]),
+                ok;
+            Transactions ->
+                %% can't merge with other messages here, send one before
+                %% we could piggy-back on top of the first tx, but w/ever
+                ClockRes = grb_dc_connection_manager:send_clocks(Target, LocalId, Partition, KnownVC, StableVC),
+                ?LOG_DEBUG("send clocks to ~p: ~p~n", [Target, ClockRes]),
+                lists:foreach(fun(Tx) ->
+                    TxRes = grb_dc_connection_manager:send_tx(Target, LocalId, Partition, Tx),
+                    ?LOG_DEBUG("send transaction ~p to ~p: ~p~n", [Tx, Target, TxRes]),
+                    ok
+                end, Transactions)
+        end,
+        AccMatrix#{{Target, LocalId} => LocalTime}
+    end, Matrix0, grb_dc_connection_manager:connected_replicas()),
+
+    S#state{global_known_matrix=Matrix}.
 
 -endif.
 
