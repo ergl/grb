@@ -5,8 +5,8 @@
 
 %% Public API
 -export([cache_name/2,
-         get_known_time/1,
          prepare_blue/4,
+         decide_blue/4,
          handle_replicate/5]).
 
 %% riak_core_vnode callbacks
@@ -59,10 +59,6 @@
 %%% API
 %%%===================================================================
 
--spec get_known_time(partition_id()) -> grb_time:ts().
-get_known_time(Partition) ->
-    riak_core_vnode_master:sync_command({Partition, node()}, get_known_time, ?master).
-
 -spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
 prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
     Ts = grb_time:timestamp(),
@@ -71,6 +67,13 @@ prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
                                         {prepare_blue, TxId, WriteSet, Ts},
                                         ?master),
     Ts.
+
+-spec decide_blue(partition_id(), replica_id(), term(), vclock()) -> ok.
+decide_blue(Partition, ReplicaId, TxId, CommitVC) ->
+    riak_core_vnode_master:sync_command({Partition, node()},
+                                        {decide_blue, ReplicaId, TxId, CommitVC},
+                                        ?master,
+                                        infinity).
 
 -spec update_prepare_clocks(partition_id(), vclock()) -> ok.
 -ifdef(BASIC_REPLICATION).
@@ -91,9 +94,10 @@ handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
         false ->
             ok; %% de-dup, we already received this
         true ->
-            riak_core_vnode_master:command({Partition, node()},
-                                           {handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC},
-                                           ?master)
+            riak_core_vnode_master:sync_command({Partition, node()},
+                                                {handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC},
+                                                ?master,
+                                                infinity)
     end.
 
 %%%===================================================================
@@ -175,9 +179,6 @@ handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
 handle_command(get_default, _From, S=#state{default_bottom_value=Val, default_bottom_red=RedTs}) ->
     {reply, {Val, RedTs}, S};
 
-handle_command(get_known_time, _From, S=#state{prepared_blue=PreparedBlue}) ->
-    {reply, compute_new_known_time(PreparedBlue), S};
-
 handle_command({update_default, DefaultVal, DefaultRed}, _From, S=#state{partition=P, replicas_n=N}) ->
     Result = grb_partition_replica:update_default(P, N, DefaultVal, DefaultRed),
     {reply, Result, S#state{default_bottom_value=DefaultVal, default_bottom_red=DefaultRed}};
@@ -188,11 +189,11 @@ handle_command({prepare_blue, TxId, WS, Ts}, _From, S=#state{prepared_blue=PB}) 
 
 handle_command({decide_blue, ReplicaId, TxId, VC}, _From, State) ->
     NewState = decide_blue_internal(ReplicaId, TxId, VC, State),
-    {noreply, NewState};
+    {reply, ok, NewState};
 
 handle_command({handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC}, _From, State) ->
     ok = handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, State),
-    {noreply, State};
+    {reply, ok, State};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),

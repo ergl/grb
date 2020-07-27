@@ -255,9 +255,7 @@ decide_blue_internal(Partition, WaitMs, ReplicaId, TxId, VC) ->
             erlang:send_after(WaitMs, self(), {retry_decide, ReplicaId, TxId, VC}),
             ok;
         ready ->
-            riak_core_vnode_master:command({Partition, node()},
-                                           {decide_blue, ReplicaId, TxId, VC},
-                                           grb_main_vnode_master)
+            grb_main_vnode:decide_blue(Partition, ReplicaId, TxId, VC)
     end.
 
 -spec check_current_clock(replica_id(), vclock()) -> ready | not_ready.

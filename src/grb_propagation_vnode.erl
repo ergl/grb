@@ -113,14 +113,17 @@ stable_vc(Partition) ->
 
 -spec update_stable_vc(partition_id(), vclock()) -> ok.
 update_stable_vc(Partition, SVC) ->
-    riak_core_vnode_master:command({Partition, node()}, {update_stable_vc, SVC}, ?master).
+    riak_core_vnode_master:sync_command({Partition, node()},
+                                        {update_stable_vc, SVC},
+                                        ?master,
+                                        infinity).
 
 -spec append_blue_commit(replica_id(), partition_id(), grb_time:ts(), term(), #{}, vclock()) -> ok.
 append_blue_commit(ReplicaId, Partition, KnownTime, TxId, WS, CommitVC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC},
-                                   ?master).
-
+    riak_core_vnode_master:sync_command({Partition, node()},
+                                        {append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC},
+                                        ?master,
+                                        infinity).
 
 %%%===================================================================
 %%% basic replication api
@@ -144,7 +147,10 @@ uniform_vc(Partition) ->
 
 -spec update_uniform_vc(partition_id(), vclock()) -> ok.
 update_uniform_vc(Partition, SVC) ->
-    riak_core_vnode_master:command({Partition, node()}, {update_uniform_vc, SVC}, ?master).
+    riak_core_vnode_master:sync_command({Partition, node()},
+                                        {update_uniform_vc, SVC},
+                                        ?master,
+                                        infinity).
 
 %% @doc Update the uniformVC at all replicas but the current one, return result
 -spec merge_remote_uniform_vc(partition_id(), vclock()) -> vclock().
@@ -161,21 +167,26 @@ handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
         false ->
             ok; %% de-dup, ignore message
         true ->
-            riak_core_vnode_master:command({Partition, node()}, {blue_hb, ReplicaId, Ts}, ?master)
+            riak_core_vnode_master:sync_command({Partition, node()},
+                                                {blue_hb, ReplicaId, Ts},
+                                                ?master,
+                                                infinity)
     end.
 
 -spec handle_clock_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
 handle_clock_update(Partition, FromReplicaId, KnownVC, StableVC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {remote_clock_update, FromReplicaId, KnownVC, StableVC},
-                                   ?master).
+    riak_core_vnode_master:sync_command({Partition, node()},
+                                        {remote_clock_update, FromReplicaId, KnownVC, StableVC},
+                                        ?master,
+                                        infinity).
 
 %% @doc Same as handle_clock_update/4, but treat knownVC as a blue heartbeat
 -spec handle_clock_heartbeat_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
 handle_clock_heartbeat_update(Partition, FromReplicaId, KnownVC, StableVC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {remote_clock_heartbeat_update, FromReplicaId, KnownVC, StableVC},
-                                   ?master).
+    riak_core_vnode_master:sync_command({Partition, node()},
+                                        {remote_clock_heartbeat_update, FromReplicaId, KnownVC, StableVC},
+                                        ?master,
+                                        infinity).
 
 
 -spec register_uniform_barrier(grb_promise:t(), partition_id(), grb_time:ts()) -> ok.
@@ -245,38 +256,38 @@ handle_command(stop_propagate_timer, _From, State) ->
     {reply, ok, stop_propagation_timers(State)};
 
 handle_command({update_stable_vc, SVC}, _Sender, State) ->
-    {noreply, update_stable_vc_internal(SVC, State)};
+    {reply, ok, update_stable_vc_internal(SVC, State)};
 
 handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
     OldSVC = ets:lookup_element(ClockTable, ?uniform_key, 2),
     %% Safe to update everywhere, caller has already ensured to not update the current replica
     NewSVC = grb_vclock:max(OldSVC, SVC),
     true = ets:update_element(ClockTable, ?uniform_key, {2, NewSVC}),
-    {noreply, S};
+    {reply, ok, S};
 
 handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
     ok = update_known_vc(FromReplica, Ts, ClockTable),
-    {noreply, S};
+    {reply, ok, S};
 
 handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S) ->
-    {noreply, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
+    {reply, ok, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
 
 handle_command({remote_clock_heartbeat_update, FromReplicaId, KnownVC, StableVC}, _Sender, S=#state{clock_cache=ClockCache}) ->
     Timestamp = grb_vclock:get_time(FromReplicaId, KnownVC),
     ok = update_known_vc(FromReplicaId, Timestamp, ClockCache),
-    {noreply, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
+    {reply, ok, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
 
 handle_command({append_blue, ReplicaId, KnownTime, _TxId, _WS, _CommitVC}, _Sender, S=#state{clock_cache=ClockTable,
                                                                                              should_append_commit=false}) ->
     ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
-    {noreply, S};
+    {reply, ok, S};
 
 handle_command({append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC}, _Sender, S=#state{logs=Logs,
                                                                                           clock_cache=ClockTable,
                                                                                           should_append_commit=true})->
     ReplicaLog = maps:get(ReplicaId, Logs),
     ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
-    {noreply, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
+    {reply, ok, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
 
 handle_command({uniform_barrier, Promise, Timestamp}, _Sender, S=#state{pending_barriers=Barriers}) ->
     {noreply, S#state{pending_barriers=insert_uniform_barrier(Promise, Timestamp, Barriers)}};
@@ -285,26 +296,23 @@ handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
 
-handle_info(?replication_req, State=#state{partition=P,
-                                           local_replica=LocalId,
-                                           clock_cache=ClockTable,
+handle_info(?replication_req, State=#state{clock_cache=ClockTable,
                                            replication_timer=Timer,
                                            replication_interval=Interval}) ->
 
     erlang:cancel_timer(Timer),
-    KnownVC = get_updated_known_vc(LocalId, grb_main_vnode:get_known_time(P), ClockTable),
+    KnownVC = ets:lookup_element(ClockTable, ?known_key, 2),
     NewState = replicate_internal(KnownVC, State),
     {ok, NewState#state{replication_timer=erlang:send_after(Interval, self(), ?replication_req)}};
 
 handle_info(?uniform_req, State=#state{partition=P,
-                                       local_replica=LocalId,
                                        clock_cache=ClockTable,
                                        uniform_timer=Timer,
                                        uniform_interval=Interval}) ->
 
     erlang:cancel_timer(Timer),
     ?LOG_DEBUG("starting uniform replication at ~p", [P]),
-    KnownVC = get_updated_known_vc(LocalId, grb_main_vnode:get_known_time(P), ClockTable),
+    KnownVC = ets:lookup_element(ClockTable, ?known_key, 2),
     GlobalMatrix = uniform_replicate_internal(KnownVC, State),
     {ok, State#state{global_known_matrix=GlobalMatrix,
                      uniform_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
@@ -602,14 +610,6 @@ update_known_vc(ReplicaId, Time, ClockTable) ->
     New = grb_vclock:set_max_time(ReplicaId, Time, Old),
     true = ets:update_element(ClockTable, ?known_key, {2, New}),
     ok.
-
-%% @doc Same as update_known_vc/3, but return resulting knownVC
--spec get_updated_known_vc(replica_id(), grb_time:ts(), cache(atom(), vclock())) -> vclock().
-get_updated_known_vc(ReplicaId, Time, ClockTable) ->
-    Old = ets:lookup_element(ClockTable, ?known_key, 2),
-    New = grb_vclock:set_max_time(ReplicaId, Time, Old),
-    true = ets:update_element(ClockTable, ?known_key, {2, New}),
-    New.
 
 -spec update_known_matrix(replica_id(), vclock(), global_known_matrix()) -> global_known_matrix().
 update_known_matrix(FromReplicaId, KnownVC, Matrix) ->
