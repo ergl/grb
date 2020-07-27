@@ -123,7 +123,6 @@ send_msg(Replica, Partition, Msg) ->
                      Time :: grb_time:ts()) -> ok | {error, term()}.
 
 send_heartbeat(ToId, FromId, Partition, Time) ->
-    ?LOG_DEBUG("Sending blue_hearbeat to ~p:~p on behalf of ~p: ~p", [ToId, Partition, FromId, Time]),
     send_msg(ToId, Partition, heartbeat_msg(FromId, Partition, Time)).
 
 -spec send_tx(From :: replica_id(),
@@ -132,7 +131,6 @@ send_heartbeat(ToId, FromId, Partition, Time) ->
               Tx :: {term(), #{}, vclock()}) -> ok | {error, term()}.
 
 send_tx(ToId, FromId, Partition, Transaction) ->
-    ?LOG_DEBUG("Sending transaction to ~p:~p on behalf of ~p", [ToId, Partition, FromId, Transaction]),
     send_msg(ToId, Partition, replicate_tx_msg(FromId, Partition, Transaction)).
 
 -spec send_clocks(From :: replica_id(),
@@ -142,7 +140,6 @@ send_tx(ToId, FromId, Partition, Transaction) ->
                   StableVC :: vclock()) -> ok | {error, term()}.
 
 send_clocks(ToId, FromId, Partition, KnownVC, StableVC) ->
-    ?LOG_DEBUG("Sending clocks to ~p:~p", [ToId, Partition]),
     send_msg(ToId, Partition, update_clocks_msg(FromId, Partition, KnownVC, StableVC)).
 
 %% @doc Same as send_clocks/5, but let the remote node to use knownVC as a heartbeat
@@ -153,7 +150,6 @@ send_clocks(ToId, FromId, Partition, KnownVC, StableVC) ->
                             StableVC :: vclock()) -> ok | {error, term()}.
 
 send_clocks_heartbeat(ToId, FromId, Partition, KnownVC, StableVC) ->
-    ?LOG_DEBUG("Sending clocks/heartbeat to ~p:~p", [ToId, Partition]),
     send_msg(ToId, Partition, update_clocks_heartbeat_msg(FromId, Partition, KnownVC, StableVC)).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
