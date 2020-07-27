@@ -1,7 +1,7 @@
 BASEDIR = $(shell pwd)
 REBAR = $(BASEDIR)/rebar3
 RELPATH = _build/default/rel/grb
-DEV_PROFILE = basic_replication
+DEV_PROFILE = debug_basic_replication
 DEV1RELPATH = _build/$(DEV_PROFILE)/rel/grb_local1
 DEV2RELPATH = _build/$(DEV_PROFILE)/rel/grb_local2
 DEV3RELPATH = _build/$(DEV_PROFILE)/rel/grb_local3
