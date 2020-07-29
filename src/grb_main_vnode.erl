@@ -62,9 +62,8 @@
 -spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
 prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
     Ts = grb_time:timestamp(),
-    ok = update_prepare_clocks(Partition, SnapshotVC),
     ok = riak_core_vnode_master:command({Partition, node()},
-                                        {prepare_blue, TxId, WriteSet, Ts},
+                                        {prepare_blue, TxId, WriteSet, SnapshotVC, Ts},
                                         ?master),
     Ts.
 
@@ -182,8 +181,9 @@ handle_command({update_default, DefaultVal, DefaultRed}, _From, S=#state{partiti
     Result = grb_partition_replica:update_default(P, N, DefaultVal, DefaultRed),
     {reply, Result, S#state{default_bottom_value=DefaultVal, default_bottom_red=DefaultRed}};
 
-handle_command({prepare_blue, TxId, WS, Ts}, _From, S=#state{prepared_blue=PB}) ->
+handle_command({prepare_blue, TxId, WS, SnapshotVC, Ts}, _From, S=#state{partition=Partition, prepared_blue=PB}) ->
     ?LOG_DEBUG("prepare_blue ~p wtih time ~p", [TxId, Ts]),
+    ok = update_prepare_clocks(Partition, SnapshotVC),
     {noreply, S#state{prepared_blue=PB#{TxId => {WS, Ts}}}};
 
 handle_command({decide_blue, ReplicaId, TxId, VC}, _From, State) ->
