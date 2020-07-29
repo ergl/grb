@@ -179,18 +179,16 @@ handle_self_blue_heartbeat_sync(Partition, Ts) ->
 
 -spec handle_clock_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
 handle_clock_update(Partition, FromReplicaId, KnownVC, StableVC) ->
-    riak_core_vnode_master:sync_command({Partition, node()},
-                                        {remote_clock_update, FromReplicaId, KnownVC, StableVC},
-                                        ?master,
-                                        infinity).
+    riak_core_vnode_master:command({Partition, node()},
+                                   {remote_clock_update, FromReplicaId, KnownVC, StableVC},
+                                   ?master).
 
 %% @doc Same as handle_clock_update/4, but treat knownVC as a blue heartbeat
 -spec handle_clock_heartbeat_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
 handle_clock_heartbeat_update(Partition, FromReplicaId, KnownVC, StableVC) ->
-    riak_core_vnode_master:sync_command({Partition, node()},
-                                        {remote_clock_heartbeat_update, FromReplicaId, KnownVC, StableVC},
-                                        ?master,
-                                        infinity).
+    riak_core_vnode_master:command({Partition, node()},
+                                   {remote_clock_heartbeat_update, FromReplicaId, KnownVC, StableVC},
+                                   ?master).
 
 
 -spec register_uniform_barrier(grb_promise:t(), partition_id(), grb_time:ts()) -> ok.
@@ -277,12 +275,12 @@ handle_command({self_blue_hb, Ts}, _Sender, S=#state{local_replica=ReplicaId, cl
     {reply, update_known_vc(ReplicaId, Ts, ClockCache), S};
 
 handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S) ->
-    {reply, ok, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
+    {noreply, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
 
 handle_command({remote_clock_heartbeat_update, FromReplicaId, KnownVC, StableVC}, _Sender, S=#state{clock_cache=ClockCache}) ->
     Timestamp = grb_vclock:get_time(FromReplicaId, KnownVC),
     ok = update_known_vc(FromReplicaId, Timestamp, ClockCache),
-    {reply, ok, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
+    {noreply, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
 
 handle_command({append_blue, ReplicaId, KnownTime, _TxId, _WS, _CommitVC}, _Sender, S=#state{clock_cache=ClockTable,
                                                                                              should_append_commit=false}) ->

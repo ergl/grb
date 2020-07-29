@@ -94,10 +94,9 @@ handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
         false ->
             ok; %% de-dup, we already received this
         true ->
-            riak_core_vnode_master:sync_command({Partition, node()},
-                                                {handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC},
-                                                ?master,
-                                                infinity)
+            riak_core_vnode_master:command({Partition, node()},
+                                           {handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC},
+                                           ?master)
     end.
 
 %%%===================================================================
@@ -193,7 +192,7 @@ handle_command({decide_blue, ReplicaId, TxId, VC}, _From, State) ->
 
 handle_command({handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC}, _From, State) ->
     ok = handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, State),
-    {reply, ok, State};
+    {noreply, State};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
