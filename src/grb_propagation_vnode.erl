@@ -11,17 +11,17 @@
 -export([known_vc/1,
          stable_vc/1,
          update_stable_vc/2,
-         append_blue_commit/6]).
+         append_blue_commit/6,
+         handle_blue_heartbeat/3,
+         handle_self_blue_heartbeat_sync/2]).
 
 %% Basic Replication API
-
 -export([merge_remote_stable_vc/2]).
 
 %% Uniform Replication API
 -export([uniform_vc/1,
          update_uniform_vc/2,
          merge_remote_uniform_vc/2,
-         handle_blue_heartbeat/3,
          handle_clock_update/4,
          handle_clock_heartbeat_update/4,
          register_uniform_barrier/3]).
@@ -167,11 +167,15 @@ handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
         false ->
             ok; %% de-dup, ignore message
         true ->
-            riak_core_vnode_master:sync_command({Partition, node()},
-                                                {blue_hb, ReplicaId, Ts},
-                                                ?master,
-                                                infinity)
+            riak_core_vnode_master:command({Partition, node()},
+                                           {blue_hb, ReplicaId, Ts},
+                                           ?master)
     end.
+
+%% @doc Like handle_blue_heartbeat/3, but for our own replica, and sync
+-spec handle_self_blue_heartbeat_sync(partition_id(), grb_time:ts()) -> ok.
+handle_self_blue_heartbeat_sync(Partition, Ts) ->
+    riak_core_vnode_master:sync_command({Partition, node()}, {self_blue_hb, Ts}, ?master, infinity).
 
 -spec handle_clock_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
 handle_clock_update(Partition, FromReplicaId, KnownVC, StableVC) ->
@@ -267,7 +271,10 @@ handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTabl
 
 handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
     ok = update_known_vc(FromReplica, Ts, ClockTable),
-    {reply, ok, S};
+    {noreply, S};
+
+handle_command({self_blue_hb, Ts}, _Sender, S=#state{local_replica=ReplicaId, clock_cache=ClockCache}) ->
+    {reply, update_known_vc(ReplicaId, Ts, ClockCache), S};
 
 handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S) ->
     {reply, ok, update_clocks(FromReplicaId, KnownVC, StableVC, S)};

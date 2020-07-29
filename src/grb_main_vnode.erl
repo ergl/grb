@@ -205,7 +205,7 @@ handle_info(?blue_tick_req, State=#state{partition=P,
                                          prepared_blue=PreparedBlue}) ->
     erlang:cancel_timer(Timer),
     KnownTime = compute_new_known_time(PreparedBlue),
-    ok = grb_propagation_vnode:handle_blue_heartbeat(P, grb_dc_manager:replica_id(), KnownTime),
+    ok = grb_propagation_vnode:handle_self_blue_heartbeat_sync(P, KnownTime),
     {ok, State#state{blue_tick_timer=erlang:send_after(Interval, self(), ?blue_tick_req)}};
 
 handle_info(Msg, State) ->
