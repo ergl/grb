@@ -11,6 +11,7 @@
 -export([known_vc/1,
          stable_vc/1,
          update_stable_vc/2,
+         update_stable_vc_sync/2,
          append_blue_commit/6,
          handle_blue_heartbeat/3,
          handle_self_blue_heartbeat_sync/2]).
@@ -113,8 +114,14 @@ stable_vc(Partition) ->
 
 -spec update_stable_vc(partition_id(), vclock()) -> ok.
 update_stable_vc(Partition, SVC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {update_stable_vc, SVC},
+                                   ?master).
+
+-spec update_stable_vc_sync(partition_id(), vclock()) -> ok.
+update_stable_vc_sync(Partition, SVC) ->
     riak_core_vnode_master:sync_command({Partition, node()},
-                                        {update_stable_vc, SVC},
+                                        {update_stable_vc_sync, SVC},
                                         ?master,
                                         infinity).
 
@@ -147,10 +154,9 @@ uniform_vc(Partition) ->
 
 -spec update_uniform_vc(partition_id(), vclock()) -> ok.
 update_uniform_vc(Partition, SVC) ->
-    riak_core_vnode_master:sync_command({Partition, node()},
-                                        {update_uniform_vc, SVC},
-                                        ?master,
-                                        infinity).
+    riak_core_vnode_master:command({Partition, node()},
+                                   {update_uniform_vc, SVC},
+                                   ?master).
 
 %% @doc Update the uniformVC at all replicas but the current one, return result
 -spec merge_remote_uniform_vc(partition_id(), vclock()) -> vclock().
@@ -258,6 +264,9 @@ handle_command(stop_propagate_timer, _From, State) ->
     {reply, ok, stop_propagation_timers(State)};
 
 handle_command({update_stable_vc, SVC}, _Sender, State) ->
+    {noreply, update_stable_vc_internal(SVC, State)};
+
+handle_command({update_stable_vc_sync, SVC}, _Sender, State) ->
     {reply, ok, update_stable_vc_internal(SVC, State)};
 
 handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
@@ -265,7 +274,7 @@ handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTabl
     %% Safe to update everywhere, caller has already ensured to not update the current replica
     NewSVC = grb_vclock:max(OldSVC, SVC),
     true = ets:update_element(ClockTable, ?uniform_key, {2, NewSVC}),
-    {reply, ok, S};
+    {noreply, S};
 
 handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
     ok = update_known_vc(FromReplica, Ts, ClockTable),

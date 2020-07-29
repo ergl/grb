@@ -312,7 +312,7 @@ compute_svc(AllReplicas, VCs, AccSVC) ->
 -spec update_stableVC([partition_id()], vclock()) -> ok.
 update_stableVC(Partitions, StableVC) ->
     lists:foreach(fun(Partition) ->
-        ok = grb_propagation_vnode:update_stable_vc(Partition, StableVC)
+        ok = grb_propagation_vnode:update_stable_vc_sync(Partition, StableVC)
     end, Partitions).
 
 -spec send_to_parent(atom(), atom(), vclock()) -> ok.
