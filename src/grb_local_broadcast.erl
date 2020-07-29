@@ -40,7 +40,7 @@
 -record(leaf_state, {
     parent :: atom(),
     broadcast_interval :: non_neg_integer(),
-    broadcast_timer :: reference()
+    broadcast_timer :: reference() | undefined
 }).
 
 -record(node_state, {
@@ -204,11 +204,15 @@ handle_cast({set_svc, Parent, ParentSVC}, S=#state{self_name=SelfNode,
     {noreply, S};
 
 handle_cast({set_svc, Parent, ParentSVC}, S=#state{self_partitions=Partitions,
-                                                   tree_state=#leaf_state{}}) ->
+                                                   tree_state=Leaf=#leaf_state{broadcast_timer=undefined}}) ->
 
-    ?LOG_DEBUG("leaf node received stableVC ~p from parent ~p", [ParentSVC, Parent]),
+    #leaf_state{parent=Parent,
+                broadcast_interval=Int} = Leaf,
+
+    ?LOG_DEBUG("leaf node received stableVC ~p from parent ~p, rearming timer", [ParentSVC, Parent]),
     ok = update_stableVC(Partitions, ParentSVC),
-    {noreply, S};
+    NewLeaf = Leaf#leaf_state{broadcast_timer=erlang:send_after(Int, self(), broadcast_clock)},
+    {noreply, S#state{tree_state=NewLeaf}};
 
 handle_cast(E, S) ->
     ?LOG_WARNING("unexpected cast: ~p~n", [E]),
@@ -219,8 +223,7 @@ handle_info(broadcast_clock, S=#state{self_name=SelfNode,
                                       self_partitions=Partitions,
                                       tree_state=Leaf=#leaf_state{}}) ->
     #leaf_state{parent=Parent,
-                broadcast_timer=TRef,
-                broadcast_interval=Int} = Leaf,
+                broadcast_timer=TRef} = Leaf,
 
     erlang:cancel_timer(TRef),
 
@@ -229,7 +232,7 @@ handle_info(broadcast_clock, S=#state{self_name=SelfNode,
 
     ?LOG_DEBUG("leaf recomputing stableVC as ~p, sending to ~p", [LocalSVC, Parent]),
 
-    NewLeaf = Leaf#leaf_state{broadcast_timer=erlang:send_after(Int, self(), broadcast_clock)},
+    NewLeaf = Leaf#leaf_state{broadcast_timer=undefined},
     {noreply, S#state{tree_state=NewLeaf}};
 
 %% If singleton, just recalculate our local stableVC
