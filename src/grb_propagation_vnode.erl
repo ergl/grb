@@ -56,6 +56,7 @@
 -define(replication_req, replication_event).
 -define(uniform_req, uniform_replication_event).
 -define(clock_send_req, clock_send_event).
+-define(recompute_uvc, recompute_uvc_event).
 
 -define(known_key, known_vc).
 -define(stable_key, stable_vc).
@@ -82,6 +83,10 @@
     %% relay transactions from other replicas
     uniform_interval :: non_neg_integer(),
     uniform_timer = undefined :: reference() | undefined,
+
+    %% only used in remote_uvc
+    single_replica_uniform_interval :: non_neg_integer(),
+    single_replica_uniform_timer = undefined :: reference() | undefined,
 
     %% send our knownVC / stableVC to remote replicas
     uniform_clock_send_interval :: non_neg_integer(),
@@ -233,6 +238,7 @@ init([Partition]) ->
     {ok, ReplInt} = application:get_env(grb, basic_replication_interval),
     {ok, PruneInterval} = application:get_env(grb, prune_committed_blue_interval),
     {ok, UniformInterval} = application:get_env(grb, uniform_replication_interval),
+    {ok, SingleDCInterval} = application:get_env(grb, basic_replication_interval),
     {ok, SendClockInterval} = application:get_env(grb, remote_clock_broadcast_interval),
 
     ClockTable = new_cache(Partition, ?PARTITION_CLOCK_TABLE),
@@ -246,6 +252,7 @@ init([Partition]) ->
                 replication_interval=ReplInt,
                 uniform_interval=UniformInterval,
                 uniform_clock_send_interval=SendClockInterval,
+                single_replica_uniform_interval=SingleDCInterval,
                 clock_cache=ClockTable}}.
 
 handle_command(ping, _Sender, State) ->
@@ -283,6 +290,9 @@ handle_command(start_propagate_timer, _From, State) ->
 
 handle_command(stop_propagate_timer, _From, State) ->
     {reply, ok, stop_propagation_timers(State)};
+
+handle_command(start_uvc_timer, _From, State) ->
+    {reply, ok, start_uvc_timer(State)};
 
 handle_command({update_stable_vc, SVC}, _Sender, State) ->
     {noreply, update_stable_vc_internal(SVC, State)};
@@ -376,6 +386,19 @@ handle_info(?prune_req, State=#state{logs=Logs,
     {ok, State#state{logs=prune_commit_logs(LocalId, Matrix, Logs),
                      prune_timer=erlang:send_after(Interval, self(), ?prune_req)}};
 
+handle_info(?recompute_uvc, State=#state{local_replica=LocalId,
+                                         clock_cache=ClockTable,
+                                         stable_matrix=StableMatrix,
+                                         fault_tolerant_groups=Groups,
+                                         pending_barriers=PendingBarriers0,
+                                         single_replica_uniform_timer=Timer,
+                                         single_replica_uniform_interval=Interval}) ->
+    erlang:cancel_timer(Timer),
+    UniformVC = update_uniform_vc(StableMatrix, ClockTable, Groups),
+    PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
+    {ok, State#state{pending_barriers=PendingBarriers,
+                     single_replica_uniform_timer=erlang:send_after(Interval, self(), ?recompute_uvc)}};
+
 handle_info(Msg, State) ->
     ?LOG_WARNING("unhandled_info ~p", [Msg]),
     {ok, State}.
@@ -383,6 +406,21 @@ handle_info(Msg, State) ->
 %%%===================================================================
 %%% internal functions
 %%%===================================================================
+
+-spec start_uvc_timer(state()) -> state().
+-ifdef(REMOTE_UVC).
+
+start_uvc_timer(S=#state{single_replica_uniform_interval=Int,
+                         single_replica_uniform_timer=undefined}) ->
+    S#state{single_replica_uniform_timer=erlang:send_after(Int, self(), ?recompute_uvc)};
+
+start_uvc_timer(S) -> S.
+
+-else.
+
+start_uvc_timer(S) -> S.
+
+-endif.
 
 -spec start_propagation_timers(state()) -> state().
 start_propagation_timers(State=?timers_unset) -> start_propagation_timers_internal(State);
@@ -485,24 +523,12 @@ update_stable_vc_internal(VC, S=#state{clock_cache=ClockTable}) ->
 
 update_stable_vc_internal(VC, S=#state{local_replica=LocalId,
                                        clock_cache=ClockTable,
-                                       stable_matrix=StableMatrix0,
-                                       should_append_commit=ShouldCommit,
-                                       pending_barriers=PendingBarriers0}) ->
-
+                                       stable_matrix=StableMatrix}) ->
     OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     %% Safe to update everywhere, caller has already ensured to not update the current replica
     NewSVC = grb_vclock:max(OldSVC, VC),
     true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
-    StableMatrix = StableMatrix0#{LocalId => NewSVC},
-    case ShouldCommit of
-        true -> %% multi-replica scenario
-            S#state{stable_matrix=StableMatrix};
-        false -> %% single-replica scenario
-            UniformVC = grb_vclock:max(NewSVC, ets:lookup_element(ClockTable, ?uniform_key, 2)),
-            true = ets:update_element(ClockTable, ?uniform_key, {2, UniformVC}),
-            PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
-            S#state{stable_matrix=StableMatrix, pending_barriers=PendingBarriers}
-    end.
+    S#state{stable_matrix=StableMatrix#{LocalId => NewSVC}}.
 
 -else.
 
