@@ -481,6 +481,16 @@ update_stable_vc_internal(VC, S=#state{clock_cache=ClockTable}) ->
     S.
 
 -else.
+-ifdef(REMOTE_UVC).
+
+update_stable_vc_internal(VC, S=#state{clock_cache=ClockTable}) ->
+    OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
+    %% Safe to update everywhere, caller has already ensured to not update the current replica
+    NewSVC = grb_vclock:max(OldSVC, VC),
+    true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
+    S.
+
+-else.
 
 update_stable_vc_internal(VC, S=#state{local_replica=LocalId,
                                        clock_cache=ClockTable,
@@ -496,6 +506,7 @@ update_stable_vc_internal(VC, S=#state{local_replica=LocalId,
     PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
     S#state{stable_matrix=StableMatrix, pending_barriers=PendingBarriers}.
 
+-endif.
 -endif.
 
 -spec insert_uniform_barrier(grb_promise:t(), grb_time:ts(), uniform_barriers()) -> uniform_barriers().
