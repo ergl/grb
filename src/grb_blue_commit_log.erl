@@ -19,8 +19,11 @@
 -export([new/1,
          insert/4,
          get_bigger/2,
-         remove_bigger/2,
          remove_leq/2]).
+
+-ifdef(BASIC_REPLICATION).
+-export([remove_bigger/2]).
+-endif.
 
 -spec new(replica_id()) -> t().
 new(AtId) ->
@@ -45,6 +48,7 @@ get_bigger(Cutoff, [{Key, _} | _], Acc) when abs(Key) =< Cutoff ->
 get_bigger(Cutoff, [{Key, Val} | Rest], Acc) when abs(Key) > Cutoff ->
     get_bigger(Cutoff, Rest, [Val | Acc]).
 
+-ifdef(BASIC_REPLICATION).
 %% @doc Remove all entries with commit time at the created replica bigger than `Timestamp`
 %%
 %%      Entries are returned in increasing commit time order
@@ -59,6 +63,7 @@ remove_bigger(Cutoff, All=[{Key, _} | _], Acc) when abs(Key) =< Cutoff ->
     {Acc, All};
 remove_bigger(Cutoff, [{Key, Val} | Rest], Acc) when abs(Key) > Cutoff ->
     remove_bigger(Cutoff, Rest, [Val | Acc]).
+-endif.
 
 %% @doc Remove all entries with commit time at the created replica lower than `Timestamp`
 -spec remove_leq(grb_time:ts(), t()) -> t().
@@ -121,6 +126,7 @@ grb_blue_commit_log_get_bigger_unordered_test() ->
     SomeMatches = grb_blue_commit_log:get_bigger(5, Log),
     ?assertEqual(lists:sublist(SortedList, 6, 9), SomeMatches).
 
+-ifdef(BASIC_REPLICATION).
 grb_blue_commit_log_remove_bigger_ordered_test() ->
     MyReplicaID = '$dc_id',
     Entries = lists:map(fun(V) ->
@@ -182,6 +188,7 @@ grb_blue_commit_log_remove_bigger_unordered_test() ->
         {ignore, #{}, VClock(5)}
     ]),
     ?assertEqual(Resulting, Log3).
+-endif.
 
 grb_blue_commit_log_remove_leq_ordered_test() ->
     MyReplicaID = '$dc_id',

@@ -22,16 +22,22 @@ check_binaries:
 
 xref:
 	$(REBAR) xref skip_deps=true
+	$(REBAR) as basic_replication xref skip_deps=true
+	$(REBAR) as delay_clocks xref skip_deps=true
 
 dialyzer:
 	$(REBAR) dialyzer
 	$(REBAR) as basic_replication dialyzer
+	$(REBAR) as delay_clocks dialyzer
 
 debug:
 	$(REBAR) as debug_log compile
 
 cure:
 	$(REBAR) as basic_replication compile
+
+delay:
+	$(REBAR) as delay_clocks compile
 
 clean:
 	$(REBAR) clean --all
@@ -69,6 +75,7 @@ attach:
 test:
 	${REBAR} eunit skip_deps=true
 	${REBAR} as basic_replication eunit skip_deps=true
+	${REBAR} as delay_clocks eunit skip_deps=true
 	escript -c bin/join_cluster_script.erl eunit
 
 ct_test:

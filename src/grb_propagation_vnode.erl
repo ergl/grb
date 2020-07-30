@@ -10,18 +10,18 @@
 %% Common public API
 -export([known_vc/1,
          stable_vc/1,
-         update_stable_vc/2,
          update_stable_vc_sync/2,
          append_blue_commit/6,
          handle_blue_heartbeat/3,
          handle_self_blue_heartbeat_sync/2]).
 
+-ifdef(BASIC_REPLICATION).
 %% Basic Replication API
 -export([merge_remote_stable_vc/2]).
+-endif.
 
 %% Uniform Replication API
 -export([uniform_vc/1,
-         update_uniform_vc/2,
          merge_remote_uniform_vc/2,
          handle_clock_update/4,
          handle_clock_heartbeat_update/4,
@@ -128,12 +128,6 @@ known_vc(Partition) ->
 stable_vc(Partition) ->
     ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?stable_key, 2).
 
--spec update_stable_vc(partition_id(), vclock()) -> ok.
-update_stable_vc(Partition, SVC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {update_stable_vc, SVC},
-                                   ?master).
-
 -spec update_stable_vc_sync(partition_id(), vclock()) -> ok.
 update_stable_vc_sync(Partition, SVC) ->
     riak_core_vnode_master:sync_command({Partition, node()},
@@ -152,6 +146,13 @@ append_blue_commit(ReplicaId, Partition, KnownTime, TxId, WS, CommitVC) ->
 %%% basic replication api
 %%%===================================================================
 
+-ifdef(BASIC_REPLICATION).
+-spec update_stable_vc(partition_id(), vclock()) -> ok.
+update_stable_vc(Partition, SVC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {update_stable_vc, SVC},
+                                   ?master).
+
 %% @doc Update the stableVC at all replicas but the current one, return result
 -spec merge_remote_stable_vc(partition_id(), vclock()) -> vclock().
 merge_remote_stable_vc(Partition, VC) ->
@@ -159,6 +160,8 @@ merge_remote_stable_vc(Partition, VC) ->
     S1 = grb_vclock:max_except(grb_dc_manager:replica_id(), S0, VC),
     update_stable_vc(Partition, S1),
     S1.
+
+-endif.
 
 %%%===================================================================
 %%% uniform replication api
