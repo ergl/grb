@@ -485,13 +485,24 @@ update_stable_vc_internal(VC, S=#state{clock_cache=ClockTable}) ->
 
 update_stable_vc_internal(VC, S=#state{local_replica=LocalId,
                                        clock_cache=ClockTable,
-                                       stable_matrix=StableMatrix}) ->
+                                       stable_matrix=StableMatrix0,
+                                       should_append_commit=ShouldCommit,
+                                       pending_barriers=PendingBarriers0}) ->
 
     OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     %% Safe to update everywhere, caller has already ensured to not update the current replica
     NewSVC = grb_vclock:max(OldSVC, VC),
     true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
-    S#state{stable_matrix=StableMatrix#{LocalId => NewSVC}}.
+    StableMatrix = StableMatrix0#{LocalId => NewSVC},
+    case ShouldCommit of
+        true -> %% multi-replica scenario
+            S#state{stable_matrix=StableMatrix};
+        false -> %% single-replica scenario
+            UniformVC = grb_vclock:max(NewSVC, ets:lookup_element(ClockTable, ?uniform_key, 2)),
+            true = ets:update_element(ClockTable, ?uniform_key, {2, UniformVC}),
+            PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
+            S#state{stable_matrix=StableMatrix, pending_barriers=PendingBarriers}
+    end.
 
 -else.
 
