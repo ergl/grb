@@ -483,12 +483,15 @@ update_stable_vc_internal(VC, S=#state{clock_cache=ClockTable}) ->
 -else.
 -ifdef(REMOTE_UVC).
 
-update_stable_vc_internal(VC, S=#state{clock_cache=ClockTable}) ->
+update_stable_vc_internal(VC, S=#state{local_replica=LocalId,
+                                       clock_cache=ClockTable,
+                                       stable_matrix=StableMatrix}) ->
+
     OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     %% Safe to update everywhere, caller has already ensured to not update the current replica
     NewSVC = grb_vclock:max(OldSVC, VC),
     true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
-    S.
+    S#state{stable_matrix=StableMatrix#{LocalId => NewSVC}}.
 
 -else.
 
@@ -502,7 +505,8 @@ update_stable_vc_internal(VC, S=#state{local_replica=LocalId,
     %% Safe to update everywhere, caller has already ensured to not update the current replica
     NewSVC = grb_vclock:max(OldSVC, VC),
     true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
-    {UniformVC, StableMatrix} = update_uniform_vc(LocalId, NewSVC, StableMatrix0, ClockTable, Groups),
+    StableMatrix = StableMatrix0#{LocalId => NewSVC},
+    UniformVC = update_uniform_vc(StableMatrix, ClockTable, Groups),
     PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
     S#state{stable_matrix=StableMatrix, pending_barriers=PendingBarriers}.
 
@@ -541,7 +545,8 @@ update_clocks(FromReplicaId, KnownVC, StableVC, S=#state{local_replica=LocalId,
                                                          pending_barriers=PendingBarriers0}) ->
 
     KnownMatrix = update_known_matrix(FromReplicaId, KnownVC, KnownMatrix0),
-    {UniformVC, StableMatrix} = update_uniform_vc(FromReplicaId, StableVC, StableMatrix0, ClockCache, Groups),
+    StableMatrix = StableMatrix0#{FromReplicaId => StableVC},
+    UniformVC = update_uniform_vc(StableMatrix, ClockCache, Groups),
     PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
     S#state{global_known_matrix=KnownMatrix,
             stable_matrix=StableMatrix,
@@ -721,18 +726,15 @@ update_known_matrix(FromReplicaId, KnownVC, Matrix) ->
         Acc#{{FromReplicaId, AtReplica} => max(Ts, maps:get({FromReplicaId, AtReplica}, Acc, 0))}
     end, Matrix, grb_vclock:to_list(KnownVC)).
 
--spec update_uniform_vc(From :: replica_id(),
-                        StableVC :: vclock(),
-                        StableMatrix :: stable_matrix(),
+-spec update_uniform_vc(StableMatrix :: stable_matrix(),
                         ClockCache :: cache(atom(), vclock()),
-                        Groups :: [[replica_id()]]) -> {vclock(), stable_matrix()}.
+                        Groups :: [[replica_id()]]) -> vclock().
 
-update_uniform_vc(FromReplicaId, StableVC, StableMatrix0, ClockCache, Groups) ->
-    StableMatrix = StableMatrix0#{FromReplicaId => StableVC},
+update_uniform_vc(StableMatrix, ClockCache, Groups) ->
     UniformVC0 = ets:lookup_element(ClockCache, ?uniform_key, 2),
     UniformVC = compute_uniform_vc(UniformVC0, StableMatrix, Groups),
     true = ets:update_element(ClockCache, ?uniform_key, {2, UniformVC}),
-    {UniformVC, StableMatrix}.
+    UniformVC.
 
 -spec compute_uniform_vc(vclock(), stable_matrix(), [[replica_id()]]) -> vclock().
 compute_uniform_vc(UniformVC, StableMatrix, Groups) ->
