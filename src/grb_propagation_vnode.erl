@@ -55,6 +55,7 @@
 -define(prune_req, prune_event).
 -define(replication_req, replication_event).
 -define(uniform_req, uniform_replication_event).
+-define(clock_send_req, clock_send_event).
 
 -define(known_key, known_vc).
 -define(stable_key, stable_vc).
@@ -82,6 +83,10 @@
     uniform_interval :: non_neg_integer(),
     uniform_timer = undefined :: reference() | undefined,
 
+    %% send our knownVC / stableVC to remote replicas
+    uniform_clock_send_interval :: non_neg_integer(),
+    uniform_clock_send_timer = undefined :: reference() | undefined,
+
     %% prune committedBlue
     prune_interval :: non_neg_integer(),
     prune_timer = undefined :: reference() | undefined,
@@ -97,6 +102,17 @@
     %% List of pending uniform barriers by clients, recompute on uniformVC update
     pending_barriers = [] :: uniform_barriers()
 }).
+
+-ifdef(BASIC_REPLICATION).
+-define(timers_unset, #state{replication_timer=undefined}).
+-else.
+-ifdef(DELAY_UNIFORM_CLOCKS).
+-define(timers_unset, #state{replication_timer=undefined, uniform_timer=undefined,
+                             uniform_clock_send_timer=undefined, prune_timer=undefined}).
+-else.
+-define(timers_unset, #state{replication_timer=undefined, uniform_timer=undefined, prune_timer=undefined}).
+-endif.
+-endif.
 
 -type state() :: #state{}.
 
@@ -214,6 +230,7 @@ init([Partition]) ->
     {ok, ReplInt} = application:get_env(grb, basic_replication_interval),
     {ok, PruneInterval} = application:get_env(grb, prune_committed_blue_interval),
     {ok, UniformInterval} = application:get_env(grb, uniform_replication_interval),
+    {ok, SendClockInterval} = application:get_env(grb, remote_clock_broadcast_interval),
 
     ClockTable = new_cache(Partition, ?PARTITION_CLOCK_TABLE),
     true = ets:insert(ClockTable, [{?uniform_key, grb_vclock:new()},
@@ -225,6 +242,7 @@ init([Partition]) ->
                 prune_interval=PruneInterval,
                 replication_interval=ReplInt,
                 uniform_interval=UniformInterval,
+                uniform_clock_send_interval=SendClockInterval,
                 clock_cache=ClockTable}}.
 
 handle_command(ping, _Sender, State) ->
@@ -331,6 +349,20 @@ handle_info(?uniform_req, State=#state{partition=P,
     {ok, State#state{global_known_matrix=GlobalMatrix,
                      uniform_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
 
+handle_info(?clock_send_req, State=#state{partition=P,
+                                          local_replica=LocalId,
+                                          clock_cache=ClockCache,
+                                          uniform_clock_send_timer=Timer,
+                                          uniform_clock_send_interval=Interval}) ->
+    erlang:cancel_timer(Timer),
+    ?LOG_DEBUG("broadcast clocks"),
+    KnownVC = ets:lookup_element(ClockCache, ?known_key, 2),
+    StableVC = ets:lookup_element(ClockCache, ?stable_key, 2),
+    lists:foreach(fun(Target) ->
+        ok = grb_dc_connection_manager:send_clocks(Target, LocalId, P, KnownVC, StableVC)
+    end, grb_dc_connection_manager:connected_replicas()),
+    {ok, State#state{uniform_clock_send_timer=erlang:send_after(Interval, self(), ?clock_send_req)}};
+
 handle_info(?prune_req, State=#state{logs=Logs,
                                      local_replica=LocalId,
                                      global_known_matrix=Matrix,
@@ -350,65 +382,76 @@ handle_info(Msg, State) ->
 %%%===================================================================
 
 -spec start_propagation_timers(state()) -> state().
+start_propagation_timers(State=?timers_unset) -> start_propagation_timers_internal(State);
+start_propagation_timers(State) -> State.
+
 -spec stop_propagation_timers(state()) -> state().
--spec timers_set(state()) -> boolean().
+stop_propagation_timers(State=?timers_unset) -> State;
+stop_propagation_timers(State) -> stop_propagation_timers_internal(State).
+
+-spec start_propagation_timers_internal(state()) -> state().
+-spec stop_propagation_timers_internal(state()) -> state().
 
 -ifdef(BASIC_REPLICATION).
 
-start_propagation_timers(State) ->
-    case timers_set(State) of
-        true -> State;
-        false ->
-            State#state{
-                replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req)
-            }
-    end.
+start_propagation_timers_internal(State) ->
+    State#state{
+        replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req)
+    }.
 
 
-stop_propagation_timers(State) ->
-    case timers_set(State) of
-        false -> State;
-        true ->
-            erlang:cancel_timer(State#state.replication_timer),
-            State#state{
-                replication_timer=undefined
-            }
-    end.
-
-timers_set(#state{replication_timer=undefined}) -> false;
-timers_set(_) -> true.
+stop_propagation_timers_internal(State) ->
+    erlang:cancel_timer(State#state.replication_timer),
+    State#state{
+        replication_timer=undefined
+    }.
 
 -else.
 
-start_propagation_timers(State) ->
-    case timers_set(State) of
-        true -> State;
-        false ->
-            State#state{
-                prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
-                uniform_timer=erlang:send_after(State#state.uniform_interval, self(), ?uniform_req),
-                replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req)
-            }
-    end.
+-ifdef(DELAY_UNIFORM_CLOCKS).
+
+start_propagation_timers_internal(State) ->
+    State#state{
+        prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
+        uniform_timer=erlang:send_after(State#state.uniform_interval, self(), ?uniform_req),
+        replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req),
+        uniform_clock_send_timer=erlang:send_after(State#state.uniform_clock_send_interval, self(), ?clock_send_req)
+    }.
 
 
-stop_propagation_timers(State) ->
-    case timers_set(State) of
-        false -> State;
-        true ->
-            erlang:cancel_timer(State#state.prune_timer),
-            erlang:cancel_timer(State#state.uniform_timer),
-            erlang:cancel_timer(State#state.replication_timer),
-            State#state{
-                prune_timer=undefined,
-                uniform_timer=undefined,
-                replication_timer=undefined
-            }
-    end.
+stop_propagation_timers_internal(State) ->
+    erlang:cancel_timer(State#state.prune_timer),
+    erlang:cancel_timer(State#state.uniform_timer),
+    erlang:cancel_timer(State#state.replication_timer),
+    erlang:cancel_timer(State#state.uniform_clock_send_timer),
+    State#state{
+        prune_timer=undefined,
+        uniform_timer=undefined,
+        replication_timer=undefined,
+        uniform_clock_send_timer=undefined
+    }.
 
-timers_set(#state{replication_timer=undefined, uniform_timer=undefined, prune_timer=undefined}) -> false;
-timers_set(_) -> true.
+-else.
 
+start_propagation_timers_internal(State) ->
+    State#state{
+        prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
+        uniform_timer=erlang:send_after(State#state.uniform_interval, self(), ?uniform_req),
+        replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req)
+    }.
+
+
+stop_propagation_timers_internal(State) ->
+    erlang:cancel_timer(State#state.prune_timer),
+    erlang:cancel_timer(State#state.uniform_timer),
+    erlang:cancel_timer(State#state.replication_timer),
+    State#state{
+        prune_timer=undefined,
+        uniform_timer=undefined,
+        replication_timer=undefined
+    }.
+
+-endif.
 -endif.
 
 -spec prune_commit_logs(LocalReplica :: replica_id(),
@@ -519,6 +562,36 @@ replicate_internal(KnownVC, S=#state{logs=Logs,
     S#state{basic_last_sent=LocalTime, logs=Logs#{LocalId => LocalLog}}.
 
 -else.
+-ifdef(DELAY_UNIFORM_CLOCKS).
+
+replicate_internal(KnownVC, S=#state{logs=Logs,
+                                     partition=Partition,
+                                     local_replica=LocalId,
+                                     global_known_matrix=Matrix0}) ->
+
+    #{LocalId := LocalLog} = Logs,
+    LocalTime = grb_vclock:get_time(LocalId, KnownVC),
+    Matrix = lists:foldl(fun(Target, AccMatrix) ->
+        ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
+        ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
+        case ToSend of
+            [] ->
+                HBRes = grb_dc_connection_manager:send_heartbeat(Target, LocalId, Partition, LocalTime),
+                ?LOG_DEBUG("send clocks to ~p: ~p~n", [Target, HBRes]),
+                ok;
+            Transactions ->
+                lists:foreach(fun(Tx) ->
+                    TxRes = grb_dc_connection_manager:send_tx(Target, LocalId, Partition, Tx),
+                    ?LOG_DEBUG("send transaction ~p to ~p: ~p~n", [Tx, Target, TxRes]),
+                    ok
+                end, Transactions)
+        end,
+        AccMatrix#{{Target, LocalId} => LocalTime}
+    end, Matrix0, grb_dc_connection_manager:connected_replicas()),
+
+    S#state{global_known_matrix=Matrix}.
+
+-else.
 
 replicate_internal(KnownVC, S=#state{logs=Logs,
                                      partition=Partition,
@@ -555,6 +628,7 @@ replicate_internal(KnownVC, S=#state{logs=Logs,
 
     S#state{global_known_matrix=Matrix}.
 
+-endif.
 -endif.
 
 -spec uniform_replicate_internal(vclock(), #state{}) -> global_known_matrix().
