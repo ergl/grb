@@ -61,14 +61,14 @@ start_background_processes() ->
     Res0 = erpc:multicall(LocalNodes, ?MODULE, persist_self_replica_info, []),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
 
-    Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_blue_hb_timer, 1000),
+    Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, learn_dc_id, 1000),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
 
-    Res2 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_replicas, 1000),
-    ok = lists:foreach(fun({_, true}) -> ok end, Res2),
+    Res2 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_blue_hb_timer, 1000),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res2),
 
-    Res3 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, learn_dc_id, 1000),
-    ok = lists:foreach(fun({_, ok}) -> ok end, Res3),
+    Res3 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_replicas, 1000),
+    ok = lists:foreach(fun({_, true}) -> ok end, Res3),
 
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
