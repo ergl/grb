@@ -178,11 +178,19 @@ handle_info(Info, State) ->
                           Val :: val(),
                           State :: #state{}) -> ok.
 
+-ifdef(BASIC_REPLICATION).
+
 perform_op_internal(Promise, ReplicaId, Key, SnapshotVC, Val, State=#state{partition=Partition, known_barrier_wait_ms=WaitMs}) ->
-    UniformVC0 = grb_propagation_vnode:uniform_vc(Partition),
-    UniformVC1 = grb_vclock:max_except(ReplicaId, UniformVC0, SnapshotVC),
-    ok = grb_propagation_vnode:update_uniform_vc(Partition, UniformVC1),
+    _ = grb_propagation_vnode:merge_remote_stable_vc(Partition, SnapshotVC),
     perform_op_wait(Promise, WaitMs, ReplicaId, Key, SnapshotVC, Val, State).
+
+-else.
+
+perform_op_internal(Promise, ReplicaId, Key, SnapshotVC, Val, State=#state{partition=Partition, known_barrier_wait_ms=WaitMs}) ->
+    _ = grb_propagation_vnode:merge_remote_uniform_vc(Partition, SnapshotVC),
+    perform_op_wait(Promise, WaitMs, ReplicaId, Key, SnapshotVC, Val, State).
+
+-endif.
 
 -spec perform_op_wait(Promise :: grb_promise:t(),
                       WaitMs :: non_neg_integer(),
@@ -203,11 +211,10 @@ perform_op_wait(Promise, WaitMs, ReplicaId, Key, SnapshotVC, Val, S=#state{parti
 
 -spec check_known_vc(partition_id(), replica_id(), vclock()) -> ready | not_ready.
 check_known_vc(Partition, ReplicaId, VC) ->
-    KnownVC = grb_propagation_vnode:known_vc(Partition),
     SelfBlue = grb_vclock:get_time(ReplicaId, VC),
     SelfRed = grb_vclock:get_time(?RED_REPLICA, VC),
-    BlueTime = grb_vclock:get_time(ReplicaId, KnownVC),
-    RedTime = grb_vclock:get_time(?RED_REPLICA, KnownVC),
+    BlueTime = grb_propagation_vnode:known_time(Partition, ReplicaId),
+    RedTime = grb_propagation_vnode:known_time(Partition, ?RED_REPLICA),
     BlueCheck = BlueTime >= SelfBlue,
     RedCheck = RedTime >= SelfRed,
     case (BlueCheck andalso RedCheck) of
@@ -247,9 +254,7 @@ decide_blue_internal(Partition, WaitMs, ReplicaId, TxId, VC) ->
             erlang:send_after(WaitMs, self(), {retry_decide, ReplicaId, TxId, VC}),
             ok;
         ready ->
-            riak_core_vnode_master:command({Partition, node()},
-                                           {decide_blue, ReplicaId, TxId, VC},
-                                           grb_main_vnode_master)
+            grb_main_vnode:decide_blue(Partition, ReplicaId, TxId, VC)
     end.
 
 -spec check_current_clock(replica_id(), vclock()) -> ready | not_ready.

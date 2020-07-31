@@ -84,6 +84,10 @@
     %% that we will only replicate transactions in the case of replica failure.
     {uniform_replication_interval, ${UNIFORM_REPLICATION_INTERVAL_MS}},
 
+    %% How often do we send our knownVC/stableVC to other replicas?
+    %% (only applicable on the delay_clocks rebar profile)
+    {remote_clock_broadcast_interval, ${UNIFORM_CLOCK_INTERVAL_MS}},
+
     %% How often should we propagate our knownVC to local partitions?
     %%
     %% This is used to update stableVC inside the local data center,

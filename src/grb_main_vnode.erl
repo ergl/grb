@@ -5,8 +5,8 @@
 
 %% Public API
 -export([cache_name/2,
-         get_known_time/1,
          prepare_blue/4,
+         decide_blue/4,
          handle_replicate/5]).
 
 %% riak_core_vnode callbacks
@@ -49,6 +49,10 @@
     %% todo(borja, crdt): change type of op_log when adding crdts
     op_log_size :: non_neg_integer(),
     op_log :: cache(key(), cache(key(), grb_version_log:t())),
+
+    %% It doesn't make sense to append it if we're not connected to other clusters
+    should_append_commit = true :: boolean(),
+
     default_bottom_value = <<>> :: term(),
     default_bottom_red = 0 :: grb_time:ts()
 }).
@@ -59,26 +63,36 @@
 %%% API
 %%%===================================================================
 
--spec get_known_time(partition_id()) -> grb_time:ts().
-get_known_time(Partition) ->
-    riak_core_vnode_master:sync_command({Partition, node()}, get_known_time, ?master).
-
 -spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
 prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
-    ReplicaId = grb_dc_manager:replica_id(),
-    UniformVC0 = grb_propagation_vnode:uniform_vc(Partition),
-    UniformVC1 = grb_vclock:max_except(ReplicaId, UniformVC0, SnapshotVC),
-    ok = grb_propagation_vnode:update_uniform_vc(Partition, UniformVC1),
     Ts = grb_time:timestamp(),
     ok = riak_core_vnode_master:command({Partition, node()},
-                                        {prepare_blue, TxId, WriteSet, Ts},
+                                        {prepare_blue, TxId, WriteSet, SnapshotVC, Ts},
                                         ?master),
     Ts.
+
+-spec decide_blue(partition_id(), replica_id(), term(), vclock()) -> ok.
+decide_blue(Partition, ReplicaId, TxId, CommitVC) ->
+    riak_core_vnode_master:sync_command({Partition, node()},
+                                        {decide_blue, ReplicaId, TxId, CommitVC},
+                                        ?master,
+                                        infinity).
+
+-spec update_prepare_clocks(partition_id(), vclock()) -> ok.
+-ifdef(BASIC_REPLICATION).
+update_prepare_clocks(Partition, SnapshotVC) ->
+    _ = grb_propagation_vnode:merge_remote_stable_vc(Partition, SnapshotVC),
+    ok.
+-else.
+update_prepare_clocks(Partition, SnapshotVC) ->
+    _ = grb_propagation_vnode:merge_remote_uniform_vc(Partition, SnapshotVC),
+    ok.
+-endif.
 
 -spec handle_replicate(partition_id(), replica_id(), term(), #{}, vclock()) -> ok.
 handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
     CommitTime = grb_vclock:get_time(SourceReplica, VC),
-    KnownTime = grb_vclock:get_time(SourceReplica, grb_propagation_vnode:known_vc(Partition)),
+    KnownTime = grb_propagation_vnode:known_time(Partition, SourceReplica),
     case KnownTime < CommitTime of
         false ->
             ok; %% de-dup, we already received this
@@ -128,6 +142,12 @@ handle_command(is_ready, _Sender, State) ->
     Ready = lists:all(fun is_ready/1, [State#state.op_log]),
     {reply, Ready, State};
 
+handle_command(enable_blue_append, _Sender, S) ->
+    {reply, ok, S#state{should_append_commit=true}};
+
+handle_command(disable_blue_append, _Sender, S) ->
+    {reply, ok, S#state{should_append_commit=false}};
+
 handle_command(start_blue_hb_timer, _From, S = #state{blue_tick_interval=Int, blue_tick_timer=undefined}) ->
     TRef = erlang:send_after(Int, self(), ?blue_tick_req),
     {reply, ok, S#state{blue_tick_timer=TRef}};
@@ -167,27 +187,22 @@ handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
 handle_command(get_default, _From, S=#state{default_bottom_value=Val, default_bottom_red=RedTs}) ->
     {reply, {Val, RedTs}, S};
 
-handle_command(get_known_time, _From, S=#state{prepared_blue=PreparedBlue}) ->
-    {reply, compute_new_known_time(PreparedBlue), S};
-
 handle_command({update_default, DefaultVal, DefaultRed}, _From, S=#state{partition=P, replicas_n=N}) ->
     Result = grb_partition_replica:update_default(P, N, DefaultVal, DefaultRed),
     {reply, Result, S#state{default_bottom_value=DefaultVal, default_bottom_red=DefaultRed}};
 
-handle_command({prepare_blue, TxId, WS, Ts}, _From, S=#state{prepared_blue=PB}) ->
+handle_command({prepare_blue, TxId, WS, SnapshotVC, Ts}, _From, S=#state{partition=Partition, prepared_blue=PB}) ->
     ?LOG_DEBUG("prepare_blue ~p wtih time ~p", [TxId, Ts]),
+    ok = update_prepare_clocks(Partition, SnapshotVC),
     {noreply, S#state{prepared_blue=PB#{TxId => {WS, Ts}}}};
 
 handle_command({decide_blue, ReplicaId, TxId, VC}, _From, State) ->
     NewState = decide_blue_internal(ReplicaId, TxId, VC, State),
-    {noreply, NewState};
+    {reply, ok, NewState};
 
-handle_command({handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC}, _From, S=#state{partition=P,
-                                                                                            op_log=OpLog,
-                                                                                            op_log_size=LogSize}) ->
-    ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
-    ok = grb_propagation_vnode:append_blue_commit(SourceReplica, P, CommitTime, TxId, WS, VC),
-    {noreply, S};
+handle_command({handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC}, _From, State) ->
+    ok = handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, State),
+    {noreply, State};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
@@ -199,25 +214,52 @@ handle_info(?blue_tick_req, State=#state{partition=P,
                                          prepared_blue=PreparedBlue}) ->
     erlang:cancel_timer(Timer),
     KnownTime = compute_new_known_time(PreparedBlue),
-    ok = grb_propagation_vnode:handle_blue_heartbeat(P, grb_dc_manager:replica_id(), KnownTime),
+    ok = grb_propagation_vnode:handle_self_blue_heartbeat(P, KnownTime),
     {ok, State#state{blue_tick_timer=erlang:send_after(Interval, self(), ?blue_tick_req)}};
 
 handle_info(Msg, State) ->
     ?LOG_WARNING("unhandled_info ~p", [Msg]),
     {ok, State}.
 
+-spec handle_remote_tx_internal(replica_id(), term(), #{}, grb_time:ts(), vclock(), state()) -> ok.
+-ifdef(BASIC_REPLICATION).
+
+handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partition=Partition,
+                                                                          op_log=OperationLog,
+                                                                          op_log_size=LogSize}) ->
+    ok = update_partition_state(TxId, WS, VC, OperationLog, LogSize),
+    ok = grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, CommitTime),
+    ok.
+
+-else.
+
+handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partition=Partition,
+                                                                          op_log=OperationLog,
+                                                                          op_log_size=LogSize}) ->
+    ok = update_partition_state(TxId, WS, VC, OperationLog, LogSize),
+    ok = grb_propagation_vnode:append_blue_commit(SourceReplica, Partition, CommitTime, TxId, WS, VC),
+    ok.
+
+-endif.
+
 -spec decide_blue_internal(replica_id(), term(), vclock(), #state{}) -> #state{}.
 decide_blue_internal(ReplicaId, TxId, VC, S=#state{partition=SelfPartition,
                                                    op_log=OpLog,
                                                    op_log_size=LogSize,
-                                                   prepared_blue=PreparedBlue}) ->
+                                                   prepared_blue=PreparedBlue,
+                                                   should_append_commit=ShouldAppend}) ->
 
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
     {{WS, _}, PreparedBlue1} = maps:take(TxId, PreparedBlue),
     ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
     KnownTime = compute_new_known_time(PreparedBlue1),
-    ok = grb_propagation_vnode:append_blue_commit(ReplicaId, SelfPartition, KnownTime, TxId, WS, VC),
+    case ShouldAppend of
+        true ->
+            grb_propagation_vnode:append_blue_commit(ReplicaId, SelfPartition, KnownTime, TxId, WS, VC);
+        false ->
+            grb_propagation_vnode:handle_blue_heartbeat(SelfPartition, ReplicaId, KnownTime)
+    end,
     S#state{prepared_blue=PreparedBlue1}.
 
 -spec update_partition_state(TxId :: term(),

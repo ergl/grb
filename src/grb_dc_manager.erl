@@ -77,7 +77,7 @@ start_background_processes() ->
 %%      Should only be called at the master node (and only be called when the cluster is only one node)
 -spec enable_blue_append() -> ok.
 enable_blue_append() ->
-    Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, enable_blue_append),
+    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, enable_blue_append),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
     ok.
 
@@ -87,14 +87,14 @@ enable_blue_append() ->
 %%      memory accumulating transactions that we'll never send.
 -spec disable_blue_append() -> ok.
 disable_blue_append() ->
-    Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, disable_blue_append),
+    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, disable_blue_append),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
     ok.
 
 %% @doc Call if this cluster is the only replica in town
 -spec single_replica_processes() -> ok.
 single_replica_processes() ->
-    Res0 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, disable_blue_append),
+    Res0 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, disable_blue_append),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
 
     SingleDCGroups = [[replica_id()]],
@@ -103,6 +103,10 @@ single_replica_processes() ->
 
     Res2 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, populate_logs),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res2),
+
+    %% Only effective in remote_uvc profile
+    Res3 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_uvc_timer),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res3),
 
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.

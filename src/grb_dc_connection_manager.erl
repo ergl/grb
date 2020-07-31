@@ -6,7 +6,7 @@
 
 -define(REPLICAS_TABLE, connected_replicas).
 -define(REPLICAS_TABLE_KEY, replicas).
--define(CONN_SOCKS_TABLE, connection_sockets).
+-define(CONN_POOL_TABLE, connection_pools).
 
 %% External API
 -export([connect_to/1,
@@ -36,9 +36,9 @@
 
 -record(state, {
     replicas :: cache(replicas, ordsets:ordset(replica_id())),
-    connection_sockets :: cache({partition_id(), replica_id()}, inet:socket()),
+    connections :: cache({partition_id(), replica_id()}, inter_dc_conn()),
     %% for cleanup purposes, no need to expose with ETS to other nodes
-    reverse_pid_index = #{} :: #{inet:socket() => pid()}
+    conn_index = #{} :: #{inter_dc_conn() => undefined}
 }).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -57,18 +57,18 @@ connect_to(#replica_descriptor{replica_id=ReplicaID, remote_addresses=RemoteNode
     try
         Result = lists:foldl(fun(Partition, {EntryMap, PartitionMap}) ->
             Entry={RemoteIP, RemotePort} = maps:get(Partition, RemoteNodes),
-            ConnPid = case maps:is_key(Entry, EntryMap) of
+            ConnPool = case maps:is_key(Entry, EntryMap) of
                 true ->
                     maps:get(Entry, EntryMap);
                 false ->
-                    case grb_dc_connection_sender_sup:start_connection(ReplicaID, RemoteIP, RemotePort) of
-                        {ok, Pid} ->
-                            Pid;
+                    case grb_dc_connection_sender:start_connection(ReplicaID, RemoteIP, RemotePort, 16) of
+                        {ok, Pool} ->
+                            Pool;
                         Err ->
                             throw({error, {sender_connection, ReplicaID, RemoteIP, Err}})
                     end
             end,
-            {EntryMap#{Entry => ConnPid}, PartitionMap#{Partition => ConnPid}}
+            {EntryMap#{Entry => ConnPool}, PartitionMap#{Partition => ConnPool}}
         end, {#{}, #{}}, grb_dc_utils:my_partitions()),
         {EntryMap, PartitionConnections} = Result,
         ?LOG_DEBUG("EntryMap: ~p", [EntryMap]),
@@ -83,9 +83,9 @@ connect_to(#replica_descriptor{replica_id=ReplicaID, remote_addresses=RemoteNode
 %%      Although connections are partition-aware, we will remove
 %%      the connections to all nodes at the remote replica, and
 %%      mark it as down.
--spec connection_closed(replica_id(), inet:socket()) -> ok.
-connection_closed(ReplicaId, Socket) ->
-    gen_server:cast(?MODULE, {closed, ReplicaId, Socket}).
+-spec connection_closed(replica_id(), inter_dc_conn()) -> ok.
+connection_closed(ReplicaId, PoolName) ->
+    gen_server:cast(?MODULE, {closed, ReplicaId, PoolName}).
 
 %% @doc Close the connection to (all nodes at) the remote replica
 -spec close(replica_id()) -> ok.
@@ -100,7 +100,7 @@ close(ReplicaId) ->
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
--spec add_replica_connections(replica_id(), #{partition_id() => pid()}) -> ok.
+-spec add_replica_connections(replica_id(), #{partition_id() => inter_dc_conn()}) -> ok.
 add_replica_connections(Id, PartitionConnections) ->
     gen_server:call(?MODULE, {add_replica_connections, Id, PartitionConnections}).
 
@@ -108,23 +108,18 @@ add_replica_connections(Id, PartitionConnections) ->
 connected_replicas() ->
     ets:lookup_element(?REPLICAS_TABLE, ?REPLICAS_TABLE_KEY, 2).
 
--spec send_msg(replica_id(), partition_id(), binary()) -> ok | {error, term()}.
-send_msg(Replica, Partition, Msg) ->
-    try
-        Sock = ets:lookup_element(?CONN_SOCKS_TABLE, {Partition, Replica}, 2),
-        gen_tcp:send(Sock, Msg)
-    catch _:_ ->
-        {error, gone}
-    end.
-
 -spec send_heartbeat(To :: replica_id(),
                      From :: replica_id(),
                      Partition :: partition_id(),
                      Time :: grb_time:ts()) -> ok | {error, term()}.
 
 send_heartbeat(ToId, FromId, Partition, Time) ->
-    ?LOG_DEBUG("Sending blue_hearbeat to ~p:~p on behalf of ~p: ~p", [ToId, Partition, FromId, Time]),
-    send_msg(ToId, Partition, heartbeat_msg(FromId, Partition, Time)).
+    try
+        PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
+        grb_dc_connection_sender:send_heartbeat(PoolName, FromId, Partition, Time)
+    catch _:_ ->
+        {error, gone}
+    end.
 
 -spec send_tx(From :: replica_id(),
               To :: replica_id(),
@@ -132,8 +127,12 @@ send_heartbeat(ToId, FromId, Partition, Time) ->
               Tx :: {term(), #{}, vclock()}) -> ok | {error, term()}.
 
 send_tx(ToId, FromId, Partition, Transaction) ->
-    ?LOG_DEBUG("Sending transaction to ~p:~p on behalf of ~p", [ToId, Partition, FromId, Transaction]),
-    send_msg(ToId, Partition, replicate_tx_msg(FromId, Partition, Transaction)).
+    try
+        PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
+        grb_dc_connection_sender:send_transaction(PoolName, FromId, Partition, Transaction)
+    catch _:_ ->
+        {error, gone}
+    end.
 
 -spec send_clocks(From :: replica_id(),
                   To :: replica_id(),
@@ -142,8 +141,12 @@ send_tx(ToId, FromId, Partition, Transaction) ->
                   StableVC :: vclock()) -> ok | {error, term()}.
 
 send_clocks(ToId, FromId, Partition, KnownVC, StableVC) ->
-    ?LOG_DEBUG("Sending clocks to ~p:~p", [ToId, Partition]),
-    send_msg(ToId, Partition, update_clocks_msg(FromId, Partition, KnownVC, StableVC)).
+    try
+        PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
+        grb_dc_connection_sender:send_clocks(PoolName, FromId, Partition, KnownVC, StableVC)
+    catch _:_ ->
+        {error, gone}
+    end.
 
 %% @doc Same as send_clocks/5, but let the remote node to use knownVC as a heartbeat
 -spec send_clocks_heartbeat(From :: replica_id(),
@@ -153,8 +156,12 @@ send_clocks(ToId, FromId, Partition, KnownVC, StableVC) ->
                             StableVC :: vclock()) -> ok | {error, term()}.
 
 send_clocks_heartbeat(ToId, FromId, Partition, KnownVC, StableVC) ->
-    ?LOG_DEBUG("Sending clocks/heartbeat to ~p:~p", [ToId, Partition]),
-    send_msg(ToId, Partition, update_clocks_heartbeat_msg(FromId, Partition, KnownVC, StableVC)).
+    try
+        PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
+        grb_dc_connection_sender:send_clocks_heartbeat(PoolName, FromId, Partition, KnownVC, StableVC)
+    catch _:_ ->
+        {error, gone}
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
@@ -163,50 +170,49 @@ send_clocks_heartbeat(ToId, FromId, Partition, KnownVC, StableVC) ->
 init([]) ->
     ReplicaTable = ets:new(?REPLICAS_TABLE, [set, protected, named_table, {read_concurrency, true}]),
     true = ets:insert(?REPLICAS_TABLE, {?REPLICAS_TABLE_KEY, ordsets:new()}),
-    ConnPidTable = ets:new(?CONN_SOCKS_TABLE, [ordered_set, protected, named_table, {read_concurrency, true}]),
+    ConnPoolTable = ets:new(?CONN_POOL_TABLE, [ordered_set, protected, named_table, {read_concurrency, true}]),
     {ok, #state{replicas=ReplicaTable,
-                connection_sockets=ConnPidTable}}.
+                connections=ConnPoolTable}}.
 
-handle_call({add_replica_connections, ReplicaId, PartitionConnections}, _From, State=#state{reverse_pid_index=Index0}) ->
+handle_call({add_replica_connections, ReplicaId, PartitionConnections}, _From, State=#state{conn_index=Index0}) ->
     Replicas = connected_replicas(),
     true = ets:insert(?REPLICAS_TABLE, {?REPLICAS_TABLE_KEY, ordsets:add_element(ReplicaId, Replicas)}),
-    {Objects, Index} = maps:fold(fun(Partition, Pid, {ObjectAcc, IndexAcc}) ->
-        ConnSocket = grb_dc_connection_sender:get_socket(Pid),
+    {Objects, Index} = maps:fold(fun(Partition, PoolName, {ObjectAcc, IndexAcc}) ->
         {
-            [{{Partition, ReplicaId}, ConnSocket} | ObjectAcc],
-            IndexAcc#{ConnSocket => Pid}
+            [{{Partition, ReplicaId}, PoolName} | ObjectAcc],
+            IndexAcc#{PoolName => undefined}
         }
     end, {[], Index0}, PartitionConnections),
-    true = ets:insert(?CONN_SOCKS_TABLE, Objects),
-    {reply, ok, State#state{reverse_pid_index=Index}};
+    true = ets:insert(?CONN_POOL_TABLE, Objects),
+    {reply, ok, State#state{conn_index=Index}};
 
-handle_call({close, ReplicaId}, _From, State=#state{reverse_pid_index=Index}) ->
+handle_call({close, ReplicaId}, _From, State=#state{conn_index=Index}) ->
     ?LOG_INFO("Closing connections to ~p", [ReplicaId]),
     Replicas = connected_replicas(),
     true = ets:insert(?REPLICAS_TABLE, {?REPLICAS_TABLE_KEY, ordsets:del_element(ReplicaId, Replicas)}),
-    Socks = ets:select(?CONN_SOCKS_TABLE, [{{{'_', ReplicaId}, '$1'}, [], ['$1']}]),
-    _ = ets:select_delete(?CONN_SOCKS_TABLE, [{{{'_', ReplicaId}, '_'}, [], [true]}]),
+    Pools = ets:select(?CONN_POOL_TABLE, [{{{'_', ReplicaId}, '$1'}, [], ['$1']}]),
+    _ = ets:select_delete(?CONN_POOL_TABLE, [{{{'_', ReplicaId}, '_'}, [], [true]}]),
     [try
-         grb_dc_connection_sender:close(maps:get(S, Index))
+         grb_dc_connection_sender:close(P)
      catch _:_ -> ok
-     end || S <- Socks],
-    {reply, ok, State#state{reverse_pid_index=maps:without(Socks, Index)}};
+     end || P <- Pools],
+    {reply, ok, State#state{conn_index=maps:without(Pools, Index)}};
 
 handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
-handle_cast({closed, ReplicaId, Socket}, State=#state{reverse_pid_index=Index}) ->
-    ?LOG_INFO("Connection lost to ~p (~p), removing all references", [ReplicaId, Socket]),
+handle_cast({closed, ReplicaId, PoolName}, State=#state{conn_index=Index}) ->
+    ?LOG_INFO("Connection lost to ~p (~p), removing all references", [ReplicaId, PoolName]),
     Replicas = connected_replicas(),
     true = ets:insert(?REPLICAS_TABLE, {?REPLICAS_TABLE_KEY, ordsets:del_element(ReplicaId, Replicas)}),
-    Socks = ets:select(?CONN_SOCKS_TABLE, [{{{'_', ReplicaId}, '$1'}, [], ['$1']}]),
-    _ = ets:select_delete(?CONN_SOCKS_TABLE, [{{{'_', ReplicaId}, '_'}, [], [true]}]),
-    [case S of
-        Socket -> ok;
-        _ -> try grb_dc_connection_sender:close(maps:get(S, Index)) catch _:_ -> ok end
-     end || S <- Socks],
-    {noreply, State#state{reverse_pid_index=maps:without(Socks, Index)}};
+    Pools = ets:select(?CONN_POOL_TABLE, [{{{'_', ReplicaId}, '$1'}, [], ['$1']}]),
+    _ = ets:select_delete(?CONN_POOL_TABLE, [{{{'_', ReplicaId}, '_'}, [], [true]}]),
+    [case P of
+        PoolName -> ok;
+        _ -> grb_dc_connection_sender:close(P)
+     end || P <- Pools],
+    {noreply, State#state{conn_index=maps:without(Pools, Index)}};
 
 handle_cast(E, S) ->
     ?LOG_WARNING("unexpected cast: ~p~n", [E]),
@@ -215,27 +221,3 @@ handle_cast(E, S) ->
 handle_info(E, S) ->
     logger:warning("unexpected info: ~p~n", [E]),
     {noreply, S}.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% internal
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
--spec heartbeat_msg(replica_id(), partition_id(), grb_time:ts()) -> binary().
-heartbeat_msg(FromId, ToPartition, Timestamp) ->
-    grb_dc_message_utils:encode_msg(FromId, ToPartition, #blue_heartbeat{timestamp=Timestamp}).
-
--spec replicate_tx_msg(replica_id(), partition_id(), {term(), #{}, vclock()}) -> binary().
-replicate_tx_msg(FromId, ToPartition, {TxId, WS, CommitVC}) ->
-    grb_dc_message_utils:encode_msg(FromId, ToPartition, #replicate_tx{tx_id=TxId,
-                                                                       writeset=WS,
-                                                                       commit_vc=CommitVC}).
-
--spec update_clocks_msg(replica_id(), partition_id(), vclock(), vclock()) -> binary().
-update_clocks_msg(FromId, ToPartition, KnownVC, StableVC) ->
-    grb_dc_message_utils:encode_msg(FromId, ToPartition, #update_clocks{known_vc=KnownVC,
-                                                                        stable_vc=StableVC}).
-
--spec update_clocks_heartbeat_msg(replica_id(), partition_id(), vclock(), vclock()) -> binary().
-update_clocks_heartbeat_msg(FromId, ToPartition, KnownVC, StableVC) ->
-    grb_dc_message_utils:encode_msg(FromId, ToPartition, #update_clocks_heartbeat{known_vc=KnownVC,
-                                                                                  stable_vc=StableVC}).

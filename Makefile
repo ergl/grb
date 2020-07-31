@@ -1,7 +1,8 @@
 BASEDIR = $(shell pwd)
 REBAR = $(BASEDIR)/rebar3
-RELPATH = _build/default/rel/grb
+BASIC_PROFILE = default
 DEV_PROFILE = debug_log
+RELPATH = _build/$(BASIC_PROFILE)/rel/grb
 DEV1RELPATH = _build/$(DEV_PROFILE)/rel/grb_local1
 DEV2RELPATH = _build/$(DEV_PROFILE)/rel/grb_local2
 DEV3RELPATH = _build/$(DEV_PROFILE)/rel/grb_local3
@@ -22,12 +23,22 @@ check_binaries:
 
 xref:
 	$(REBAR) xref skip_deps=true
+	$(REBAR) as basic_replication xref skip_deps=true
+	$(REBAR) as delay_clocks xref skip_deps=true
 
 dialyzer:
 	$(REBAR) dialyzer
+	$(REBAR) as basic_replication dialyzer
+	$(REBAR) as delay_clocks dialyzer
 
 debug:
 	$(REBAR) as debug_log compile
+
+cure:
+	$(REBAR) as basic_replication compile
+
+delay:
+	$(REBAR) as delay_clocks compile
 
 clean:
 	$(REBAR) clean --all
@@ -38,6 +49,9 @@ rel: compile
 debugrel:
 	$(REBAR) as debug_log release -n grb
 
+curerel:
+	$(REBAR) as basic_replication release -n grb
+
 debugrel-clean:
 	rm -rf _build/debug_log/rel
 
@@ -45,7 +59,7 @@ console:
 	$(BASEDIR)/$(RELPATH)/bin/$(ENVFILE) console
 
 relclean:
-	rm -rf _build/default/rel
+	rm -rf $(BASEDIR)/$(RELPATH)
 
 start:
 	$(BASEDIR)/$(RELPATH)/bin/$(ENVFILE) start
@@ -61,6 +75,8 @@ attach:
 
 test:
 	${REBAR} eunit skip_deps=true
+	${REBAR} as basic_replication eunit skip_deps=true
+	${REBAR} as delay_clocks eunit skip_deps=true
 	escript -c bin/join_cluster_script.erl eunit
 
 ct_test:
