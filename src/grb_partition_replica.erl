@@ -211,11 +211,10 @@ perform_op_wait(Promise, WaitMs, ReplicaId, Key, SnapshotVC, Val, S=#state{parti
 
 -spec check_known_vc(partition_id(), replica_id(), vclock()) -> ready | not_ready.
 check_known_vc(Partition, ReplicaId, VC) ->
-    KnownVC = grb_propagation_vnode:known_vc(Partition),
     SelfBlue = grb_vclock:get_time(ReplicaId, VC),
     SelfRed = grb_vclock:get_time(?RED_REPLICA, VC),
-    BlueTime = grb_vclock:get_time(ReplicaId, KnownVC),
-    RedTime = grb_vclock:get_time(?RED_REPLICA, KnownVC),
+    BlueTime = grb_propagation_vnode:known_time(Partition, ReplicaId),
+    RedTime = grb_propagation_vnode:known_time(Partition, ?RED_REPLICA),
     BlueCheck = BlueTime >= SelfBlue,
     RedCheck = RedTime >= SelfRed,
     case (BlueCheck andalso RedCheck) of

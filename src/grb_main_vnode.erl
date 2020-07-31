@@ -49,6 +49,10 @@
     %% todo(borja, crdt): change type of op_log when adding crdts
     op_log_size :: non_neg_integer(),
     op_log :: cache(key(), cache(key(), grb_version_log:t())),
+
+    %% It doesn't make sense to append it if we're not connected to other clusters
+    should_append_commit = true :: boolean(),
+
     default_bottom_value = <<>> :: term(),
     default_bottom_red = 0 :: grb_time:ts()
 }).
@@ -88,7 +92,7 @@ update_prepare_clocks(Partition, SnapshotVC) ->
 -spec handle_replicate(partition_id(), replica_id(), term(), #{}, vclock()) -> ok.
 handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
     CommitTime = grb_vclock:get_time(SourceReplica, VC),
-    KnownTime = grb_vclock:get_time(SourceReplica, grb_propagation_vnode:known_vc(Partition)),
+    KnownTime = grb_propagation_vnode:known_time(Partition, SourceReplica),
     case KnownTime < CommitTime of
         false ->
             ok; %% de-dup, we already received this
@@ -137,6 +141,12 @@ handle_command(ping, _Sender, State) ->
 handle_command(is_ready, _Sender, State) ->
     Ready = lists:all(fun is_ready/1, [State#state.op_log]),
     {reply, Ready, State};
+
+handle_command(enable_blue_append, _Sender, S) ->
+    {reply, ok, S#state{should_append_commit=true}};
+
+handle_command(disable_blue_append, _Sender, S) ->
+    {reply, ok, S#state{should_append_commit=false}};
 
 handle_command(start_blue_hb_timer, _From, S = #state{blue_tick_interval=Int, blue_tick_timer=undefined}) ->
     TRef = erlang:send_after(Int, self(), ?blue_tick_req),
@@ -204,7 +214,7 @@ handle_info(?blue_tick_req, State=#state{partition=P,
                                          prepared_blue=PreparedBlue}) ->
     erlang:cancel_timer(Timer),
     KnownTime = compute_new_known_time(PreparedBlue),
-    ok = grb_propagation_vnode:handle_self_blue_heartbeat_sync(P, KnownTime),
+    ok = grb_propagation_vnode:handle_self_blue_heartbeat(P, KnownTime),
     {ok, State#state{blue_tick_timer=erlang:send_after(Interval, self(), ?blue_tick_req)}};
 
 handle_info(Msg, State) ->
@@ -236,14 +246,20 @@ handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partit
 decide_blue_internal(ReplicaId, TxId, VC, S=#state{partition=SelfPartition,
                                                    op_log=OpLog,
                                                    op_log_size=LogSize,
-                                                   prepared_blue=PreparedBlue}) ->
+                                                   prepared_blue=PreparedBlue,
+                                                   should_append_commit=ShouldAppend}) ->
 
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
     {{WS, _}, PreparedBlue1} = maps:take(TxId, PreparedBlue),
     ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
     KnownTime = compute_new_known_time(PreparedBlue1),
-    ok = grb_propagation_vnode:append_blue_commit(ReplicaId, SelfPartition, KnownTime, TxId, WS, VC),
+    case ShouldAppend of
+        true ->
+            grb_propagation_vnode:append_blue_commit(ReplicaId, SelfPartition, KnownTime, TxId, WS, VC);
+        false ->
+            grb_propagation_vnode:handle_blue_heartbeat(SelfPartition, ReplicaId, KnownTime)
+    end,
     S#state{prepared_blue=PreparedBlue1}.
 
 -spec update_partition_state(TxId :: term(),

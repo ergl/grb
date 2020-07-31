@@ -9,11 +9,12 @@
 
 %% Common public API
 -export([known_vc/1,
+         known_time/2,
          stable_vc/1,
          update_stable_vc_sync/2,
          append_blue_commit/6,
          handle_blue_heartbeat/3,
-         handle_self_blue_heartbeat_sync/2]).
+         handle_self_blue_heartbeat/2]).
 
 -ifdef(BASIC_REPLICATION).
 %% Basic Replication API
@@ -58,7 +59,7 @@
 -define(clock_send_req, clock_send_event).
 -define(recompute_uvc, recompute_uvc_event).
 
--define(known_key, known_vc).
+-define(known_key(Replica), {known_vc, Replica}).
 -define(stable_key, stable_vc).
 -define(uniform_key, uniform_vc).
 
@@ -66,6 +67,7 @@
 -type global_known_matrix() :: #{{replica_id(), replica_id()} => grb_time:ts()}.
 -type blue_commit_logs() :: #{replica_id() => grb_blue_commit_log:t()}.
 -type uniform_barriers() :: orddict:orddict(grb_time:ts(), [grb_promise:t()]).
+-type clock_cache() :: cache(atom, vclock()) | cache({known_vc, replica_id() | id}, grb_time:ts()).
 
 -record(state, {
     partition :: partition_id(),
@@ -100,9 +102,7 @@
     fault_tolerant_groups = [] :: [[replica_id()]],
     stable_matrix = #{} :: stable_matrix(),
 
-    %% It doesn't make sense to append it if we're not connected to other clusters
-    should_append_commit = true :: boolean(),
-    clock_cache :: cache(atom(), vclock()),
+    clock_cache :: clock_cache(),
 
     %% List of pending uniform barriers by clients, recompute on uniformVC update
     pending_barriers = [] :: uniform_barriers()
@@ -127,7 +127,22 @@
 
 -spec known_vc(partition_id()) -> vclock().
 known_vc(Partition) ->
-    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?known_key, 2).
+    known_vc_internal(cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
+
+-spec known_vc_internal(clock_cache()) -> vclock().
+known_vc_internal(ClockTable) ->
+    lists:foldl(fun(Replica, Acc) ->
+        Ts = known_time_internal(Replica, ClockTable),
+        grb_vclock:set_time(Replica, Ts, Acc)
+    end, grb_vclock:new(), grb_dc_manager:all_replicas()).
+
+-spec known_time(partition_id(), (replica_id() | red)) -> grb_time:ts().
+known_time(Partition, ReplicaId) ->
+    known_time_internal(ReplicaId, cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
+
+-spec known_time_internal((replica_id() | red), clock_cache()) -> grb_time:ts().
+known_time_internal(ReplicaId, ClockTable) ->
+    ets:lookup_element(ClockTable, ?known_key(ReplicaId), 2).
 
 -spec stable_vc(partition_id()) -> vclock().
 stable_vc(Partition) ->
@@ -192,20 +207,15 @@ merge_remote_uniform_vc(Partition, VC) ->
 
 -spec handle_blue_heartbeat(partition_id(), replica_id(), grb_time:ts()) -> ok.
 handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
-    KnownTime = grb_vclock:get_time(ReplicaId, known_vc(Partition)),
-    case KnownTime < Ts of
-        false ->
-            ok; %% de-dup, ignore message
-        true ->
-            riak_core_vnode_master:command({Partition, node()},
-                                           {blue_hb, ReplicaId, Ts},
-                                           ?master)
-    end.
+    update_known_vc(ReplicaId, Ts, cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
 
 %% @doc Like handle_blue_heartbeat/3, but for our own replica, and sync
--spec handle_self_blue_heartbeat_sync(partition_id(), grb_time:ts()) -> ok.
-handle_self_blue_heartbeat_sync(Partition, Ts) ->
-    riak_core_vnode_master:sync_command({Partition, node()}, {self_blue_hb, Ts}, ?master, infinity).
+-spec handle_self_blue_heartbeat(partition_id(), grb_time:ts()) -> ok.
+handle_self_blue_heartbeat(Partition, Ts) ->
+    SelfReplica = grb_dc_manager:replica_id(),
+    %% ok to insert directly, we are always called from the same place
+    true = ets:insert(cache_name(Partition, ?PARTITION_CLOCK_TABLE), {?known_key(SelfReplica), Ts}),
+    ok.
 
 -spec handle_clock_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
 handle_clock_update(Partition, FromReplicaId, KnownVC, StableVC) ->
@@ -241,10 +251,10 @@ init([Partition]) ->
     {ok, SingleDCInterval} = application:get_env(grb, basic_replication_interval),
     {ok, SendClockInterval} = application:get_env(grb, remote_clock_broadcast_interval),
 
-    ClockTable = new_cache(Partition, ?PARTITION_CLOCK_TABLE),
+    ClockTable = new_cache(Partition, ?PARTITION_CLOCK_TABLE, [ordered_set, public, named_table, {read_concurrency, true}]),
     true = ets:insert(ClockTable, [{?uniform_key, grb_vclock:new()},
                                    {?stable_key, grb_vclock:new()},
-                                   {?known_key, grb_vclock:new()}]),
+                                   {?known_key(?RED_REPLICA), 0}]),
 
     {ok, #state{partition=Partition,
                 local_replica=undefined, % ok to do this, we'll overwrite it after join
@@ -262,27 +272,27 @@ handle_command(is_ready, _Sender, State) ->
     Ready = lists:all(fun is_ready/1, [State#state.clock_cache]),
     {reply, Ready, State};
 
-handle_command(enable_blue_append, _Sender, S) ->
-    {reply, ok, S#state{should_append_commit=true}};
-
-handle_command(disable_blue_append, _Sender, S) ->
-    {reply, ok, S#state{should_append_commit=false}};
-
-handle_command(learn_dc_id, _Sender, S) ->
+handle_command(learn_dc_id, _Sender, S=#state{clock_cache=ClockTable}) ->
     %% called after joining ring, this is now the correct id
-    {reply, ok, S#state{local_replica=grb_dc_manager:replica_id()}};
+    ReplicaId = grb_dc_manager:replica_id(),
+    true = ets:insert(ClockTable, {?known_key(ReplicaId), 0}),
+    {reply, ok, S#state{local_replica=ReplicaId}};
 
 handle_command({learn_dc_groups, MyGroups}, _From, S) ->
     %% called after connecting other replicas
     {reply, ok, S#state{fault_tolerant_groups=MyGroups}};
 
-handle_command(populate_logs, _From, S=#state{logs=Logs0}) ->
+handle_command(populate_logs, _From, S=#state{logs=Logs0,
+                                              clock_cache=ClockTable,
+                                              local_replica=LocalReplica}) ->
     %% called after connecting other replicas
     %% populate log, avoid allocating on the replication path
-    AllReplicas = grb_dc_manager:all_replicas(),
+    RemoteReplicas = grb_dc_manager:remote_replicas(),
+    true = ets:insert(ClockTable, [{?known_key(R), 0} || R <- RemoteReplicas]),
+
     Logs = lists:foldl(fun(Replica, LogAcc) ->
         LogAcc#{Replica => grb_blue_commit_log:new(Replica)}
-    end, Logs0, AllReplicas),
+    end, Logs0, [LocalReplica | RemoteReplicas]),
     {reply, ok, S#state{logs=Logs}};
 
 handle_command(start_propagate_timer, _From, State) ->
@@ -307,13 +317,6 @@ handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTabl
     true = ets:update_element(ClockTable, ?uniform_key, {2, NewSVC}),
     {noreply, S};
 
-handle_command({blue_hb, FromReplica, Ts}, _Sender, S=#state{clock_cache=ClockTable}) ->
-    ok = update_known_vc(FromReplica, Ts, ClockTable),
-    {noreply, S};
-
-handle_command({self_blue_hb, Ts}, _Sender, S=#state{local_replica=ReplicaId, clock_cache=ClockCache}) ->
-    {reply, update_known_vc(ReplicaId, Ts, ClockCache), S};
-
 handle_command({remote_clock_update, FromReplicaId, KnownVC, StableVC}, _Sender, S) ->
     {noreply, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
 
@@ -322,14 +325,8 @@ handle_command({remote_clock_heartbeat_update, FromReplicaId, KnownVC, StableVC}
     ok = update_known_vc(FromReplicaId, Timestamp, ClockCache),
     {noreply, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
 
-handle_command({append_blue, ReplicaId, KnownTime, _TxId, _WS, _CommitVC}, _Sender, S=#state{clock_cache=ClockTable,
-                                                                                             should_append_commit=false}) ->
-    ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
-    {reply, ok, S};
-
 handle_command({append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC}, _Sender, S=#state{logs=Logs,
-                                                                                          clock_cache=ClockTable,
-                                                                                          should_append_commit=true})->
+                                                                                          clock_cache=ClockTable})->
     ReplicaLog = maps:get(ReplicaId, Logs),
     ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
     {reply, ok, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
@@ -341,24 +338,20 @@ handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
 
-handle_info(?replication_req, State=#state{clock_cache=ClockTable,
-                                           replication_timer=Timer,
+handle_info(?replication_req, State=#state{replication_timer=Timer,
                                            replication_interval=Interval}) ->
 
     erlang:cancel_timer(Timer),
-    KnownVC = ets:lookup_element(ClockTable, ?known_key, 2),
-    NewState = replicate_internal(KnownVC, State),
+    NewState = replicate_internal(State),
     {ok, NewState#state{replication_timer=erlang:send_after(Interval, self(), ?replication_req)}};
 
 handle_info(?uniform_req, State=#state{partition=P,
-                                       clock_cache=ClockTable,
                                        uniform_timer=Timer,
                                        uniform_interval=Interval}) ->
 
     erlang:cancel_timer(Timer),
     ?LOG_DEBUG("starting uniform replication at ~p", [P]),
-    KnownVC = ets:lookup_element(ClockTable, ?known_key, 2),
-    GlobalMatrix = uniform_replicate_internal(KnownVC, State),
+    GlobalMatrix = uniform_replicate_internal(State),
     {ok, State#state{global_known_matrix=GlobalMatrix,
                      uniform_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
 
@@ -369,7 +362,7 @@ handle_info(?clock_send_req, State=#state{partition=P,
                                           uniform_clock_send_interval=Interval}) ->
     erlang:cancel_timer(Timer),
     ?LOG_DEBUG("broadcast clocks"),
-    KnownVC = ets:lookup_element(ClockCache, ?known_key, 2),
+    KnownVC = known_vc_internal(ClockCache),
     StableVC = ets:lookup_element(ClockCache, ?stable_key, 2),
     lists:foreach(fun(Target) ->
         ok = grb_dc_connection_manager:send_clocks(Target, LocalId, P, KnownVC, StableVC)
@@ -589,16 +582,17 @@ update_clocks(FromReplicaId, KnownVC, StableVC, S=#state{local_replica=LocalId,
             stable_matrix=StableMatrix,
             pending_barriers=PendingBarriers}.
 
--spec replicate_internal(vclock(), state()) -> state().
+-spec replicate_internal(state()) -> state().
 -ifdef(BASIC_REPLICATION).
 
-replicate_internal(KnownVC, S=#state{logs=Logs,
-                                     partition=Partition,
-                                     local_replica=LocalId,
-                                     basic_last_sent=LastSent}) ->
+replicate_internal(S=#state{logs=Logs,
+                            partition=Partition,
+                            local_replica=LocalId,
+                            clock_cache=ClockTable,
+                            basic_last_sent=LastSent}) ->
 
     #{LocalId := LocalLog0} = Logs,
-    LocalTime = grb_vclock:get_time(LocalId, KnownVC),
+    LocalTime = known_time_internal(LocalId, ClockTable),
     {ToSend, LocalLog} = grb_blue_commit_log:remove_bigger(LastSent, LocalLog0),
     lists:foreach(fun(Target) ->
         case ToSend of
@@ -620,13 +614,14 @@ replicate_internal(KnownVC, S=#state{logs=Logs,
 -else.
 -ifdef(DELAY_UNIFORM_CLOCKS).
 
-replicate_internal(KnownVC, S=#state{logs=Logs,
-                                     partition=Partition,
-                                     local_replica=LocalId,
-                                     global_known_matrix=Matrix0}) ->
+replicate_internal(S=#state{logs=Logs,
+                            partition=Partition,
+                            local_replica=LocalId,
+                            clock_cache=ClockTable,
+                            global_known_matrix=Matrix0}) ->
 
     #{LocalId := LocalLog} = Logs,
-    LocalTime = grb_vclock:get_time(LocalId, KnownVC),
+    LocalTime = known_time_internal(LocalId, ClockTable),
     Matrix = lists:foldl(fun(Target, AccMatrix) ->
         ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
         ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
@@ -649,15 +644,16 @@ replicate_internal(KnownVC, S=#state{logs=Logs,
 
 -else.
 
-replicate_internal(KnownVC, S=#state{logs=Logs,
-                                     partition=Partition,
-                                     local_replica=LocalId,
-                                     clock_cache=ClockCache,
-                                     global_known_matrix=Matrix0}) ->
+replicate_internal(S=#state{logs=Logs,
+                            partition=Partition,
+                            local_replica=LocalId,
+                            clock_cache=ClockTable,
+                            global_known_matrix=Matrix0}) ->
 
     #{LocalId := LocalLog} = Logs,
+    KnownVC = known_vc_internal(ClockTable),
     LocalTime = grb_vclock:get_time(LocalId, KnownVC),
-    StableVC = ets:lookup_element(ClockCache, ?stable_key, 2),
+    StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
 
     Matrix = lists:foldl(fun(Target, AccMatrix) ->
         ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
@@ -687,15 +683,16 @@ replicate_internal(KnownVC, S=#state{logs=Logs,
 -endif.
 -endif.
 
--spec uniform_replicate_internal(vclock(), #state{}) -> global_known_matrix().
-uniform_replicate_internal(KnownVC, #state{logs=Logs,
-                                           partition=Partition,
-                                           global_known_matrix=Matrix}) ->
+-spec uniform_replicate_internal(state()) -> global_known_matrix().
+uniform_replicate_internal(#state{logs=Logs,
+                                  partition=Partition,
+                                  clock_cache=ClockTable,
+                                  global_known_matrix=Matrix}) ->
 
     RemoteReplicas = grb_dc_manager:remote_replicas(),
     ConnectedReplicas = grb_dc_connection_manager:connected_replicas(),
     lists:foldl(fun(TargetReplica, GlobalMatrix) ->
-        ureplicate_to(TargetReplica, RemoteReplicas, Partition, Logs, KnownVC, GlobalMatrix)
+        ureplicate_to(TargetReplica, RemoteReplicas, Partition, Logs, ClockTable, GlobalMatrix)
     end, Matrix, ConnectedReplicas).
 
 %% @doc Replicate other's transactions / heartbeats to the target replica.
@@ -710,17 +707,17 @@ uniform_replicate_internal(KnownVC, #state{logs=Logs,
                     RemoteReplicas :: [replica_id()],
                     LocalPartition :: partition_id(),
                     Logs :: blue_commit_logs(),
-                    KnownVC :: vclock(),
+                    ClockTable :: clock_cache(),
                     Matrix :: global_known_matrix()) -> global_known_matrix().
 
-ureplicate_to(_TargetReplica, [], _Partition, _Logs, _KnownVC, MatrixAcc) ->
+ureplicate_to(_TargetReplica, [], _Partition, _Logs, _ClockTable, MatrixAcc) ->
     MatrixAcc;
 
-ureplicate_to(TargetReplica, [TargetReplica | Rest], Partition, Logs, KnownVC, MatrixAcc) ->
+ureplicate_to(TargetReplica, [TargetReplica | Rest], Partition, Logs, ClockTable, MatrixAcc) ->
     %% don't send back transactions to the sender, skip
-    ureplicate_to(TargetReplica, Rest, Partition, Logs, KnownVC, MatrixAcc);
+    ureplicate_to(TargetReplica, Rest, Partition, Logs, ClockTable, MatrixAcc);
 
-ureplicate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, KnownVC, MatrixAcc) ->
+ureplicate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, ClockTable, MatrixAcc) ->
     %% tx <- { <_, _, VC> \in log[relay] | VC[relay] > globalMatrix[target, relay] }
     %% if tx =/= \emptyset
     %%     for all t \in tx (in t.VC[relay] order)
@@ -728,7 +725,7 @@ ureplicate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, KnownVC, Ma
     %% else
     %%     send HEARTBEAT(relay, knownVC[relay]) to target
     %% globalMatrix[target, relay] <- knownVC[relay]
-    HeartBeatTime = grb_vclock:get_time(RelayReplica, KnownVC),
+    HeartBeatTime = known_time_internal(RelayReplica, ClockTable),
     ThresholdTime = maps:get({TargetReplica, RelayReplica}, MatrixAcc, 0),
     ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, maps:get(RelayReplica, Logs)),
     case ToSend of
@@ -745,14 +742,15 @@ ureplicate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, KnownVC, Ma
             end, Txs)
     end,
     NewMatrix = MatrixAcc#{{TargetReplica, RelayReplica} => HeartBeatTime},
-    ureplicate_to(TargetReplica, Rest, Partition, Logs, KnownVC, NewMatrix).
+    ureplicate_to(TargetReplica, Rest, Partition, Logs, ClockTable, NewMatrix).
 
 %% @doc Set knownVC[ReplicaId] <-max- Time
--spec update_known_vc(replica_id(), grb_time:ts(), cache(atom(), vclock())) -> ok.
+-spec update_known_vc(replica_id(), grb_time:ts(), clock_cache()) -> ok.
 update_known_vc(ReplicaId, Time, ClockTable) ->
-    Old = ets:lookup_element(ClockTable, ?known_key, 2),
-    New = grb_vclock:set_max_time(ReplicaId, Time, Old),
-    true = ets:update_element(ClockTable, ?known_key, {2, New}),
+    KeyName = ?known_key(ReplicaId),
+    %% select_replace over a single key is atomic, so no-one should interleave with us
+    ets:select_replace(ClockTable,
+                       [{ {KeyName, '$1'}, [{'<', '$1', Time}], [{const, {KeyName, Time}}] }]),
     ok.
 
 -spec update_known_matrix(replica_id(), vclock(), global_known_matrix()) -> global_known_matrix().
@@ -764,7 +762,7 @@ update_known_matrix(FromReplicaId, KnownVC, Matrix) ->
     end, Matrix, grb_vclock:to_list(KnownVC)).
 
 -spec update_uniform_vc(StableMatrix :: stable_matrix(),
-                        ClockCache :: cache(atom(), vclock()),
+                        ClockCache :: clock_cache(),
                         Groups :: [[replica_id()]]) -> vclock().
 
 update_uniform_vc(StableMatrix, ClockCache, Groups) ->
@@ -810,10 +808,7 @@ min_ts(Left, Right) -> min(Left, Right).
 %%% Util Functions
 %%%===================================================================
 
--spec new_cache(partition_id(), atom()) -> cache_id().
-new_cache(Partition, Name) ->
-    new_cache(Partition, Name, [set, protected, named_table, {read_concurrency, true}]).
-
+-spec new_cache(partition_id(), atom(), [term()]) -> cache_id().
 new_cache(Partition, Name, Options) ->
     CacheName = cache_name(Partition, Name),
     case ets:info(CacheName) of
