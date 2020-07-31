@@ -1,7 +1,8 @@
 BASEDIR = $(shell pwd)
 REBAR = $(BASEDIR)/rebar3
-RELPATH = _build/default/rel/grb
-DEV_PROFILE = debug_basic_replication
+BASIC_PROFILE = default
+DEV_PROFILE = debug_log
+RELPATH = _build/$(BASIC_PROFILE)/rel/grb
 DEV1RELPATH = _build/$(DEV_PROFILE)/rel/grb_local1
 DEV2RELPATH = _build/$(DEV_PROFILE)/rel/grb_local2
 DEV3RELPATH = _build/$(DEV_PROFILE)/rel/grb_local3
@@ -58,7 +59,7 @@ console:
 	$(BASEDIR)/$(RELPATH)/bin/$(ENVFILE) console
 
 relclean:
-	rm -rf _build/default/rel
+	rm -rf $(BASEDIR)/$(RELPATH)
 
 start:
 	$(BASEDIR)/$(RELPATH)/bin/$(ENVFILE) start
