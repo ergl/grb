@@ -113,8 +113,7 @@
 -define(timers_unset, #state{replication_timer=undefined}).
 -else.
 -ifdef(UNIFORM_IMPROVED).
--define(timers_unset, #state{replication_timer=undefined, uniform_timer=undefined,
-                             uniform_clock_send_timer=undefined, prune_timer=undefined}).
+-define(timers_unset, #state{replication_timer=undefined, uniform_clock_send_timer=undefined, prune_timer=undefined}).
 -else.
 -define(timers_unset, #state{replication_timer=undefined, uniform_timer=undefined, prune_timer=undefined}).
 -endif.
@@ -448,7 +447,6 @@ stop_propagation_timers_internal(State) ->
 start_propagation_timers_internal(State) ->
     State#state{
         prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
-        uniform_timer=erlang:send_after(State#state.uniform_interval, self(), ?uniform_req),
         replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req),
         uniform_clock_send_timer=erlang:send_after(State#state.uniform_clock_send_interval, self(), ?clock_send_req)
     }.
@@ -456,12 +454,10 @@ start_propagation_timers_internal(State) ->
 
 stop_propagation_timers_internal(State) ->
     erlang:cancel_timer(State#state.prune_timer),
-    erlang:cancel_timer(State#state.uniform_timer),
     erlang:cancel_timer(State#state.replication_timer),
     erlang:cancel_timer(State#state.uniform_clock_send_timer),
     State#state{
         prune_timer=undefined,
-        uniform_timer=undefined,
         replication_timer=undefined,
         uniform_clock_send_timer=undefined
     }.
@@ -629,7 +625,7 @@ replicate_internal(S=#state{logs=Logs,
         case ToSend of
             [] ->
                 HBRes = grb_dc_connection_manager:send_heartbeat(Target, LocalId, Partition, LocalTime),
-                ?LOG_DEBUG("send clocks to ~p: ~p~n", [Target, HBRes]),
+                ?LOG_DEBUG("send heartbeat to ~p: ~p~n", [Target, HBRes]),
                 ok;
             Transactions ->
                 lists:foreach(fun(Tx) ->
