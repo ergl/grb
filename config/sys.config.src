@@ -85,7 +85,7 @@
     {uniform_replication_interval, ${UNIFORM_REPLICATION_INTERVAL_MS}},
 
     %% How often do we send our knownVC/stableVC to other replicas?
-    %% (only applicable on the delay_clocks rebar profile)
+    %% (only applicable on the uniform_improved rebar profile)
     {remote_clock_broadcast_interval, ${UNIFORM_CLOCK_INTERVAL_MS}},
 
     %% How often should we propagate our knownVC to local partitions?

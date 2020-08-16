@@ -86,7 +86,8 @@
     uniform_interval :: non_neg_integer(),
     uniform_timer = undefined :: reference() | undefined,
 
-    %% only used in remote_uvc
+    %% only used in uniform_improved (have to recompute our uniformVC if we're
+    %% not receiving clock updates from other nodes).
     single_replica_uniform_interval :: non_neg_integer(),
     single_replica_uniform_timer = undefined :: reference() | undefined,
 
@@ -111,7 +112,7 @@
 -ifdef(BASIC_REPLICATION).
 -define(timers_unset, #state{replication_timer=undefined}).
 -else.
--ifdef(DELAY_UNIFORM_CLOCKS).
+-ifdef(UNIFORM_IMPROVED).
 -define(timers_unset, #state{replication_timer=undefined, uniform_timer=undefined,
                              uniform_clock_send_timer=undefined, prune_timer=undefined}).
 -else.
@@ -401,7 +402,7 @@ handle_info(Msg, State) ->
 %%%===================================================================
 
 -spec start_uvc_timer(state()) -> state().
--ifdef(REMOTE_UVC).
+-ifdef(UNIFORM_IMPROVED).
 
 start_uvc_timer(S=#state{single_replica_uniform_interval=Int,
                          single_replica_uniform_timer=undefined}) ->
@@ -442,7 +443,7 @@ stop_propagation_timers_internal(State) ->
 
 -else.
 
--ifdef(DELAY_UNIFORM_CLOCKS).
+-ifdef(UNIFORM_IMPROVED).
 
 start_propagation_timers_internal(State) ->
     State#state{
@@ -512,11 +513,11 @@ update_stable_vc_internal(VC, S=#state{clock_cache=ClockTable}) ->
     S.
 
 -else.
--ifdef(REMOTE_UVC).
-
+-ifdef(UNIFORM_IMPROVED).
 update_stable_vc_internal(VC, S=#state{local_replica=LocalId,
                                        clock_cache=ClockTable,
                                        stable_matrix=StableMatrix}) ->
+    %% don't recompute uniformVC on stableVC update, only on remote clock update
     OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     %% Safe to update everywhere, caller has already ensured to not update the current replica
     NewSVC = grb_vclock:max(OldSVC, VC),
@@ -612,7 +613,7 @@ replicate_internal(S=#state{logs=Logs,
     S#state{basic_last_sent=LocalTime, logs=Logs#{LocalId => LocalLog}}.
 
 -else.
--ifdef(DELAY_UNIFORM_CLOCKS).
+-ifdef(UNIFORM_IMPROVED).
 
 replicate_internal(S=#state{logs=Logs,
                             partition=Partition,
