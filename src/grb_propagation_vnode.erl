@@ -769,17 +769,17 @@ update_uniform_vc(StableMatrix, ClockCache, Groups) ->
     UniformVC.
 
 -spec compute_uniform_vc(vclock(), stable_matrix(), [[replica_id()]]) -> vclock().
-compute_uniform_vc(UniformVC, StableMatrix, Groups) ->
-    Fresh = grb_vclock:new(),
-    VisibleBound = lists:foldl(fun(Group, Acc) ->
-        [H|T] = Group,
-        SVC = maps:get(H, StableMatrix, Fresh),
-        GroupMin = lists:foldl(fun(R, AccSVC) ->
-            grb_vclock:min(AccSVC, maps:get(R, StableMatrix, Fresh))
-        end, SVC, T),
-        grb_vclock:max(Acc, GroupMin)
-    end, Fresh, Groups),
-    grb_vclock:max(VisibleBound, UniformVC).
+compute_uniform_vc(UniformVC, _StableMatrix, _Groups) -> UniformVC.
+%%    Fresh = grb_vclock:new(),
+%%    VisibleBound = lists:foldl(fun(Group, Acc) ->
+%%        [H|T] = Group,
+%%        SVC = maps:get(H, StableMatrix, Fresh),
+%%        GroupMin = lists:foldl(fun(R, AccSVC) ->
+%%            grb_vclock:min(AccSVC, maps:get(R, StableMatrix, Fresh))
+%%        end, SVC, T),
+%%        grb_vclock:max(Acc, GroupMin)
+%%    end, Fresh, Groups),
+%%    grb_vclock:max(VisibleBound, UniformVC).
 
 %% @doc Compute the lower bound of visible transactions from the globalKnownMatrix
 %%
