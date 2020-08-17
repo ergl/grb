@@ -21,9 +21,7 @@
          get_bigger/2,
          remove_leq/2]).
 
--ifdef(BASIC_REPLICATION).
 -export([remove_bigger/2]).
--endif.
 
 -spec new(replica_id()) -> t().
 new(AtId) ->
@@ -48,7 +46,6 @@ get_bigger(Cutoff, [{Key, _} | _], Acc) when abs(Key) =< Cutoff ->
 get_bigger(Cutoff, [{Key, Val} | Rest], Acc) when abs(Key) > Cutoff ->
     get_bigger(Cutoff, Rest, [Val | Acc]).
 
--ifdef(BASIC_REPLICATION).
 %% @doc Remove all entries with commit time at the created replica bigger than `Timestamp`
 %%
 %%      Entries are returned in increasing commit time order
@@ -63,7 +60,6 @@ remove_bigger(Cutoff, All=[{Key, _} | _], Acc) when abs(Key) =< Cutoff ->
     {Acc, All};
 remove_bigger(Cutoff, [{Key, Val} | Rest], Acc) when abs(Key) > Cutoff ->
     remove_bigger(Cutoff, Rest, [Val | Acc]).
--endif.
 
 %% @doc Remove all entries with commit time at the created replica lower than `Timestamp`
 -spec remove_leq(grb_time:ts(), t()) -> t().

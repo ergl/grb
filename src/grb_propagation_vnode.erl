@@ -113,7 +113,7 @@
 -define(timers_unset, #state{replication_timer=undefined}).
 -else.
 -ifdef(UNIFORM_IMPROVED).
--define(timers_unset, #state{replication_timer=undefined, uniform_clock_send_timer=undefined, prune_timer=undefined}).
+-define(timers_unset, #state{replication_timer=undefined, uniform_clock_send_timer=undefined}).
 -else.
 -define(timers_unset, #state{replication_timer=undefined, uniform_timer=undefined, prune_timer=undefined}).
 -endif.
@@ -446,18 +446,15 @@ stop_propagation_timers_internal(State) ->
 
 start_propagation_timers_internal(State) ->
     State#state{
-        prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
         replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req),
         uniform_clock_send_timer=erlang:send_after(State#state.uniform_clock_send_interval, self(), ?clock_send_req)
     }.
 
 
 stop_propagation_timers_internal(State) ->
-    erlang:cancel_timer(State#state.prune_timer),
     erlang:cancel_timer(State#state.replication_timer),
     erlang:cancel_timer(State#state.uniform_clock_send_timer),
     State#state{
-        prune_timer=undefined,
         replication_timer=undefined,
         uniform_clock_send_timer=undefined
     }.
@@ -617,11 +614,12 @@ replicate_internal(S=#state{logs=Logs,
                             clock_cache=ClockTable,
                             global_known_matrix=Matrix0}) ->
 
-    #{LocalId := LocalLog} = Logs,
+    #{LocalId := LocalLog0} = Logs,
     LocalTime = known_time_internal(LocalId, ClockTable),
+    [Hd|_]=RemoteReplicas = grb_dc_connection_manager:connected_replicas(),
+    ThresholdTime = maps:get({Hd, LocalId}, Matrix0, 0),
+    {ToSend, LocalLog} = grb_blue_commit_log:remove_bigger(ThresholdTime, LocalLog0),
     Matrix = lists:foldl(fun(Target, AccMatrix) ->
-        ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
-        ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
         case ToSend of
             [] ->
                 HBRes = grb_dc_connection_manager:send_heartbeat(Target, LocalId, Partition, LocalTime),
@@ -635,9 +633,9 @@ replicate_internal(S=#state{logs=Logs,
                 end, Transactions)
         end,
         AccMatrix#{{Target, LocalId} => LocalTime}
-    end, Matrix0, grb_dc_connection_manager:connected_replicas()),
+    end, Matrix0, RemoteReplicas),
 
-    S#state{global_known_matrix=Matrix}.
+    S#state{global_known_matrix=Matrix, logs=Logs#{LocalId => LocalLog}}.
 
 -else.
 
