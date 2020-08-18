@@ -12,6 +12,7 @@
          min_at/3,
          max_at/3,
          max_except/3,
+         max_at_keys/3,
          to_list/1]).
 
 -ifdef(TEST).
@@ -88,6 +89,12 @@ max_except(Key, Left, Right) ->
 max_at(Key, Left, Right) ->
     Left#{Key => erlang:max(maps:get(Key, Left, 0), maps:get(Key, Right, 0))}.
 
+-spec max_at_keys([T], vc(T), vc(T)) -> vc(T).
+max_at_keys(Keys, Left, Right) ->
+    lists:foldl(fun(Key, AccMap) ->
+        AccMap#{Key => erlang:max(get_time(Key, Left), get_time(Key, Right))}
+    end, Left, Keys).
+
 -spec leq(vc(T), vc(T)) -> boolean().
 leq(Left, Right) ->
     F = fun(Key) ->
@@ -154,6 +161,24 @@ grb_vclock_max_at_test() ->
     ?assertEqual(D, E),
 
     F = grb_vclock:max_at(a, A, B),
+    ?assertEqual(A, F).
+
+grb_vclock_max_at_keys_test() ->
+    A = #{a => 0, b => 10, c => 30},
+    B = #{b => 20},
+
+    % Max at all keys is equivalent to normal max
+    C0 = grb_vclock:max_at_keys([a, b, c], B, A),
+    C1 = grb_vclock:max(B, A),
+    ?assertEqual(C0, C1),
+
+    D = grb_vclock:max_at_keys([c], B, A),
+    ?assertEqual(grb_vclock:max_at(c, B, A), D),
+
+    E = grb_vclock:max_at_keys([c], A, B),
+    ?assertEqual(A, E),
+
+    F = grb_vclock:max_at_keys([a], A, B),
     ?assertEqual(A, F).
 
 grb_vclock_max_except_test() ->

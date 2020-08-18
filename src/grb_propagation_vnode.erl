@@ -284,7 +284,8 @@ handle_command({learn_dc_groups, MyGroups}, _From, S) ->
 
 handle_command(populate_logs, _From, S=#state{logs=Logs0,
                                               clock_cache=ClockTable,
-                                              local_replica=LocalReplica}) ->
+                                              local_replica=LocalReplica,
+                                              stable_matrix=StableMatrix0}) ->
     %% called after connecting other replicas
     %% populate log, avoid allocating on the replication path
     RemoteReplicas = grb_dc_manager:remote_replicas(),
@@ -293,7 +294,13 @@ handle_command(populate_logs, _From, S=#state{logs=Logs0,
     Logs = lists:foldl(fun(Replica, LogAcc) ->
         LogAcc#{Replica => grb_blue_commit_log:new(Replica)}
     end, Logs0, [LocalReplica | RemoteReplicas]),
-    {reply, ok, S#state{logs=Logs}};
+
+    %% Populate stableMatrix, too
+    StableMatrix = lists:foldl(fun(Replica, MatrixAcc) ->
+        MatrixAcc#{Replica => grb_vclock:new()}
+    end, StableMatrix0, [LocalReplica | RemoteReplicas]),
+
+    {reply, ok, S#state{logs=Logs, stable_matrix=StableMatrix}};
 
 handle_command(start_propagate_timer, _From, State) ->
     {reply, ok, start_propagation_timers(State)};
@@ -770,6 +777,23 @@ update_uniform_vc(StableMatrix, ClockCache, Groups) ->
 -ifdef(REMOVE_UVC).
 compute_uniform_vc(UniformVC, _StableMatrix, _Groups) -> UniformVC.
 -else.
+-ifdef(UVC_IMPROVED).
+
+-spec compute_uniform_vc_group([replica_id()], stable_matrix(), [replica_id()]) -> vclock().
+compute_uniform_vc_group(AtReplicas, StableMatrix, [H | T]) ->
+    lists:foldl(fun(R, AccSVC) ->
+        grb_vclock:min_at(AtReplicas, AccSVC, maps:get(R, StableMatrix))
+    end, maps:get(H, StableMatrix), T).
+
+compute_uniform_vc(UniformVC, StableMatrix, [G | Rest]) ->
+    AllReplicas = grb_dc_manager:all_replicas(),
+    VisibleBound = lists:foldl(fun(Group, Acc) ->
+        grb_vclock:max_at_keys(AllReplicas, Acc, compute_uniform_vc_group(AllReplicas, StableMatrix, Group))
+    end, compute_uniform_vc_group(AllReplicas, StableMatrix, G), Rest),
+    grb_vclock:max_at_keys(AllReplicas, VisibleBound, UniformVC).
+
+-else.
+
 compute_uniform_vc(UniformVC, StableMatrix, Groups) ->
     Fresh = grb_vclock:new(),
     VisibleBound = lists:foldl(fun(Group, Acc) ->
@@ -781,6 +805,7 @@ compute_uniform_vc(UniformVC, StableMatrix, Groups) ->
         grb_vclock:max(Acc, GroupMin)
     end, Fresh, Groups),
     grb_vclock:max(VisibleBound, UniformVC).
+-endif.
 -endif.
 
 %% @doc Compute the lower bound of visible transactions from the globalKnownMatrix
