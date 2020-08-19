@@ -81,12 +81,9 @@ test:
 	escript -c bin/join_cluster_script.erl eunit
 
 devdotest:
-	./bin/join_cluster_script.erl 'grb_local1@127.0.0.1' 'grb_local2@127.0.0.1'
-	./bin/join_cluster_script.erl 'grb_local3@127.0.0.1' 'grb_local4@127.0.0.1'
-	./bin/connect_dcs.erl 'grb_local1@127.0.0.1' 'grb_local3@127.0.0.1'
 	escript -c bin/test_clock_advance.escript 'grb_local1@127.0.0.1'
 
-devtest: clean devrelclean devrel devstart devdotest devstop
+devtest: devdeploy devdotest devstop
 
 ct_test:
 	$(REBAR) ct
@@ -132,7 +129,7 @@ dev3-start:
 dev4-start:
 	INSTANCE_NAME=grb_local4 RIAK_HANDOFF_PORT=8499 TCP_LIST_PORT=7894 INTER_DC_PORT=8994 $(BASEDIR)/$(DEV4RELPATH)/bin/$(ENVFILE) start
 
-devstart: dev1-start dev2-start dev3-start dev4-start
+devstart: clean devrelclean devrel dev1-start dev2-start dev3-start dev4-start
 
 dev2-join:
 	INSTANCE_NAME=grb_local2 $(BASEDIR)/$(DEV2RELPATH)/bin/$(ENVFILE) eval 'riak_core:join("grb_local1@127.0.0.1")'
@@ -181,3 +178,8 @@ dev4-stop:
 	INSTANCE_NAME=grb_local4 $(BASEDIR)/$(DEV4RELPATH)/bin/$(ENVFILE) stop
 
 devstop: dev1-stop dev2-stop dev3-stop dev4-stop
+
+devfulljoin:
+	./bin/join_cluster_script.erl 'grb_local1@127.0.0.1' 'grb_local2@127.0.0.1'
+	./bin/join_cluster_script.erl 'grb_local3@127.0.0.1' 'grb_local4@127.0.0.1'
+	./bin/connect_dcs.erl 'grb_local1@127.0.0.1' 'grb_local3@127.0.0.1'
