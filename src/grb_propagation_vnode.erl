@@ -146,7 +146,11 @@ known_time(Partition, ReplicaId) ->
 
 -spec known_time_internal((replica_id() | red), clock_cache()) -> grb_time:ts().
 known_time_internal(ReplicaId, ClockTable) ->
-    ets:lookup_element(ClockTable, ?known_key(ReplicaId), 2).
+    try
+        ets:lookup_element(ClockTable, ?known_key(ReplicaId), 2)
+    catch _:_ ->
+        0
+    end.
 
 -spec stable_vc(partition_id()) -> vclock().
 stable_vc(Partition) ->
