@@ -790,8 +790,8 @@ compute_uniform_vc(UniformVC, _StableMatrix, _Groups) -> UniformVC.
 -spec compute_uniform_vc_group([replica_id()], stable_matrix(), [replica_id()]) -> vclock().
 compute_uniform_vc_group(AtReplicas, StableMatrix, [H | T]) ->
     lists:foldl(fun(R, AccSVC) ->
-        grb_vclock:min_at(AtReplicas, AccSVC, maps:get(R, StableMatrix, grb_vclock:new()))
-    end, maps:get(H, StableMatrix, grb_vclock:new()), T).
+        grb_vclock:min_at(AtReplicas, AccSVC, maps:get(R, StableMatrix))
+    end, maps:get(H, StableMatrix), T).
 
 compute_uniform_vc_improved(AllReplicas, UniformVC, StableMatrix, [G | Rest]) ->
     VisibleBound = lists:foldl(fun(Group, Acc) ->
