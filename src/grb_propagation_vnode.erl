@@ -787,16 +787,17 @@ compute_uniform_vc(UniformVC, _StableMatrix, _Groups) -> UniformVC.
 -else.
 -ifdef(UVC_IMPROVED).
 
--spec compute_uniform_vc_group([replica_id()], stable_matrix(), [replica_id()]) -> vclock().
-compute_uniform_vc_group(AtReplicas, StableMatrix, [H | T]) ->
+-spec compute_uniform_vc_group([replica_id()], stable_matrix(), vclock(), [replica_id()]) -> vclock().
+compute_uniform_vc_group(AtReplicas, StableMatrix, Default, [H | T]) ->
     lists:foldl(fun(R, AccSVC) ->
-        grb_vclock:min_at(AtReplicas, AccSVC, maps:get(R, StableMatrix))
-    end, maps:get(H, StableMatrix), T).
+        grb_vclock:min_at(AtReplicas, AccSVC, maps:get(R, StableMatrix, Default))
+    end, maps:get(H, StableMatrix, Default), T).
 
 compute_uniform_vc_improved(AllReplicas, UniformVC, StableMatrix, [G | Rest]) ->
+    Fresh = grb_vclock:new(),
     VisibleBound = lists:foldl(fun(Group, Acc) ->
-        grb_vclock:max_at_keys(AllReplicas, Acc, compute_uniform_vc_group(AllReplicas, StableMatrix, Group))
-    end, compute_uniform_vc_group(AllReplicas, StableMatrix, G), Rest),
+        grb_vclock:max_at_keys(AllReplicas, Acc, compute_uniform_vc_group(AllReplicas, StableMatrix, Fresh, Group))
+    end, compute_uniform_vc_group(AllReplicas, StableMatrix, Fresh, G), Rest),
     grb_vclock:max_at_keys(AllReplicas, VisibleBound, UniformVC).
 
 compute_uniform_vc(UniformVC, _StableMatrix, []) -> UniformVC;
