@@ -6,8 +6,14 @@
 -define(ALL_REPLICAS, all_replicas).
 -define(REMOTE_REPLICAS, remote_replicas).
 
-%% API
--export([start_background_processes/0,
+%% Node API
+-export([replica_id/0,
+         all_replicas/0,
+         remote_replicas/0]).
+
+%% Remote API
+-export([create_replica_groups/1,
+         start_background_processes/0,
          persist_self_replica_info/0,
          start_propagation_processes/0,
          single_replica_processes/0,
@@ -17,13 +23,11 @@
          replica_descriptor/0,
          connect_to_replicas/1,
          stop_background_processes/0,
-         stop_propagation_processes/0,
-         replica_id/0,
-         remote_replicas/0,
-         all_replicas/0]).
+         stop_propagation_processes/0]).
 
-%% All functions are called through erpc
--ignore_xref([start_background_processes/0,
+%% All functions here are called through erpc
+-ignore_xref([create_replica_groups/1,
+              start_background_processes/0,
               persist_self_replica_info/0,
               start_propagation_processes/0,
               single_replica_processes/0,
@@ -47,6 +51,56 @@ all_replicas() ->
 remote_replicas() ->
     persistent_term:get({?MODULE, ?REMOTE_REPLICAS}, []).
 
+-spec create_replica_groups([node()]) -> {ok, [replica_id()]} | {error, term()}.
+create_replica_groups([SingleNode]) ->
+    ?LOG_INFO("Single-replica ~p, disabling blue append~n", [SingleNode]),
+    ok =  erpc:call(SingleNode, ?MODULE, single_replica_processes, []),
+    {ok, [replica_id()]};
+
+create_replica_groups(Nodes) ->
+    ?LOG_INFO("Starting clustering of nodes ~p~n", [Nodes]),
+    Results0 = erpc:multicall(Nodes, ?MODULE, replica_descriptor, []),
+    ReplicaResult = lists:foldl(fun
+        (_, {error, Reason}) -> {error, Reason};
+        ({ok, D}, {ok, Acc}) -> {ok, [D | Acc]};
+        ({error, Reason}, _) -> {error, Reason};
+        ({throw, Reason}, _) -> {error, Reason}
+    end, {ok, []}, Results0),
+    case ReplicaResult of
+        {error, Reason} ->
+            ?LOG_ERROR("replica_descriptor error: ~p~n", [Reason]),
+            {error, Reason};
+
+        {ok, Descriptors} ->
+            JoinResult0 = erpc:multicall(Nodes, ?MODULE, connect_to_replicas, [Descriptors]),
+            JoinResult1 = lists:foldl(fun
+                (_, {error, Reason}) -> {error, Reason};
+                ({error, Reason}, _) -> {error, Reason};
+                ({throw, Reason}, _) -> {error, Reason};
+                ({ok, ok}, _) -> ok
+            end, ok, JoinResult0),
+            case JoinResult1 of
+                {error, Reason} ->
+                    ?LOG_ERROR("connect_to_replica error: ~p~n", [Reason]),
+                    {error, Reason};
+                ok ->
+                    StartTimerRes0 = erpc:multicall(Nodes, ?MODULE, start_propagation_processes, []),
+                    StartTimerRes1 = lists:foldl(fun
+                        (_, {error, Reason}) -> {error, Reason};
+                        ({error, Reason}, _) -> {error, Reason};
+                        ({throw, Reason}, _) -> {error, Reason};
+                        ({ok, ok}, _) -> ok
+                    end, ok, StartTimerRes0),
+                    case StartTimerRes1 of
+                        {error, Reason} ->
+                            ?LOG_ERROR("start_propagation_processes failed with ~p, aborting~n", [Reason]),
+                            {error, Reason};
+                        ok ->
+                            Ids = [Id || #replica_descriptor{replica_id=Id} <- Descriptors],
+                            {ok, Ids}
+                    end
+            end
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% External API

@@ -69,56 +69,20 @@ validate({error, Reason}) ->
     io:fwrite(standard_error, "Validate error: ~p~n", [Reason]),
     usage();
 
-validate({ok, [SingleNode]}) ->
-    io:format("Single-node cluster, will disable blue append~n"),
-    ok = erpc:call(SingleNode, grb_dc_manager, single_replica_processes, []),
-    halt();
-
 validate({ok, Nodes}) ->
     {ok, Nodes}.
 
 -spec prepare({ok, [node()]}) -> ok | no_return().
 prepare({ok, Nodes}) ->
     io:format("Starting clustering of nodes ~p~n", [Nodes]),
-    DescResult0 = erpc:multicall(Nodes, grb_dc_manager, replica_descriptor, []),
-    DescResult1 = lists:foldl(fun
-        (_, {error, Reason}) -> {error, Reason};
-        ({ok, D}, {ok, Acc}) -> {ok, [D | Acc]};
-        ({error, Reason}, _) -> {error, Reason};
-        ({throw, Reason}, _) -> {error, Reason}
-    end, {ok, []}, DescResult0),
-    case DescResult1 of
+    Res = erpc:call(hd(Nodes), grb_dc_manager, create_replica_groups, [Nodes]),
+    case Res of
         {error, Reason} ->
-            io:fwrite(standard_error, "replica_descriptor error: ~p~n", [Reason]),
+            io:fwrite(standard_error, "Error connecting clusters: ~p~n", [Reason]),
             halt(1);
         {ok, Descriptors} ->
-            JoinResult0 = erpc:multicall(Nodes, grb_dc_manager, connect_to_replicas, [Descriptors]),
-            JoinResult1 = lists:foldl(fun
-                (_, {error, Reason}) -> {error, Reason};
-                ({error, Reason}, _) -> {error, Reason};
-                ({throw, Reason}, _) -> {error, Reason};
-                ({ok, ok}, _) -> ok
-            end, ok, JoinResult0),
-            case JoinResult1 of
-                {error, Reason} ->
-                    io:fwrite(standard_error, "connect_to_replica error: ~p~n", [Reason]),
-                    halt(1);
-                ok ->
-                    StartTimerRes = erpc:multicall(Nodes, grb_dc_manager, start_propagation_processes, []),
-                    case lists:all(fun({ok, ok}) -> true; (_) -> false end, StartTimerRes) of
-                        true ->
-                            %% hack, don't include header file,
-                            %% but we know the id is the second elt after record name
-                            DescIds = [element(2, D) || D <- Descriptors],
-                            io:format("succesfully joined dcs ~p~n", [DescIds]),
-                            ok;
-                        false ->
-                            io:fwrite(standard_error,
-                                      "start_propagation_processes failed with ~p, aborting~n",
-                                      [StartTimerRes]),
-                            halt(1)
-                    end
-            end
+            io:format("Joined clusters ~p~n", [Descriptors]),
+            ok
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
