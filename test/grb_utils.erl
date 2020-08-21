@@ -2,18 +2,36 @@
 -include_lib("common_test/include/ct.hrl").
 
 %% API
--export([init_single_dc/2,
+-export([init_single_node_dc/2,
+         init_single_dc/3,
+         stop_node/1,
+         stop_clusters/1,
          kill_node/1]).
 
-init_single_dc(Suite, Config) ->
+-spec init_single_node_dc(term(), proplists:proplist()) -> proplists:proplist().
+init_single_node_dc(Suite, Config) ->
     ct:pal("[~p]", [Suite]),
-
     ok = at_init_testsuite(),
-    case start_node(dev1, Config) of
-        {ready, Node} ->
-            Info = #{node => Node},
-            [ {cluster_info, Info} | Config ]
-    end.
+
+    {ready, Node} =  start_node(dev1, Config),
+    ok = erpc:call(Node, grb_cluster_manager, create_cluster, [[Node], 2]),
+    ReplicaId = erpc:call(Node, grb_dc_manager, replica_id, []),
+    Info = #{ReplicaId => #{nodes => [Node], main_node => Node}},
+    [ {cluster_info, Info} | Config ].
+
+init_single_dc(Suite, NodeNames, Config) ->
+    ct:pal("[~p]", [Suite]),
+    ok = at_init_testsuite(),
+
+    [Main | _] = Nodes = pmap(fun(NodeName) ->
+        {ready, Node} = start_node(NodeName, Config),
+        Node
+    end, NodeNames),
+
+    ok = erpc:call(Main, grb_cluster_manager, create_cluster, [Nodes, 2]),
+    ReplicaId = erpc:call(Main, grb_dc_manager, replica_id, []),
+    Info = #{ReplicaId => #{nodes => Nodes, main_node => Main}},
+    [ {cluster_info, Info} | Config ].
 
 start_node(Name, Config) ->
     PrivDir = ?config(priv_dir, Config),
@@ -73,6 +91,20 @@ start_node(Name, Config) ->
             {ready, Node}
     end.
 
+-spec stop_node(node()) -> ok.
+stop_node(Node) ->
+    ok = erpc:call(Node, grb_dc_manager, stop_propagation_processes, []),
+    ok = erpc:call(Node, grb_dc_manager, stop_background_processes, []),
+    {ok, Node} = kill_node(Node),
+    ok.
+
+stop_clusters(ClusterMap) ->
+    Outer = pmap(fun(#{nodes := Nodes}) ->
+        Inner = pmap(fun stop_node/1, Nodes),
+        ok = lists:foreach(fun(ok) -> ok end, Inner)
+    end, maps:values(ClusterMap)),
+    ok = lists:foreach(fun(ok) -> ok end, Outer).
+
 kill_node(Node) ->
     ct_slave:stop(get_node_name(Node)).
 
@@ -111,3 +143,18 @@ initial_port(clusterdev3) -> 10135;
 initial_port(clusterdev4) -> 10145;
 initial_port(clusterdev5) -> 10155;
 initial_port(clusterdev6) -> 10165.
+
+%% @doc TODO
+-spec pmap(fun(), list()) -> list().
+pmap(F, L) ->
+    Parent = self(),
+    lists:foldl(
+        fun(X, N) ->
+            spawn_link(fun() ->
+                           Parent ! {pmap, N, F(X)}
+                       end),
+            N+1
+        end, 0, L),
+    L2 = [receive {pmap, N, R} -> {N, R} end || _ <- L],
+    {_, L3} = lists:unzip(lists:keysort(1, L2)),
+    L3.
