@@ -12,6 +12,18 @@
          stop_clusters/1,
          kill_node/1]).
 
+%% Logger API
+-export([log/2]).
+
+log(#{msg := Msg}, _Config) ->
+    Master = application:get_env(grb, ct_master, undefined),
+    Args = case Msg of
+        {report, Report} -> ["grb: report ~p", Report];
+        {string, Str} -> ["grb: ~s", Str];
+        {Format, Terms} -> ["grb: " ++ Format, Terms]
+    end,
+    _ = erpc:call(Master, ct, log, Args).
+
 ring_size() -> ?RING_SIZE.
 
 -spec init_single_node_dc(term(), proplists:proplist()) -> proplists:proplist().
@@ -95,6 +107,16 @@ start_node(Name, Config) ->
             ok = erpc:call(Node, application, set_env, [riak_core, platform_data_dir, filename:join([NodeCWD, Node, "data"])]),
             ok = erpc:call(Node, application, set_env, [riak_core, ring_creation_size, ?RING_SIZE]),
             ok = erpc:call(Node, application, set_env, [riak_core, handoff_port, Port]),
+
+            %% Log config
+            ok = erpc:call(Node, logger, set_primary_config, [level, all]),
+            ok = erpc:call(Node, application, set_env, [grb, ct_master, node()]),
+            ConfLog = #{level => info,
+                        formatter => {logger_formatter, #{single_line => true,
+                                                          max_size => 2048}},
+                        config => #{type => standard_io}},
+
+            ok = erpc:call(Node, logger, add_handler, [grb_ct_redirect, ?MODULE, ConfLog]),
 
             %% GRB Config
             {ok, Addrs} = inet:getif(),
