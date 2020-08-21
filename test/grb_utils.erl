@@ -1,9 +1,12 @@
 -module(grb_utils).
 -include_lib("common_test/include/ct.hrl").
 
+-define(RING_SIZE, 8).
+
 %% API
 -export([init_single_node_dc/2,
          init_single_dc/3,
+         init_multi_dc/3,
          stop_node/1,
          stop_clusters/1,
          kill_node/1]).
@@ -20,6 +23,7 @@ init_single_node_dc(Suite, Config) ->
     Info = #{ReplicaId => #{nodes => [Node], main_node => Node}},
     [ {cluster_info, Info} | Config ].
 
+-spec init_single_dc(term(), [atom()], proplists:proplist()) -> proplists:proplist().
 init_single_dc(Suite, NodeNames, Config) ->
     ct:pal("[~p]", [Suite]),
     ok = at_init_testsuite(),
@@ -33,6 +37,25 @@ init_single_dc(Suite, NodeNames, Config) ->
     {ok, _} = erpc:call(Main, grb_dc_manager, create_replica_groups, [[Main]]),
     ReplicaId = erpc:call(Main, grb_dc_manager, replica_id, []),
     Info = #{ReplicaId => #{nodes => Nodes, main_node => Main}},
+    [ {cluster_info, Info} | Config ].
+
+-spec init_multi_dc(term(), [[atom()]], proplists:proplist()) -> proplists:proplist().
+init_multi_dc(Suite, ClusterSpec, Config) ->
+    ct:pal("[~p]", [Suite]),
+    ok = at_init_testsuite(),
+    Tuples = pmap(fun(Names) ->
+        [Main | _] = ClusterNodes = pmap(fun(Name) ->
+            {ready, Node} = start_node(Name, Config),
+            Node
+        end, Names),
+        ok = erpc:call(Main, grb_cluster_manager, create_cluster, [ClusterNodes, 2]),
+        ReplicaId = erpc:call(Main, grb_dc_manager, replica_id, []),
+        {ReplicaId, #{nodes => ClusterNodes, main_node => Main}}
+    end, ClusterSpec),
+
+    MainNodes = [ Main || {_, #{main_node := Main}} <- Tuples ],
+    {ok, _} = erpc:call(hd(MainNodes), grb_dc_manager, create_replica_groups, [MainNodes]),
+    Info = maps:from_list(Tuples),
     [ {cluster_info, Info} | Config ].
 
 start_node(Name, Config) ->
@@ -67,7 +90,7 @@ start_node(Name, Config) ->
             %% Riak Config
             ok = erpc:call(Node, application, set_env, [riak_core, ring_state_dir, filename:join([NodeCWD, Node, "data"])]),
             ok = erpc:call(Node, application, set_env, [riak_core, platform_data_dir, filename:join([NodeCWD, Node, "data"])]),
-            ok = erpc:call(Node, application, set_env, [riak_core, ring_creation_size, 64]),
+            ok = erpc:call(Node, application, set_env, [riak_core, ring_creation_size, ?RING_SIZE]),
             ok = erpc:call(Node, application, set_env, [riak_core, handoff_port, Port]),
 
             %% GRB Config
