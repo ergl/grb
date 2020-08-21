@@ -85,7 +85,7 @@ devdotest:
 
 devtest: devdeploy devdotest devstop
 
-ct_test:
+ct:
 	$(REBAR) ct
 
 dev1-rel:
