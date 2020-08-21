@@ -65,13 +65,15 @@ basic_test(C) ->
     [#{main_node := Node}] = maps:values(?config(cluster_info, C)),
     ReplicaId = erpc:call(Node, grb_dc_manager, replica_id, []),
     NodeSpec = [ {P, Node} || P <- erpc:call(Node, grb_dc_utils, my_partitions, [])],
-    {ok, ReplicaId, 64, NodeSpec} = erpc:call(Node, grb, connect, []).
+    RingSize = grb_utils:ring_size(),
+    {ok, ReplicaId, RingSize, NodeSpec} = erpc:call(Node, grb, connect, []).
 
 basic_dc_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     ?foreach_node(ClusterMap, fun(ReplicaId, Node) ->
         ReplicaId = erpc:call(Node, grb_dc_manager, replica_id, []),
-        {ok, ReplicaId, 64, _} = erpc:call(Node, grb, connect, [])
+        RingSize = grb_utils:ring_size(),
+        {ok, ReplicaId, RingSize, _} = erpc:call(Node, grb, connect, [])
     end).
 
 known_replicas_test(C) ->

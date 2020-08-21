@@ -4,12 +4,15 @@
 -define(RING_SIZE, 8).
 
 %% API
--export([init_single_node_dc/2,
+-export([ring_size/0,
+         init_single_node_dc/2,
          init_single_dc/3,
          init_multi_dc/3,
          stop_node/1,
          stop_clusters/1,
          kill_node/1]).
+
+ring_size() -> ?RING_SIZE.
 
 -spec init_single_node_dc(term(), proplists:proplist()) -> proplists:proplist().
 init_single_node_dc(Suite, Config) ->
