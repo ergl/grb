@@ -16,6 +16,8 @@
          empty_read_test/1,
          read_your_writes_test/1,
          propagate_updates_test/1,
+         replication_queue_flush_test/1,
+         uniform_barrier_flush_test/1,
          known_replicas_test/1,
          advance_clocks_test/1]).
 
@@ -31,15 +33,20 @@ all() -> [{group, all_tests}].
 
 groups() ->
     [
-        {pure_operations, [parallel], [sanity_check_test, empty_read_test]},
+        {pure_operations, [parallel], [sanity_check_test, empty_read_test, known_replicas_test, advance_clocks_test]},
         {basic_operations, [sequence], [{group, pure_operations}, read_your_writes_test]},
         {single_dc, [sequence], [{group, basic_operations}]},
         {multi_dc, [sequence], [{group, basic_operations}]},
-        {replication, [sequence, {repeat_until_ok, 100}], [propagate_updates_test]},
+        {local_replication, [sequence, {repeat_until_ok, 100}], [replication_queue_flush_test]},
+        {replication, [sequence, {repeat_until_ok, 100}], [propagate_updates_test, uniform_barrier_flush_test]},
         {all_tests, [sequence], [
-            {group, single_dc}, {group, multi_dc}, {group, replication}
+            {group, single_dc}, {group, multi_dc}, {group, local_replication}, {group, replication}
         ]}
     ].
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Setup / Teardown
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 init_per_suite(C) -> C.
 end_per_suite(C) -> C.
@@ -52,6 +59,16 @@ init_per_group(single_dc, C) ->
 
 init_per_group(multi_dc, C) ->
     grb_utils:init_multi_dc(?MODULE, [[clusterdev1, clusterdev2], [clusterdev3, clusterdev4]], C);
+
+init_per_group(local_replication, C0) ->
+    C1 = grb_utils:init_multi_dc(?MODULE, [[clusterdev1, clusterdev2], [clusterdev3, clusterdev4]], C0),
+    ClusterMap = ?config(cluster_info, C1),
+    Replica = random_replica(ClusterMap),
+    Key = ?random_key,
+    Val = ?random_val,
+    {Partition, Node} = key_location(Key, Replica, ClusterMap),
+    _ = update_transaction(Replica, Node, Partition, Key, Val, #{}),
+    [ {update_tx_info, {Replica, Node, Partition}} | C1 ];
 
 init_per_group(replication, C0) ->
     C1 = grb_utils:init_multi_dc(?MODULE, [[clusterdev1, clusterdev2], [clusterdev3, clusterdev4]], C0),
@@ -79,11 +96,19 @@ end_per_group(multi_dc, C) ->
     ok = grb_utils:stop_clusters(?config(cluster_info, C)),
     C;
 
+end_per_group(local_replication, C) ->
+    ok = grb_utils:stop_clusters(?config(cluster_info, C)),
+    C;
+
 end_per_group(replication, C) ->
     ok = grb_utils:stop_clusters(?config(cluster_info, C)),
     C;
 
 end_per_group(_, C) -> C.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Tests
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% @doc Every node has their replica id set, and knows about all other replicas
 sanity_check_test(C) ->
@@ -122,6 +147,24 @@ propagate_updates_test(C) ->
         ok
     end).
 
+replication_queue_flush_test(C) ->
+    {Replica, Node, Partition} = ?config(update_tx_info, C),
+    State = erpc:call(Node, grb_propagation_vnode, get_state, [Partition]),
+    #{Replica := CommitLog} = element(4, State),
+    [] = grb_blue_commit_log:to_list(CommitLog).
+
+uniform_barrier_flush_test(C) ->
+    ClusterMap = ?config(cluster_info, C),
+    {Key, _, CommitVC} = ?config(propagate_info, C),
+    foreach_replica(ClusterMap, fun(Replica) ->
+        {Partition, Node} = key_location(Key, Replica, ClusterMap),
+        ok = uniform_barrier(Replica, Node, Partition, CommitVC),
+        State = erpc:call(Node, grb_propagation_vnode, get_state, [Partition]),
+        Barriers = element(20, State),
+        [] = orddict:to_list(Barriers),
+        ok
+    end).
+
 known_replicas_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     Replicas = lists:sort(maps:keys(ClusterMap)),
@@ -144,6 +187,10 @@ advance_clocks_test(C) ->
         ok = advance_clock(Node, Partitions, Replicas, uniform_vc)
     end).
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Util
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 knows_replicas(Node, Partitions, Replicas, ClockName) ->
     lists:foreach(fun(P) ->
         Clock = erpc:call(Node, grb_propagation_vnode, ClockName, [P]),
@@ -160,9 +207,6 @@ advance_clock_single(Node, P, Replicas, ClockName) ->
     timer:sleep(500),
     New = erpc:call(Node, grb_propagation_vnode, ClockName, [P]),
     lists:all(fun(R) -> maps:get(R, Old) < maps:get(R, New) end, Replicas).
-
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -spec uniform_barrier(replica_id(), node(), partition_id(), vclock()) -> ok.
 uniform_barrier(_Replica, Node, Partition, Clock) ->

@@ -5,6 +5,7 @@
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
+-export([get_state/1]).
 -endif.
 
 %% Common public API
@@ -124,6 +125,11 @@
 -endif.
 
 -type state() :: #state{}.
+
+-ifdef(TEST).
+get_state(Partition) ->
+    riak_core_vnode_master:sync_command({Partition, node()}, get_state, ?master, infinity).
+-endif.
 
 %%%===================================================================
 %%% common public api
@@ -275,6 +281,9 @@ init([Partition]) ->
 
 handle_command(ping, _Sender, State) ->
     {reply, {pong, node(), State#state.partition}, State};
+
+handle_command(get_state, _Sender, State) ->
+    {reply, State, State};
 
 handle_command(is_ready, _Sender, State) ->
     Ready = lists:all(fun is_ready/1, [State#state.clock_cache]),
