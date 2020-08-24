@@ -101,10 +101,11 @@ start_node(Name, Config) ->
 
             Port = initial_port(Name),
             {ok, NodeCWD} = erpc:call(Node, file, get_cwd, []),
+            TS = integer_to_list(os:system_time()),
 
             %% Riak Config
-            ok = erpc:call(Node, application, set_env, [riak_core, ring_state_dir, filename:join([NodeCWD, Node, "data"])]),
-            ok = erpc:call(Node, application, set_env, [riak_core, platform_data_dir, filename:join([NodeCWD, Node, "data"])]),
+            ok = erpc:call(Node, application, set_env, [riak_core, ring_state_dir, filename:join([NodeCWD, Node, TS, "data"])]),
+            ok = erpc:call(Node, application, set_env, [riak_core, platform_data_dir, filename:join([NodeCWD, Node, TS, "data"])]),
             ok = erpc:call(Node, application, set_env, [riak_core, ring_creation_size, ?RING_SIZE]),
             ok = erpc:call(Node, application, set_env, [riak_core, handoff_port, Port]),
 
