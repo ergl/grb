@@ -78,15 +78,12 @@ test:
 	${REBAR} as basic_replication eunit skip_deps=true
 	${REBAR} as uniform_improved eunit skip_deps=true
 	${REBAR} as better_uvc eunit skip_deps=true
-	escript -c bin/join_cluster_script.erl eunit
 
-devdotest:
-	escript -c bin/test_clock_advance.escript 'grb_local1@127.0.0.1'
-
-devtest: devdeploy devdotest devstop
-
-ct_test:
+ct:
 	$(REBAR) ct
+
+ct_clean:
+	rm -rf $(BASEDIR)/_build/test/logs
 
 dev1-rel:
 	$(REBAR) as $(DEV_PROFILE) release -n grb_local1

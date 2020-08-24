@@ -4,7 +4,7 @@
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
--export([from_list/2]).
+-export([to_list/1, from_list/2]).
 -endif.
 
 -record(state, {
@@ -68,6 +68,9 @@ remove_leq(Timestamp, S=#state{entries=Entries}) ->
     S#state{entries=orddict:filter(fun(Key, _) -> abs(Key) > Timestamp end, Entries)}.
 
 -ifdef(TEST).
+
+to_list(#state{entries=Entries}) ->
+    orddict:to_list(Entries).
 
 from_list(At, List) ->
     from_list_inner(List, new(At)).
