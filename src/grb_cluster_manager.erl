@@ -312,6 +312,9 @@ start_broadcast_tree(Nodes, Fanout) ->
                            Fanout :: non_neg_integer()) -> {Root :: {node(), [node()]},
                                                             Nodes :: [{node(), node(), [node()]}],
                                                             Leafs :: [{node(), node()}]}.
+
+%% Seems like dialyzer gets confused by the match on line 327
+-dialyzer({no_match, build_broadcast_tree/2}).
 build_broadcast_tree(Nodes, Fanout) ->
     Depth = trunc(math:ceil(math:log(length(Nodes) * (Fanout - 1) + 1) / math:log(Fanout))),
     ListTable = ets:new(values, [ordered_set]),

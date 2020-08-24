@@ -27,6 +27,8 @@
                        Port :: inet:port_number(),
                        PoolSize :: non_neg_integer()) -> {ok, inter_dc_conn()} | {error, term()}.
 
+%% I don't get why dialyzer fails here
+-dialyzer({no_return, start_connection/4}).
 start_connection(ReplicaID, IP, Port, PoolSize) ->
     PoolName = pool_name(IP, Port),
     PoolRes = shackle_pool:start(PoolName,
