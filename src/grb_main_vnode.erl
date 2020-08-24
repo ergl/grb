@@ -4,8 +4,7 @@
 -include_lib("kernel/include/logger.hrl").
 
 %% Public API
--export([cache_name/2,
-         prepare_blue/4,
+-export([prepare_blue/4,
          decide_blue/4,
          handle_replicate/5]).
 
@@ -131,7 +130,7 @@ init([Partition]) ->
                    prepared_blue = #{},
                    blue_tick_interval=BlueTickInterval,
                    op_log_size = KeyLogSize,
-                   op_log = new_cache(Partition, ?OP_LOG_TABLE)},
+                   op_log = grb_dc_utils:new_cache(Partition, ?OP_LOG_TABLE)},
 
     {ok, State}.
 
@@ -306,37 +305,6 @@ compute_new_known_time(PreparedBlue) ->
 %%%===================================================================
 %%% Util Functions
 %%%===================================================================
-
--spec safe_bin_to_atom(binary()) -> atom().
-safe_bin_to_atom(Bin) ->
-    case catch binary_to_existing_atom(Bin, latin1) of
-        {'EXIT', _} -> binary_to_atom(Bin, latin1);
-        Atom -> Atom
-    end.
-
--spec new_cache(partition_id(), atom()) -> cache_id().
-new_cache(Partition, Name) ->
-    new_cache(Partition, Name, [set, protected, named_table, {read_concurrency, true}]).
-
-new_cache(Partition, Name, Options) ->
-    CacheName = cache_name(Partition, Name),
-    case ets:info(CacheName) of
-        undefined ->
-            ets:new(CacheName, Options);
-        _ ->
-            ?LOG_INFO("Unable to create cache ~p at ~p, retrying", [Name, Partition]),
-            timer:sleep(100),
-            try ets:delete(CacheName) catch _:_ -> ok end,
-            new_cache(Partition, Name, Options)
-    end.
-
--spec cache_name(partition_id(), atom()) -> cache_id().
-cache_name(Partition, Name) ->
-    BinNode = atom_to_binary(node(), latin1),
-    BinName = atom_to_binary(Name, latin1),
-    BinPart = integer_to_binary(Partition),
-    TableName = <<BinName/binary, <<"-">>/binary, BinPart/binary, <<"@">>/binary, BinNode/binary>>,
-    safe_bin_to_atom(TableName).
 
 -spec is_ready(cache_id()) -> boolean().
 is_ready(Table) ->

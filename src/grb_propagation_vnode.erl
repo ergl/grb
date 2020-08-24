@@ -137,7 +137,7 @@ get_state(Partition) ->
 
 -spec known_vc(partition_id()) -> vclock().
 known_vc(Partition) ->
-    known_vc_internal(cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
+    known_vc_internal(grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
 
 -spec known_vc_internal(clock_cache()) -> vclock().
 known_vc_internal(ClockTable) ->
@@ -148,7 +148,7 @@ known_vc_internal(ClockTable) ->
 
 -spec known_time(partition_id(), (replica_id() | red)) -> grb_time:ts().
 known_time(Partition, ReplicaId) ->
-    known_time_internal(ReplicaId, cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
+    known_time_internal(ReplicaId, grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
 
 -spec known_time_internal((replica_id() | red), clock_cache()) -> grb_time:ts().
 known_time_internal(ReplicaId, ClockTable) ->
@@ -160,7 +160,7 @@ known_time_internal(ReplicaId, ClockTable) ->
 
 -spec stable_vc(partition_id()) -> vclock().
 stable_vc(Partition) ->
-    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?stable_key, 2).
+    ets:lookup_element(grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?stable_key, 2).
 
 -spec update_stable_vc_sync(partition_id(), vclock()) -> ok.
 update_stable_vc_sync(Partition, SVC) ->
@@ -203,7 +203,7 @@ merge_remote_stable_vc(Partition, VC) ->
 
 -spec uniform_vc(partition_id()) -> vclock().
 uniform_vc(Partition) ->
-    ets:lookup_element(cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?uniform_key, 2).
+    ets:lookup_element(grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?uniform_key, 2).
 
 -spec update_uniform_vc(partition_id(), vclock()) -> ok.
 update_uniform_vc(Partition, SVC) ->
@@ -221,14 +221,14 @@ merge_remote_uniform_vc(Partition, VC) ->
 
 -spec handle_blue_heartbeat(partition_id(), replica_id(), grb_time:ts()) -> ok.
 handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
-    update_known_vc(ReplicaId, Ts, cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
+    update_known_vc(ReplicaId, Ts, grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
 
 %% @doc Like handle_blue_heartbeat/3, but for our own replica, and sync
 -spec handle_self_blue_heartbeat(partition_id(), grb_time:ts()) -> ok.
 handle_self_blue_heartbeat(Partition, Ts) ->
     SelfReplica = grb_dc_manager:replica_id(),
     %% ok to insert directly, we are always called from the same place
-    true = ets:insert(cache_name(Partition, ?PARTITION_CLOCK_TABLE), {?known_key(SelfReplica), Ts}),
+    true = ets:insert(grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE), {?known_key(SelfReplica), Ts}),
     ok.
 
 -spec handle_clock_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
@@ -265,7 +265,8 @@ init([Partition]) ->
     {ok, SingleDCInterval} = application:get_env(grb, basic_replication_interval),
     {ok, SendClockInterval} = application:get_env(grb, remote_clock_broadcast_interval),
 
-    ClockTable = new_cache(Partition, ?PARTITION_CLOCK_TABLE, [ordered_set, public, named_table, {read_concurrency, true}]),
+    ClockTable = grb_dc_utils:new_cache(Partition, ?PARTITION_CLOCK_TABLE,
+                                        [ordered_set, public, named_table, {read_concurrency, true}]),
     true = ets:insert(ClockTable, [{?uniform_key, grb_vclock:new()},
                                    {?stable_key, grb_vclock:new()},
                                    {?known_key(?RED_REPLICA), 0}]),
@@ -851,34 +852,6 @@ min_ts(Left, Right) -> min(Left, Right).
 %%%===================================================================
 %%% Util Functions
 %%%===================================================================
-
--spec new_cache(partition_id(), atom(), [term()]) -> cache_id().
-new_cache(Partition, Name, Options) ->
-    CacheName = cache_name(Partition, Name),
-    case ets:info(CacheName) of
-        undefined ->
-            ets:new(CacheName, Options);
-        _ ->
-            ?LOG_INFO("Unable to create cache ~p at ~p, retrying", [Name, Partition]),
-            timer:sleep(100),
-            try ets:delete(CacheName) catch _:_ -> ok end,
-            new_cache(Partition, Name, Options)
-    end.
-
--spec cache_name(partition_id(), atom()) -> cache_id().
-cache_name(Partition, Name) ->
-    BinNode = atom_to_binary(node(), latin1),
-    BinName = atom_to_binary(Name, latin1),
-    BinPart = integer_to_binary(Partition),
-    TableName = <<BinName/binary, <<"-">>/binary, BinPart/binary, <<"@">>/binary, BinNode/binary>>,
-    safe_bin_to_atom(TableName).
-
--spec safe_bin_to_atom(binary()) -> atom().
-safe_bin_to_atom(Bin) ->
-    case catch binary_to_existing_atom(Bin, latin1) of
-        {'EXIT', _} -> binary_to_atom(Bin, latin1);
-        Atom -> Atom
-    end.
 
 -spec is_ready(cache_id()) -> boolean().
 is_ready(Table) ->

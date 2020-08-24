@@ -1,5 +1,6 @@
 -module(grb_dc_utils).
 -include("grb.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -export([cluster_info/0,
          inter_dc_ip_port/0,
@@ -9,6 +10,11 @@
          bcast_vnode_sync/3,
          bcast_vnode_local_sync/2,
          bcast_vnode_local_sync/3]).
+
+%% Managing ETS tables
+-export([new_cache/2,
+         new_cache/3,
+         cache_name/2]).
 
 %% For external script
 -export([is_ring_owner/0,
@@ -107,6 +113,36 @@ get_index_nodes() ->
     Chash = riak_core_ring:chash(Ring),
     chash:nodes(Chash).
 
+-spec new_cache(partition_id(), atom()) -> cache_id().
+new_cache(Partition, Name) ->
+    new_cache(Partition, Name, [set, protected, named_table, {read_concurrency, true}]).
+
+new_cache(Partition, Name, Options) ->
+    CacheName = cache_name(Partition, Name),
+    case ets:info(CacheName) of
+        undefined ->
+            ets:new(CacheName, Options);
+        _ ->
+            ?LOG_INFO("Unable to create cache ~p at ~p, retrying", [Name, Partition]),
+            timer:sleep(100),
+            try ets:delete(CacheName) catch _:_ -> ok end,
+            new_cache(Partition, Name, Options)
+    end.
+
+-spec cache_name(partition_id(), atom()) -> cache_id().
+cache_name(Partition, Name) ->
+    BinNode = atom_to_binary(node(), latin1),
+    BinName = atom_to_binary(Name, latin1),
+    BinPart = integer_to_binary(Partition),
+    TableName = <<BinName/binary, <<"-">>/binary, BinPart/binary, <<"@">>/binary, BinNode/binary>>,
+    safe_bin_to_atom(TableName).
+
+-spec safe_bin_to_atom(binary()) -> atom().
+safe_bin_to_atom(Bin) ->
+    case catch binary_to_existing_atom(Bin, latin1) of
+        {'EXIT', _} -> binary_to_atom(Bin, latin1);
+        Atom -> Atom
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal
