@@ -5,7 +5,8 @@
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
--export([get_state/1]).
+-export([get_state/1,
+         get_commit_log/2]).
 -endif.
 
 %% Common public API
@@ -129,6 +130,10 @@
 -ifdef(TEST).
 get_state(Partition) ->
     riak_core_vnode_master:sync_command({Partition, node()}, get_state, ?master, infinity).
+
+-spec get_commit_log(replica_id(), partition_id()) -> grb_blue_commit_log:t().
+get_commit_log(Replica, Partition) ->
+    riak_core_vnode_master:sync_command({Partition, node()}, {get_clog, Replica}, ?master, infinity).
 -endif.
 
 %%%===================================================================
@@ -285,6 +290,9 @@ handle_command(ping, _Sender, State) ->
 
 handle_command(get_state, _Sender, State) ->
     {reply, State, State};
+
+handle_command({get_clog, Replica}, _Sender, State=#state{logs=Logs}) ->
+    {reply, maps:get(Replica, Logs, grb_blue_commit_log:new(Replica)), State};
 
 handle_command(is_ready, _Sender, State) ->
     Ready = lists:all(fun is_ready/1, [State#state.clock_cache]),

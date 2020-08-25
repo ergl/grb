@@ -37,10 +37,9 @@ groups() ->
         {basic_operations, [sequence], [{group, pure_operations}, read_your_writes_test]},
         {single_dc, [sequence], [{group, basic_operations}]},
         {multi_dc, [sequence], [{group, basic_operations}]},
-        {local_replication, [sequence, {repeat_until_ok, 100}], [replication_queue_flush_test]},
-        {replication, [sequence, {repeat_until_ok, 100}], [propagate_updates_test, uniform_barrier_flush_test]},
+        {replication, [sequence, {repeat_until_ok, 100}], [propagate_updates_test, replication_queue_flush_test, uniform_barrier_flush_test]},
         {all_tests, [sequence], [
-            {group, single_dc}, {group, multi_dc}, {group, local_replication}, {group, replication}
+            {group, single_dc}, {group, multi_dc}, {group, replication}
         ]}
     ].
 
@@ -59,16 +58,6 @@ init_per_group(single_dc, C) ->
 
 init_per_group(multi_dc, C) ->
     grb_utils:init_multi_dc(?MODULE, [[clusterdev1, clusterdev2], [clusterdev3, clusterdev4]], C);
-
-init_per_group(local_replication, C0) ->
-    C1 = grb_utils:init_multi_dc(?MODULE, [[clusterdev1, clusterdev2], [clusterdev3, clusterdev4]], C0),
-    ClusterMap = ?config(cluster_info, C1),
-    Replica = random_replica(ClusterMap),
-    Key = ?random_key,
-    Val = ?random_val,
-    {Partition, Node} = key_location(Key, Replica, ClusterMap),
-    _ = update_transaction(Replica, Node, Partition, Key, Val, #{}),
-    [ {update_tx_info, {Replica, Node, Partition}} | C1 ];
 
 init_per_group(replication, C0) ->
     C1 = grb_utils:init_multi_dc(?MODULE, [[clusterdev1, clusterdev2], [clusterdev3, clusterdev4]], C0),
@@ -93,10 +82,6 @@ end_per_group(single_dc, C) ->
     C;
 
 end_per_group(multi_dc, C) ->
-    ok = grb_utils:stop_clusters(?config(cluster_info, C)),
-    C;
-
-end_per_group(local_replication, C) ->
     ok = grb_utils:stop_clusters(?config(cluster_info, C)),
     C;
 
@@ -148,10 +133,14 @@ propagate_updates_test(C) ->
     end).
 
 replication_queue_flush_test(C) ->
-    {Replica, Node, Partition} = ?config(update_tx_info, C),
-    State = erpc:call(Node, grb_propagation_vnode, get_state, [Partition]),
-    #{Replica := CommitLog} = element(4, State),
-    [] = grb_blue_commit_log:to_list(CommitLog).
+    ClusterMap = ?config(cluster_info, C),
+    {Key, _, _} = ?config(propagate_info, C),
+    ok = foreach_replica(ClusterMap, fun(Replica) ->
+        {Partition, Node} = key_location(Key, Replica, ClusterMap),
+        CommitLog = erpc:call(Node, grb_propagation_vnode, get_commit_log, [Replica, Partition]),
+        [] = grb_blue_commit_log:to_list(CommitLog),
+        ok
+    end).
 
 uniform_barrier_flush_test(C) ->
     ClusterMap = ?config(cluster_info, C),
