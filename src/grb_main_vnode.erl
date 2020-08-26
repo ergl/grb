@@ -231,7 +231,6 @@ handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partit
     ok.
 
 -else.
--ifdef(UNIFORM_IMPROVED).
 
 handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partition=Partition,
                                                                           op_log=OperationLog,
@@ -240,16 +239,6 @@ handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partit
     ok = grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, CommitTime),
     ok.
 
--else.
-
-handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partition=Partition,
-                                                                          op_log=OperationLog,
-                                                                          op_log_size=LogSize}) ->
-    ok = update_partition_state(TxId, WS, VC, OperationLog, LogSize),
-    ok = grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, CommitTime),
-    ok.
-
--endif.
 -endif.
 
 -spec decide_blue_internal(replica_id(), term(), vclock(), #state{}) -> #state{}.
