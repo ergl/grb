@@ -669,6 +669,11 @@ replicate_internal(S=#state{logs=Logs,
                 ?LOG_DEBUG("send heartbeat to ~p: ~p~n", [Target, HBRes]),
                 ok;
             Transactions ->
+                StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
+                %% can't merge with other messages here, send one before
+                %% we could piggy-back on top of the first tx, but w/ever
+                ClockRes = grb_dc_connection_manager:send_clocks(Target, LocalId, Partition, KnownVC, StableVC),
+                ?LOG_DEBUG("send clocks to ~p: ~p~n", [Target, ClockRes]),
                 lists:foreach(fun(Tx) ->
                     TxRes = grb_dc_connection_manager:send_tx(Target, LocalId, Partition, Tx),
                     ?LOG_DEBUG("send transaction ~p to ~p: ~p~n", [Tx, Target, TxRes]),
