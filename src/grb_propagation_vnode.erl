@@ -121,7 +121,12 @@
 -ifdef(UNIFORM_IMPROVED).
 -define(timers_unset, #state{replication_timer=undefined, uniform_clock_send_timer=undefined}).
 -else.
+-ifdef(DELAY_CLOCKS).
+-define(timers_unset, #state{replication_timer=undefined, uniform_clock_send_timer=undefined,
+                             uniform_timer=undefined, prune_timer=undefined}).
+-else.
 -define(timers_unset, #state{replication_timer=undefined, uniform_timer=undefined, prune_timer=undefined}).
+-endif.
 -endif.
 -endif.
 
@@ -542,14 +547,34 @@ stop_propagation_timers_internal(State) ->
     }.
 
 -else.
+-ifdef(DELAY_CLOCKS).
+start_propagation_timers_internal(State) ->
+    State#state{
+        prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
+        uniform_timer=erlang:send_after(State#state.uniform_interval, self(), ?uniform_req),
+        replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req),
+        uniform_clock_send_timer=erlang:send_after(State#state.uniform_clock_send_interval, self(), ?clock_send_req)
+    }.
 
+
+stop_propagation_timers_internal(State) ->
+    erlang:cancel_timer(State#state.prune_timer),
+    erlang:cancel_timer(State#state.uniform_timer),
+    erlang:cancel_timer(State#state.replication_timer),
+    erlang:cancel_timer(State#state.uniform_clock_send_timer),
+    State#state{
+        prune_timer=undefined,
+        uniform_timer=undefined,
+        replication_timer=undefined,
+        uniform_clock_send_timer=undefined
+    }.
+-else.
 start_propagation_timers_internal(State) ->
     State#state{
         prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
         uniform_timer=erlang:send_after(State#state.uniform_interval, self(), ?uniform_req),
         replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req)
     }.
-
 
 stop_propagation_timers_internal(State) ->
     erlang:cancel_timer(State#state.prune_timer),
@@ -560,7 +585,7 @@ stop_propagation_timers_internal(State) ->
         uniform_timer=undefined,
         replication_timer=undefined
     }.
-
+-endif.
 -endif.
 -endif.
 
@@ -720,6 +745,39 @@ replicate_internal(S=#state{logs=Logs,
     S#state{global_known_matrix=Matrix, logs=Logs#{LocalId => LocalLog}}.
 
 -else.
+-ifdef(DELAY_CLOCKS).
+
+replicate_internal(S=#state{logs=Logs,
+                            partition=Partition,
+                            local_replica=LocalId,
+                            clock_cache=ClockTable,
+                            global_known_matrix=Matrix0}) ->
+
+    #{LocalId := LocalLog} = Logs,
+    KnownVC = known_vc_internal(ClockTable),
+    LocalTime = grb_vclock:get_time(LocalId, KnownVC),
+
+    Matrix = lists:foldl(fun(Target, AccMatrix) ->
+        ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
+        ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
+        case ToSend of
+            [] ->
+                HBRes = grb_dc_connection_manager:send_heartbeat(Target, LocalId, Partition, LocalTime),
+                ?LOG_DEBUG("send heartbeat to ~p: ~p~n", [Target, HBRes]),
+                ok;
+            Transactions ->
+                lists:foreach(fun(Tx) ->
+                    TxRes = grb_dc_connection_manager:send_tx(Target, LocalId, Partition, Tx),
+                    ?LOG_DEBUG("send transaction ~p to ~p: ~p~n", [Tx, Target, TxRes]),
+                    ok
+                end, Transactions)
+        end,
+        AccMatrix#{{Target, LocalId} => LocalTime}
+    end, Matrix0, grb_dc_connection_manager:connected_replicas()),
+
+    S#state{global_known_matrix=Matrix}.
+
+-else.
 
 replicate_internal(S=#state{logs=Logs,
                             partition=Partition,
@@ -737,7 +795,7 @@ replicate_internal(S=#state{logs=Logs,
         ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
         case ToSend of
             [] ->
-                %% piggy back clocks on top of the send_heartbeat message, avoid extra message on the wire
+                % piggy back clocks on top of the send_heartbeat message, avoid extra message on the wire
                 HBRes = grb_dc_connection_manager:send_clocks_heartbeat(Target, LocalId, Partition, KnownVC, StableVC),
                 ?LOG_DEBUG("send clocks/heartbeat to ~p: ~p~n", [Target, HBRes]),
                 ok;
@@ -757,6 +815,7 @@ replicate_internal(S=#state{logs=Logs,
 
     S#state{global_known_matrix=Matrix}.
 
+-endif.
 -endif.
 -endif.
 
