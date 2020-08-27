@@ -148,8 +148,7 @@ uniform_barrier_flush_test(C) ->
     foreach_replica(ClusterMap, fun(Replica) ->
         {Partition, Node} = key_location(Key, Replica, ClusterMap),
         ok = uniform_barrier(Replica, Node, Partition, CommitVC),
-        State = erpc:call(Node, grb_propagation_vnode, get_state, [Partition]),
-        Barriers = element(20, State),
+        Barriers = erpc:call(Node, grb_propagation_vnode, get_uniform_barrier, [Partition]),
         [] = orddict:to_list(Barriers),
         ok
     end).

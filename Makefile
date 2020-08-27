@@ -24,21 +24,18 @@ check_binaries:
 xref:
 	$(REBAR) xref skip_deps=true
 	$(REBAR) as basic_replication xref skip_deps=true
-	$(REBAR) as uniform_improved xref skip_deps=true
+	$(REBAR) as better_uvc xref skip_deps=true
 
 dialyzer:
 	$(REBAR) dialyzer
 	$(REBAR) as basic_replication dialyzer
-	$(REBAR) as uniform_improved dialyzer
+	$(REBAR) as better_uvc dialyzer
 
 debug:
 	$(REBAR) as debug_log compile
 
 cure:
 	$(REBAR) as basic_replication compile
-
-uniform_improved:
-	$(REBAR) as uniform_improved compile
 
 clean:
 	$(REBAR) clean --all
@@ -76,7 +73,6 @@ attach:
 test:
 	${REBAR} eunit skip_deps=true
 	${REBAR} as basic_replication eunit skip_deps=true
-	${REBAR} as uniform_improved eunit skip_deps=true
 	${REBAR} as better_uvc eunit skip_deps=true
 
 ct:

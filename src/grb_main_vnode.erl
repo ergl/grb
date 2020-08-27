@@ -231,8 +231,8 @@ handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partit
     ok.
 
 -else.
--ifdef(UNIFORM_IMPROVED).
-
+-ifdef(NO_REMOTE_APPEND).
+%% same as above, but only toggle this change
 handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partition=Partition,
                                                                           op_log=OperationLog,
                                                                           op_log_size=LogSize}) ->
