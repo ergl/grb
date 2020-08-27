@@ -601,6 +601,10 @@ replicate_internal(S=#state{logs=Logs,
 -else.
 
 -ifdef(DELAY_CLOCKS).
+%% Difference here: don't send the clocks during heartbeats, only during transactions
+%% There's another timer sending the clocks from time to time
+%% todo(borja): Instead of a secondary timer, add a config that says: every X times we replicate,
+%% send a clock heartbeat
 
 replicate_internal(S=#state{logs=Logs,
                             partition=Partition,
