@@ -300,11 +300,14 @@ handle_command(is_ready, _Sender, State) ->
 handle_command(learn_dc_id, _Sender, S=#state{clock_cache=ClockTable}) ->
     %% called after joining ring, this is now the correct id
     ReplicaId = grb_dc_manager:replica_id(),
-    ok = learn_dc_id_internal(ReplicaId, ClockTable),
+    true = ets:insert(ClockTable, {?known_key(ReplicaId), 0}),
     {reply, ok, S#state{local_replica=ReplicaId}};
 
 handle_command({learn_dc_groups, MyGroups}, _From, S) ->
     %% called after connecting other replicas
+    %% populate log, avoid allocating on the replication path
+    %% Once we know the identifiers of all remote replicas, we can allocate long-lived resources,
+    %% so we don't have to do some operations as we go
     {reply, ok, S#state{fault_tolerant_groups=MyGroups}};
 
 handle_command(populate_logs, _From, State) ->
@@ -399,57 +402,12 @@ handle_info(Msg, State) ->
 %%% internal functions
 %%%===================================================================
 
--spec learn_dc_id_internal(replica_id(), clock_cache()) -> ok.
--ifdef('REMOVE_UVC_WITH_ZEROS').
-learn_dc_id_internal(ReplicaId, ClockTable) ->
-    true = ets:insert(ClockTable, {?known_key(ReplicaId), 0}),
-    %% XXX added this part
-    Old = ets:lookup_element(ClockTable, ?uniform_key, 2),
-    true = ets:update_element(ClockTable, ?uniform_key, {2, grb_vclock:set_time(ReplicaId, 0, Old)}),
-    %% XXX
-    ok.
--else.
-learn_dc_id_internal(ReplicaId, ClockTable) ->
-    true = ets:insert(ClockTable, {?known_key(ReplicaId), 0}),
-    ok.
--endif.
-
 -spec populate_logs_internal(state()) -> state().
--ifdef('REMOVE_UVC_WITH_ZEROS').
 populate_logs_internal(S=#state{logs=Logs0,
                                 clock_cache=ClockTable,
                                 local_replica=LocalReplica,
                                 stable_matrix=StableMatrix0}) ->
 
-    %% called after connecting other replicas
-    %% populate log, avoid allocating on the replication path
-    RemoteReplicas = grb_dc_manager:remote_replicas(),
-    true = ets:insert(ClockTable, [{?known_key(R), 0} || R <- RemoteReplicas]),
-
-    %% XXX added this part
-    Old = ets:lookup_element(ClockTable, ?uniform_key, 2),
-    New = lists:foldl(fun(Replica, Acc) -> grb_vclock:set_time(Replica, 0, Acc) end, Old, RemoteReplicas),
-    true = ets:update_element(ClockTable, ?uniform_key, {2, New}),
-    %% XXX
-
-    Logs = lists:foldl(fun(Replica, LogAcc) ->
-        LogAcc#{Replica => grb_blue_commit_log:new(Replica)}
-    end, Logs0, [LocalReplica | RemoteReplicas]),
-
-    %% Populate stableMatrix, too
-    StableMatrix = lists:foldl(fun(Replica, MatrixAcc) ->
-        MatrixAcc#{Replica => grb_vclock:new()}
-    end, StableMatrix0, [LocalReplica | RemoteReplicas]),
-
-    S#state{logs=Logs, stable_matrix=StableMatrix}.
--else.
-populate_logs_internal(S=#state{logs=Logs0,
-                                clock_cache=ClockTable,
-                                local_replica=LocalReplica,
-                                stable_matrix=StableMatrix0}) ->
-
-    %% called after connecting other replicas
-    %% populate log, avoid allocating on the replication path
     RemoteReplicas = grb_dc_manager:remote_replicas(),
     true = ets:insert(ClockTable, [{?known_key(R), 0} || R <- RemoteReplicas]),
 
@@ -457,13 +415,11 @@ populate_logs_internal(S=#state{logs=Logs0,
         LogAcc#{Replica => grb_blue_commit_log:new(Replica)}
     end, Logs0, [LocalReplica | RemoteReplicas]),
 
-    %% Populate stableMatrix, too
     StableMatrix = lists:foldl(fun(Replica, MatrixAcc) ->
         MatrixAcc#{Replica => grb_vclock:new()}
     end, StableMatrix0, [LocalReplica | RemoteReplicas]),
 
     S#state{logs=Logs, stable_matrix=StableMatrix}.
--endif.
 
 -spec start_propagation_timers(state()) -> state().
 start_propagation_timers(State=?timers_unset) -> start_propagation_timers_internal(State);
@@ -815,12 +771,6 @@ update_uniform_vc(StableMatrix, ClockCache, Groups) ->
     UniformVC.
 
 -spec compute_uniform_vc(vclock(), stable_matrix(), [[replica_id()]]) -> vclock().
--ifdef(REMOVE_UVC).
-compute_uniform_vc(UniformVC, _StableMatrix, _Groups) -> UniformVC.
--else.
--ifdef(REMOVE_UVC_WITH_ZEROS).
-compute_uniform_vc(UniformVC, _StableMatrix, _Groups) -> UniformVC.
--else.
 -ifdef(UVC_IMPROVED).
 
 -spec compute_uniform_vc_group([replica_id()], stable_matrix(), vclock(), [replica_id()]) -> vclock().
@@ -839,6 +789,7 @@ compute_uniform_vc_improved(AllReplicas, UniformVC, StableMatrix, [G | Rest]) ->
 compute_uniform_vc(UniformVC, _StableMatrix, []) -> UniformVC;
 compute_uniform_vc(UniformVC, StableMatrix, Groups) ->
     compute_uniform_vc_improved(grb_dc_manager:all_replicas(), UniformVC, StableMatrix, Groups).
+
 -else.
 
 compute_uniform_vc(UniformVC, StableMatrix, Groups) ->
@@ -852,8 +803,7 @@ compute_uniform_vc(UniformVC, StableMatrix, Groups) ->
         grb_vclock:max(Acc, GroupMin)
     end, Fresh, Groups),
     grb_vclock:max(VisibleBound, UniformVC).
--endif.
--endif.
+
 -endif.
 
 %% @doc Compute the lower bound of visible transactions from the globalKnownMatrix
