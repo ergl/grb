@@ -24,10 +24,6 @@
 -export([merge_remote_stable_vc/2]).
 -endif.
 
--ifdef(UVC_IMPROVED).
--export([compute_uniform_vc_improved/4]).
--endif.
-
 %% Uniform Replication API
 -export([uniform_vc/1,
          merge_remote_uniform_vc/2,

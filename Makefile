@@ -24,10 +24,12 @@ check_binaries:
 xref:
 	$(REBAR) xref skip_deps=true
 	$(REBAR) as basic_replication xref skip_deps=true
+	$(REBAR) as better_uvc xref skip_deps=true
 
 dialyzer:
 	$(REBAR) dialyzer
 	$(REBAR) as basic_replication dialyzer
+	$(REBAR) as better_uvc dialyzer
 
 debug:
 	$(REBAR) as debug_log compile
