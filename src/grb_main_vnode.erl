@@ -241,7 +241,7 @@ handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partit
 
 -endif.
 
--spec decide_blue_internal(replica_id(), term(), vclock(), #state{}) -> #state{}.
+-spec decide_blue_internal(replica_id(), term(), vclock(), state()) -> state().
 decide_blue_internal(ReplicaId, TxId, VC, S=#state{partition=SelfPartition,
                                                    op_log=OpLog,
                                                    op_log_size=LogSize,
