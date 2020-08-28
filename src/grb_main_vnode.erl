@@ -221,16 +221,6 @@ handle_info(Msg, State) ->
     {ok, State}.
 
 -spec handle_remote_tx_internal(replica_id(), term(), #{}, grb_time:ts(), vclock(), state()) -> ok.
--ifdef(BASIC_REPLICATION).
-
-handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partition=Partition,
-                                                                          op_log=OperationLog,
-                                                                          op_log_size=LogSize}) ->
-    ok = update_partition_state(TxId, WS, VC, OperationLog, LogSize),
-    ok = grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, CommitTime),
-    ok.
-
--else.
 -ifdef(NO_REMOTE_APPEND).
 %% same as above, but only toggle this change
 handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partition=Partition,
@@ -249,7 +239,6 @@ handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partit
     ok = grb_propagation_vnode:append_blue_commit(SourceReplica, Partition, CommitTime, TxId, WS, VC),
     ok.
 
--endif.
 -endif.
 
 -spec decide_blue_internal(replica_id(), term(), vclock(), #state{}) -> #state{}.
