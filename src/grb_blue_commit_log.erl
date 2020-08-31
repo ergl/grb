@@ -14,6 +14,9 @@
 }).
 
 -type t() :: #state{}.
+-type match() :: {term(), #{}, vclock()}.
+
+-export_type([t/0, match/0]).
 
 %% API
 -export([new/1,
@@ -36,7 +39,7 @@ insert(TxId, WS, CommitVC, S=#state{at=Id, entries=Entries}) ->
 %% @doc Get all entries with commit time at the created replica bigger than `Timestamp`
 %%
 %%      Entries are returned in increasing commit time order
--spec get_bigger(grb_time:ts(), t()) -> [{term(), #{}, vclock()}].
+-spec get_bigger(grb_time:ts(), t()) -> [match()].
 get_bigger(Timestamp, #state{entries=Entries}) ->
     get_bigger(Timestamp, Entries, []).
 
@@ -49,7 +52,7 @@ get_bigger(Cutoff, [{Key, Val} | Rest], Acc) when abs(Key) > Cutoff ->
 %% @doc Remove all entries with commit time at the created replica bigger than `Timestamp`
 %%
 %%      Entries are returned in increasing commit time order
--spec remove_bigger(grb_time:ts(), t()) -> {[{term(), #{}, vclock()}], t()}.
+-spec remove_bigger(grb_time:ts(), t()) -> {[match()], t()}.
 remove_bigger(Timestamp, S=#state{entries=Entries}) ->
     {Matches, NewEntries} = remove_bigger(Timestamp, Entries, []),
     {Matches, S#state{entries=NewEntries}}.
