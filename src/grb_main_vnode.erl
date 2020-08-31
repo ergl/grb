@@ -246,7 +246,7 @@ handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partit
                                                                           op_log=OperationLog,
                                                                           op_log_size=LogSize}) ->
     ok = update_partition_state(TxId, WS, VC, OperationLog, LogSize),
-    ok = grb_propagation_vnode:append_blue_commit(SourceReplica, Partition, CommitTime, TxId, WS, VC),
+    ok = grb_propagation_vnode:append_remote_blue_commit(SourceReplica, Partition, CommitTime, TxId, WS, VC),
     ok.
 
 -endif.
@@ -266,7 +266,7 @@ decide_blue_internal(ReplicaId, TxId, VC, S=#state{partition=SelfPartition,
     KnownTime = compute_new_known_time(PreparedBlue1),
     case ShouldAppend of
         true ->
-            grb_propagation_vnode:append_blue_commit(ReplicaId, SelfPartition, KnownTime, TxId, WS, VC);
+            grb_propagation_vnode:append_blue_commit(SelfPartition, KnownTime, TxId, WS, VC);
         false ->
             grb_propagation_vnode:handle_blue_heartbeat(SelfPartition, ReplicaId, KnownTime)
     end,

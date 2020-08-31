@@ -7,6 +7,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -export([get_state/1,
          get_uniform_barrier/1,
+         get_commit_log/1,
          get_commit_log/2]).
 -endif.
 
@@ -15,7 +16,8 @@
          known_time/2,
          stable_vc/1,
          update_stable_vc_sync/2,
-         append_blue_commit/6,
+         append_blue_commit/5,
+         append_remote_blue_commit/6,
          handle_blue_heartbeat/3,
          handle_self_blue_heartbeat/2]).
 
@@ -69,7 +71,7 @@
 
 -type stable_matrix() :: #{replica_id() => vclock()}.
 -type global_known_matrix() :: #{{replica_id(), replica_id()} => grb_time:ts()}.
--type blue_commit_logs() :: #{replica_id() => grb_blue_commit_log:t()}.
+-type remote_commit_logs() :: #{replica_id() => grb_remote_commit_log:t()}.
 -type uniform_barriers() :: orddict:orddict(grb_time:ts(), [grb_promise:t()]).
 -type clock_cache() :: cache(atom, vclock()) | cache({known_vc, replica_id() | id}, grb_time:ts()).
 
@@ -77,7 +79,9 @@
     partition :: partition_id(),
     local_replica :: replica_id() | undefined,
 
-    logs = #{} :: blue_commit_logs(),
+    self_log :: grb_blue_commit_log:t() | undefined,
+    remote_logs = #{} :: remote_commit_logs(),
+
     %% only used in basic replication mode
     basic_last_sent = 0 :: grb_time:ts(),
     global_known_matrix = #{} :: global_known_matrix(),
@@ -130,10 +134,15 @@ get_uniform_barrier(Partition) ->
     State = riak_core_vnode_master:sync_command({Partition, node()}, get_state, ?master, infinity),
     State#state.pending_barriers.
 
--spec get_commit_log(replica_id(), partition_id()) -> grb_blue_commit_log:t().
-get_commit_log(Replica, Partition) ->
-    riak_core_vnode_master:sync_command({Partition, node()}, {get_clog, Replica}, ?master, infinity).
+-spec get_commit_log(partition_id()) -> grb_blue_commit_log:t().
+get_commit_log(Partition) ->
+    riak_core_vnode_master:sync_command({Partition, node()}, get_clog, ?master, infinity).
+
 -endif.
+
+-spec get_commit_log(replica_id(), partition_id()) -> grb_remote_commit_log:t().
+get_commit_log(Replica, Partition) ->
+    persistent_term:get(?CLOG(Replica, Partition)).
 
 %%%===================================================================
 %%% common public api
@@ -173,12 +182,17 @@ update_stable_vc_sync(Partition, SVC) ->
                                         ?master,
                                         infinity).
 
--spec append_blue_commit(replica_id(), partition_id(), grb_time:ts(), term(), #{}, vclock()) -> ok.
-append_blue_commit(ReplicaId, Partition, KnownTime, TxId, WS, CommitVC) ->
+-spec append_blue_commit(partition_id(), grb_time:ts(), term(), #{}, vclock()) -> ok.
+append_blue_commit(Partition, KnownTime, TxId, WS, CommitVC) ->
     riak_core_vnode_master:sync_command({Partition, node()},
-                                        {append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC},
+                                        {append_blue, KnownTime, TxId, WS, CommitVC},
                                         ?master,
                                         infinity).
+
+-spec append_remote_blue_commit(replica_id(), partition_id(), grb_time:ts(), term(), #{}, vclock()) -> ok.
+append_remote_blue_commit(ReplicaId, Partition, CommitTime, TxId, WS, CommitVC) ->
+    ok = handle_blue_heartbeat(Partition, ReplicaId, CommitTime),
+    ok = grb_remote_commit_log:insert(CommitTime, TxId, WS, CommitVC, get_commit_log(ReplicaId, Partition)).
 
 -spec append_blue_commit_empty(replica_id(), partition_id(), grb_time:ts(), term(), #{}, vclock()) -> ok.
 append_blue_commit_empty(ReplicaId, Partition, KnownTime, TxId, WS, CommitVC) ->
@@ -283,6 +297,7 @@ init([Partition]) ->
 
     {ok, #state{partition=Partition,
                 local_replica=undefined, % ok to do this, we'll overwrite it after join
+                self_log=undefined, % ok to do this, we'll overwrite it after join
                 prune_interval=PruneInterval,
                 replication_interval=ReplInt,
                 uniform_interval=UniformInterval,
@@ -295,8 +310,8 @@ handle_command(ping, _Sender, State) ->
 handle_command(get_state, _Sender, State) ->
     {reply, State, State};
 
-handle_command({get_clog, Replica}, _Sender, State=#state{logs=Logs}) ->
-    {reply, maps:get(Replica, Logs, grb_blue_commit_log:new(Replica)), State};
+handle_command(get_clog, _Sender, State=#state{self_log=Log}) ->
+    {reply, Log, State};
 
 handle_command(is_ready, _Sender, State) ->
     Ready = lists:all(fun is_ready/1, [State#state.clock_cache]),
@@ -306,7 +321,9 @@ handle_command(learn_dc_id, _Sender, S=#state{clock_cache=ClockTable}) ->
     %% called after joining ring, this is now the correct id
     ReplicaId = grb_dc_manager:replica_id(),
     true = ets:insert(ClockTable, {?known_key(ReplicaId), 0}),
-    {reply, ok, S#state{local_replica=ReplicaId}};
+
+    {reply, ok, S#state{local_replica=ReplicaId,
+                        self_log=grb_blue_commit_log:new(ReplicaId)}};
 
 handle_command({learn_dc_groups, MyGroups}, _From, S) ->
     %% called after connecting other replicas
@@ -349,11 +366,11 @@ handle_command({append_blue_empty, ReplicaId, KnownTime, _TxId, _WS, _CommitVC},
     ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
     {reply, ok, S};
 
-handle_command({append_blue, ReplicaId, KnownTime, TxId, WS, CommitVC}, _Sender, S=#state{logs=Logs,
-                                                                                          clock_cache=ClockTable})->
-    ReplicaLog = maps:get(ReplicaId, Logs),
+handle_command({append_blue, KnownTime, TxId, WS, CommitVC}, _Sender, S=#state{self_log=Log,
+                                                                               local_replica=ReplicaId,
+                                                                               clock_cache=ClockTable})->
     ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
-    {reply, ok, S#state{logs = Logs#{ReplicaId => grb_blue_commit_log:insert(TxId, WS, CommitVC, ReplicaLog)}}};
+    {reply, ok, S#state{self_log=grb_blue_commit_log:insert(TxId, WS, CommitVC, Log)}};
 
 handle_command({uniform_barrier, Promise, Timestamp}, _Sender, S=#state{pending_barriers=Barriers}) ->
     {noreply, S#state{pending_barriers=insert_uniform_barrier(Promise, Timestamp, Barriers)}};
@@ -393,15 +410,12 @@ handle_info(?clock_send_req, State=#state{partition=P,
     end, grb_dc_connection_manager:connected_replicas()),
     {ok, State#state{uniform_clock_send_timer=erlang:send_after(Interval, self(), ?clock_send_req)}};
 
-handle_info(?prune_req, State=#state{logs=Logs,
-                                     local_replica=LocalId,
-                                     global_known_matrix=Matrix,
-                                     prune_timer=Timer,
-                                     prune_interval=Interval}) ->
+handle_info(?prune_req, S0=#state{prune_timer=Timer,
+                                  prune_interval=Interval}) ->
 
     erlang:cancel_timer(Timer),
-    {ok, State#state{logs=prune_commit_logs(LocalId, Matrix, Logs),
-                     prune_timer=erlang:send_after(Interval, self(), ?prune_req)}};
+    State = prune_commit_logs(S0),
+    {ok, State#state{prune_timer=erlang:send_after(Interval, self(), ?prune_req)}};
 
 handle_info(Msg, State) ->
     ?LOG_WARNING("unhandled_info ~p", [Msg]),
@@ -412,7 +426,8 @@ handle_info(Msg, State) ->
 %%%===================================================================
 
 -spec populate_logs_internal(state()) -> state().
-populate_logs_internal(S=#state{logs=Logs0,
+populate_logs_internal(S=#state{remote_logs=Logs0,
+                                partition=Partition,
                                 clock_cache=ClockTable,
                                 local_replica=LocalReplica,
                                 stable_matrix=StableMatrix0}) ->
@@ -421,14 +436,16 @@ populate_logs_internal(S=#state{logs=Logs0,
     true = ets:insert(ClockTable, [{?known_key(R), 0} || R <- RemoteReplicas]),
 
     Logs = lists:foldl(fun(Replica, LogAcc) ->
-        LogAcc#{Replica => grb_blue_commit_log:new(Replica)}
-    end, Logs0, [LocalReplica | RemoteReplicas]),
+        L = grb_remote_commit_log:new(),
+        ok = persistent_term:put(?CLOG(Replica, Partition), L),
+        LogAcc#{Replica => L}
+    end, Logs0, RemoteReplicas),
 
     StableMatrix = lists:foldl(fun(Replica, MatrixAcc) ->
         MatrixAcc#{Replica => grb_vclock:new()}
     end, StableMatrix0, [LocalReplica | RemoteReplicas]),
 
-    S#state{logs=Logs, stable_matrix=StableMatrix}.
+    S#state{remote_logs=Logs, stable_matrix=StableMatrix}.
 
 -spec start_propagation_timers(state()) -> state().
 start_propagation_timers(State=?timers_unset) -> start_propagation_timers_internal(State);
@@ -501,18 +518,24 @@ stop_propagation_timers_internal(State) ->
 -endif.
 -endif.
 
--spec prune_commit_logs(LocalReplica :: replica_id(),
-                        Matrix :: global_known_matrix(),
-                        Logs :: blue_commit_logs()) -> blue_commit_logs().
+-spec prune_commit_logs(state()) -> state().
+prune_commit_logs(S=#state{self_log=LocalLog,
+                           remote_logs=RemoteLogs,
+                           local_replica=LocalId,
+                           global_known_matrix=Matrix}) ->
 
-prune_commit_logs(_LocalId, Matrix, CommitLogs) ->
     ?LOG_DEBUG("Running prune on logs"),
     RemoteReplicas = grb_dc_manager:remote_replicas(),
-    maps:map(fun(Replica, CommitLog) ->
+    ok = prune_remote_commit_logs(RemoteReplicas, RemoteLogs, Matrix),
+    LocalMinTS = min_global_matrix_ts(RemoteReplicas, LocalId, Matrix),
+    S#state{self_log=grb_blue_commit_log:remove_leq(LocalMinTS, LocalLog)}.
+
+-spec prune_remote_commit_logs([replica_id()], remote_commit_logs(), global_known_matrix()) -> ok.
+prune_remote_commit_logs(RemoteReplicas, Logs, Matrix) ->
+    lists:foreach(fun({Replica, Log}) ->
         MinTs = min_global_matrix_ts(RemoteReplicas, Replica, Matrix),
-        ?LOG_DEBUG("Min for replica ~p is ~p~n", [Replica, MinTs]),
-        grb_blue_commit_log:remove_leq(MinTs, CommitLog)
-    end, CommitLogs).
+        ok = grb_remote_commit_log:remove_leq(MinTs, Log)
+    end, maps:to_list(Logs)).
 
 -spec update_stable_vc_internal(vclock(), state()) -> state().
 -ifdef(BASIC_REPLICATION).
@@ -585,13 +608,12 @@ update_clocks(FromReplicaId, KnownVC, StableVC, S=#state{local_replica=LocalId,
 -spec replicate_internal(state()) -> state().
 -ifdef(BASIC_REPLICATION).
 
-replicate_internal(S=#state{logs=Logs,
+replicate_internal(S=#state{self_log=LocalLog0,
                             partition=Partition,
                             local_replica=LocalId,
                             clock_cache=ClockTable,
                             basic_last_sent=LastSent}) ->
 
-    #{LocalId := LocalLog0} = Logs,
     LocalTime = known_time_internal(LocalId, ClockTable),
     {ToSend, LocalLog} = grb_blue_commit_log:remove_bigger(LastSent, LocalLog0),
     lists:foreach(fun(Target) ->
@@ -609,7 +631,7 @@ replicate_internal(S=#state{logs=Logs,
         end
     end, grb_dc_connection_manager:connected_replicas()),
 
-    S#state{basic_last_sent=LocalTime, logs=Logs#{LocalId => LocalLog}}.
+    S#state{basic_last_sent=LocalTime, self_log=LocalLog}.
 
 -else.
 
@@ -619,13 +641,12 @@ replicate_internal(S=#state{logs=Logs,
 %% todo(borja): Instead of a secondary timer, add a config that says: every X times we replicate,
 %% send a clock heartbeat
 
-replicate_internal(S=#state{logs=Logs,
+replicate_internal(S=#state{self_log=LocalLog,
                             partition=Partition,
                             local_replica=LocalId,
                             clock_cache=ClockTable,
                             global_known_matrix=Matrix0}) ->
 
-    #{LocalId := LocalLog} = Logs,
     KnownVC = known_vc_internal(ClockTable),
     LocalTime = grb_vclock:get_time(LocalId, KnownVC),
 
@@ -656,13 +677,12 @@ replicate_internal(S=#state{logs=Logs,
 
 -else.
 
-replicate_internal(S=#state{logs=Logs,
+replicate_internal(S=#state{self_log=LocalLog,
                             partition=Partition,
                             local_replica=LocalId,
                             clock_cache=ClockTable,
                             global_known_matrix=Matrix0}) ->
 
-    #{LocalId := LocalLog} = Logs,
     KnownVC = known_vc_internal(ClockTable),
     LocalTime = grb_vclock:get_time(LocalId, KnownVC),
     StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
@@ -696,7 +716,7 @@ replicate_internal(S=#state{logs=Logs,
 -endif.
 
 -spec uniform_replicate_internal(state()) -> global_known_matrix().
-uniform_replicate_internal(#state{logs=Logs,
+uniform_replicate_internal(#state{remote_logs=Logs,
                                   partition=Partition,
                                   clock_cache=ClockTable,
                                   global_known_matrix=Matrix}) ->
@@ -718,7 +738,7 @@ uniform_replicate_internal(#state{logs=Logs,
 -spec ureplicate_to(Target :: replica_id(),
                     RemoteReplicas :: [replica_id()],
                     LocalPartition :: partition_id(),
-                    Logs :: blue_commit_logs(),
+                    Logs :: remote_commit_logs(),
                     ClockTable :: clock_cache(),
                     Matrix :: global_known_matrix()) -> global_known_matrix().
 
@@ -739,7 +759,7 @@ ureplicate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, ClockTable,
     %% globalMatrix[target, relay] <- knownVC[relay]
     HeartBeatTime = known_time_internal(RelayReplica, ClockTable),
     ThresholdTime = maps:get({TargetReplica, RelayReplica}, MatrixAcc, 0),
-    ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, maps:get(RelayReplica, Logs)),
+    ToSend = grb_remote_commit_log:get_bigger(ThresholdTime, maps:get(RelayReplica, Logs)),
     case ToSend of
         [] ->
             HBRes = grb_dc_connection_manager:send_heartbeat(TargetReplica, RelayReplica, Partition, HeartBeatTime),
@@ -993,6 +1013,59 @@ grb_propagation_vnode_prune_commit_logs_test() ->
                 ?assertEqual([], grb_blue_commit_log:get_bigger(0, Log2)),
                 ?assertEqual([{ignore, #{}, VClock(DC3, 12)}], grb_blue_commit_log:get_bigger(0, Log3))
         end
+    end, AllReplicas).
+
+grb_propagation_vnode_prune_remote_commit_logs_test() ->
+    DC1 = dc_id1, DC2 = dc_id2, DC3 = dc_id3,
+    VClock = fun(R, N) -> grb_vclock:set_time(R, N, grb_vclock:new()) end,
+
+    Matrix = #{
+        {DC1, DC1} => 4,
+        {DC1, DC2} => 5,
+        {DC1, DC3} => 10,
+
+        {DC2, DC1} => 4,
+        {DC2, DC2} => 7,
+        {DC2, DC3} => 12,
+
+        {DC3, DC1} => 3,
+        {DC3, DC2} => 5,
+        {DC3, DC3} => 12
+    },
+
+    CreateLogs = fun() -> #{
+        DC1 => grb_remote_commit_log:from_list(DC1, [{ignore, #{}, VClock(DC1, 3)}, {ignore, #{}, VClock(DC1, 4)}]),
+        DC2 => grb_remote_commit_log:from_list(DC2, [{ignore, #{}, VClock(DC2, 2)}, {ignore, #{}, VClock(DC2, 5)}]),
+        DC3 => grb_remote_commit_log:from_list(DC3, [{ignore, #{}, VClock(DC3, 10)}, {ignore, #{}, VClock(DC3, 12)}])
+    } end,
+
+    DeleteLogs = fun(Logs) ->
+        [ grb_remote_commit_log:delete(Log) || {_, Log} <- maps:to_list(Logs) ],
+        ok
+    end,
+
+    AllReplicas = [DC1, DC2, DC3],
+    lists:foreach(fun(AtReplica) ->
+        Remotes = AllReplicas -- [AtReplica],
+        Logs = CreateLogs(),
+
+        ok = prune_remote_commit_logs(Remotes, Logs, Matrix),
+        #{ DC1 := Log1 , DC2 := Log2, DC3 := Log3 } = Logs,
+        case AtReplica of
+            DC1 ->
+                ?assertEqual([{ignore, #{}, VClock(DC1, 4)}], grb_remote_commit_log:get_bigger(0, Log1)),
+                ?assertEqual([], grb_remote_commit_log:get_bigger(0, Log2)),
+                ?assertEqual([], grb_remote_commit_log:get_bigger(0, Log3));
+            DC2 ->
+                ?assertEqual([{ignore, #{}, VClock(DC1, 4)}], grb_remote_commit_log:get_bigger(0, Log1)),
+                ?assertEqual([], grb_remote_commit_log:get_bigger(0, Log2)),
+                ?assertEqual([{ignore, #{}, VClock(DC3, 12)}], grb_remote_commit_log:get_bigger(0, Log3));
+            DC3 ->
+                ?assertEqual([], grb_remote_commit_log:get_bigger(0, Log1)),
+                ?assertEqual([], grb_remote_commit_log:get_bigger(0, Log2)),
+                ?assertEqual([{ignore, #{}, VClock(DC3, 12)}], grb_remote_commit_log:get_bigger(0, Log3))
+        end,
+        ok = DeleteLogs(Logs)
     end, AllReplicas).
 
 -endif.

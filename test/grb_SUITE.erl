@@ -135,9 +135,9 @@ propagate_updates_test(C) ->
 replication_queue_flush_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     {Key, _, _} = ?config(propagate_info, C),
-    ok = foreach_replica(ClusterMap, fun(Replica) ->
-        {Partition, Node} = key_location(Key, Replica, ClusterMap),
-        CommitLog = erpc:call(Node, grb_propagation_vnode, get_commit_log, [Replica, Partition]),
+    ok = foreach_replica(ClusterMap, fun(RemoteReplica) ->
+        {Partition, Node} = key_location(Key, RemoteReplica, ClusterMap),
+        CommitLog = erpc:call(Node, grb_propagation_vnode, get_commit_log, [Partition]),
         [] = grb_blue_commit_log:to_list(CommitLog),
         ok
     end).
