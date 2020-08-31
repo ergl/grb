@@ -804,27 +804,6 @@ update_uniform_vc(StableMatrix, ClockCache, Groups) ->
     UniformVC.
 
 -spec compute_uniform_vc(vclock(), stable_matrix(), [[replica_id()]]) -> vclock().
--ifdef(UVC_IMPROVED).
-
--spec compute_uniform_vc_group([replica_id()], stable_matrix(), vclock(), [replica_id()]) -> vclock().
-compute_uniform_vc_group(AtReplicas, StableMatrix, Default, [H | T]) ->
-    lists:foldl(fun(R, AccSVC) ->
-        grb_vclock:min_at(AtReplicas, AccSVC, maps:get(R, StableMatrix, Default))
-    end, maps:get(H, StableMatrix, Default), T).
-
-compute_uniform_vc_improved(AllReplicas, UniformVC, StableMatrix, [G | Rest]) ->
-    Fresh = grb_vclock:new(),
-    VisibleBound = lists:foldl(fun(Group, Acc) ->
-        grb_vclock:max_at_keys(AllReplicas, Acc, compute_uniform_vc_group(AllReplicas, StableMatrix, Fresh, Group))
-    end, compute_uniform_vc_group(AllReplicas, StableMatrix, Fresh, G), Rest),
-    grb_vclock:max_at_keys(AllReplicas, VisibleBound, UniformVC).
-
-compute_uniform_vc(UniformVC, _StableMatrix, []) -> UniformVC;
-compute_uniform_vc(UniformVC, StableMatrix, Groups) ->
-    compute_uniform_vc_improved(grb_dc_manager:all_replicas(), UniformVC, StableMatrix, Groups).
-
--else.
-
 compute_uniform_vc(UniformVC, StableMatrix, Groups) ->
     Fresh = grb_vclock:new(),
     VisibleBound = lists:foldl(fun(Group, Acc) ->
@@ -836,8 +815,6 @@ compute_uniform_vc(UniformVC, StableMatrix, Groups) ->
         grb_vclock:max(Acc, GroupMin)
     end, Fresh, Groups),
     grb_vclock:max(VisibleBound, UniformVC).
-
--endif.
 
 %% @doc Compute the lower bound of visible transactions from the globalKnownMatrix
 %%
@@ -914,19 +891,6 @@ handle_overload_info(_, _Idx) ->
 
 -ifdef(TEST).
 
--ifdef(UVC_IMPROVED).
-grb_propagation_vnode_compute_uniform_vc_test() ->
-    Matrix = #{
-        dc_id1 => #{dc_id1 => 2, dc_id2 => 2, dc_id3 => 1},
-        dc_id2 => #{dc_id1 => 2, dc_id2 => 3, dc_id3 => 1},
-        dc_id3 => #{dc_id1 => 1, dc_id2 => 2, dc_id3 => 2}
-    },
-    FGroups = [[dc_id1, dc_id2], [dc_id1, dc_id3]],
-    UniformVC = compute_uniform_vc_improved([dc_id1, dc_id2, dc_id3], grb_vclock:new(), Matrix, FGroups),
-    ?assertEqual(#{dc_id1 => 2, dc_id2 => 2, dc_id3 => 1}, UniformVC).
-
--else.
-
 grb_propagation_vnode_compute_uniform_vc_test() ->
     Matrix = #{
         dc_id1 => #{dc_id1 => 2, dc_id2 => 2, dc_id3 => 1},
@@ -936,7 +900,6 @@ grb_propagation_vnode_compute_uniform_vc_test() ->
     FGroups = [[dc_id1, dc_id2], [dc_id1, dc_id3]],
     UniformVC = compute_uniform_vc(grb_vclock:new(), Matrix, FGroups),
     ?assertEqual(#{dc_id1 => 2, dc_id2 => 2, dc_id3 => 1}, UniformVC).
--endif.
 
 grb_propagation_vnode_min_global_matrix_ts_test() ->
     DC1 = dc_id1, DC2 = dc_id2, DC3 = dc_id3,
