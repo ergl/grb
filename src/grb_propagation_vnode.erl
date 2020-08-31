@@ -26,8 +26,6 @@
 -export([merge_remote_stable_vc/2]).
 -endif.
 
--export([append_blue_commit_empty/6]).
-
 %% Uniform Replication API
 -export([uniform_vc/1,
          merge_remote_uniform_vc/2,
@@ -194,13 +192,6 @@ append_remote_blue_commit(ReplicaId, Partition, CommitTime, TxId, WS, CommitVC) 
     ok = handle_blue_heartbeat(Partition, ReplicaId, CommitTime),
     ok = grb_remote_commit_log:insert(CommitTime, TxId, WS, CommitVC, get_commit_log(ReplicaId, Partition)).
 
--spec append_blue_commit_empty(replica_id(), partition_id(), grb_time:ts(), term(), #{}, vclock()) -> ok.
-append_blue_commit_empty(ReplicaId, Partition, KnownTime, TxId, WS, CommitVC) ->
-    riak_core_vnode_master:sync_command({Partition, node()},
-                                        {append_blue_empty, ReplicaId, KnownTime, TxId, WS, CommitVC},
-                                        ?master,
-                                        infinity).
-
 %%%===================================================================
 %%% basic replication api
 %%%===================================================================
@@ -361,10 +352,6 @@ handle_command({remote_clock_heartbeat_update, FromReplicaId, KnownVC, StableVC}
     Timestamp = grb_vclock:get_time(FromReplicaId, KnownVC),
     ok = update_known_vc(FromReplicaId, Timestamp, ClockCache),
     {noreply, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
-
-handle_command({append_blue_empty, ReplicaId, KnownTime, _TxId, _WS, _CommitVC}, _Sender, S=#state{clock_cache=ClockTable})->
-    ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
-    {reply, ok, S};
 
 handle_command({append_blue, KnownTime, TxId, WS, CommitVC}, _Sender, S=#state{self_log=Log,
                                                                                local_replica=ReplicaId,
