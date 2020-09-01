@@ -207,7 +207,7 @@ update_stable_vc(Partition, SVC) ->
 -spec merge_remote_stable_vc(partition_id(), vclock()) -> vclock().
 merge_remote_stable_vc(Partition, VC) ->
     S0 = stable_vc(Partition),
-    S1 = grb_vclock:max_except(grb_dc_manager:replica_id(), S0, VC),
+    S1 = grb_vclock:max_at_keys(grb_dc_manager:remote_replicas(), S0, VC),
     update_stable_vc(Partition, S1),
     S1.
 
@@ -231,7 +231,7 @@ update_uniform_vc(Partition, SVC) ->
 -spec merge_remote_uniform_vc(partition_id(), vclock()) -> vclock().
 merge_remote_uniform_vc(Partition, VC) ->
     S0 = uniform_vc(Partition),
-    S1 = grb_vclock:max_except(grb_dc_manager:replica_id(), S0, VC),
+    S1 = grb_vclock:max_at_keys(grb_dc_manager:remote_replicas(), S0, VC),
     update_uniform_vc(Partition, S1),
     S1.
 
