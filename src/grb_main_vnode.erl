@@ -5,7 +5,7 @@
 
 %% Public API
 -export([prepare_blue/4,
-         decide_blue/4,
+         decide_blue/3,
          handle_replicate/5]).
 
 %% riak_core_vnode callbacks
@@ -70,10 +70,10 @@ prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
                                         ?master),
     Ts.
 
--spec decide_blue(partition_id(), replica_id(), term(), vclock()) -> ok.
-decide_blue(Partition, ReplicaId, TxId, CommitVC) ->
+-spec decide_blue(partition_id(), term(), vclock()) -> ok.
+decide_blue(Partition, TxId, CommitVC) ->
     riak_core_vnode_master:sync_command({Partition, node()},
-                                        {decide_blue, ReplicaId, TxId, CommitVC},
+                                        {decide_blue, TxId, CommitVC},
                                         ?master,
                                         infinity).
 
@@ -195,8 +195,8 @@ handle_command({prepare_blue, TxId, WS, SnapshotVC, Ts}, _From, S=#state{partiti
     ok = update_prepare_clocks(Partition, SnapshotVC),
     {noreply, S#state{prepared_blue=PB#{TxId => {WS, Ts}}}};
 
-handle_command({decide_blue, ReplicaId, TxId, VC}, _From, State) ->
-    NewState = decide_blue_internal(ReplicaId, TxId, VC, State),
+handle_command({decide_blue, TxId, VC}, _From, State) ->
+    NewState = decide_blue_internal(TxId, VC, State),
     {reply, ok, NewState};
 
 handle_command({handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC}, _From, State) ->
@@ -241,12 +241,12 @@ handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partit
 
 -endif.
 
--spec decide_blue_internal(replica_id(), term(), vclock(), state()) -> state().
-decide_blue_internal(ReplicaId, TxId, VC, S=#state{partition=SelfPartition,
-                                                   op_log=OpLog,
-                                                   op_log_size=LogSize,
-                                                   prepared_blue=PreparedBlue,
-                                                   should_append_commit=ShouldAppend}) ->
+-spec decide_blue_internal(term(), vclock(), state()) -> state().
+decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
+                                        op_log=OpLog,
+                                        op_log_size=LogSize,
+                                        prepared_blue=PreparedBlue,
+                                        should_append_commit=ShouldAppend}) ->
 
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
@@ -257,7 +257,7 @@ decide_blue_internal(ReplicaId, TxId, VC, S=#state{partition=SelfPartition,
         true ->
             grb_propagation_vnode:append_blue_commit(SelfPartition, KnownTime, TxId, WS, VC);
         false ->
-            grb_propagation_vnode:handle_blue_heartbeat(SelfPartition, ReplicaId, KnownTime)
+            grb_propagation_vnode:handle_self_blue_heartbeat(SelfPartition, KnownTime)
     end,
     S#state{prepared_blue=PreparedBlue1}.
 

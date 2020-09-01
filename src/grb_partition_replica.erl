@@ -34,6 +34,7 @@
     self :: atom(),
     %% Partition that this server is replicating
     partition :: partition_id(),
+    replica_id :: replica_id(),
 
     known_barrier_wait_ms :: non_neg_integer(),
 
@@ -108,14 +109,12 @@ replica_ready(Partition, N) ->
 -spec async_op(grb_promise:t(), partition_id(), key(), vclock(), val()) -> ok.
 async_op(Promise, Partition, Key, VC, Val) ->
     Target = random_replica(Partition),
-    ReplicaId = grb_dc_manager:replica_id(),
-    gen_server:cast(Target, {perform_op, Promise, ReplicaId, Key, VC, Val}).
+    gen_server:cast(Target, {perform_op, Promise, Key, VC, Val}).
 
 -spec decide_blue(partition_id(), _, vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->
     Target = random_replica(Partition),
-    ReplicaId = grb_dc_manager:replica_id(),
-    gen_server:cast(Target, {decide_blue, ReplicaId, TxId, VC}).
+    gen_server:cast(Target, {decide_blue, TxId, VC}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
@@ -125,8 +124,9 @@ init([Partition, Id, Val, RedTs]) ->
     Self = generate_replica_name(Partition, Id),
     OpLog = grb_dc_utils:cache_name(Partition, ?OP_LOG_TABLE),
     {ok, OpWait} = application:get_env(grb, op_prepare_wait_ms),
-    {ok, #state{self = Self,
-                partition = Partition,
+    {ok, #state{self=Self,
+                partition=Partition,
+                replica_id=grb_dc_manager:replica_id(),
                 known_barrier_wait_ms=OpWait,
                 oplog_replica = OpLog,
                 default_bottom_value=Val,
@@ -144,22 +144,22 @@ handle_call({update_default, Val, RedTs}, _From, S) ->
 handle_call(_Request, _From, _State) ->
     erlang:error(not_implemented).
 
-handle_cast({perform_op, Promise, ReplicaId, Key, VC, Val}, State) ->
-    ok = perform_op_internal(Promise, ReplicaId, Key, VC, Val, State),
+handle_cast({perform_op, Promise, Key, VC, Val}, State) ->
+    ok = perform_op_internal(Promise, Key, VC, Val, State),
     {noreply, State};
 
-handle_cast({decide_blue, ReplicaId, TxId, VC}, State=#state{known_barrier_wait_ms=WaitMs}) ->
+handle_cast({decide_blue, TxId, VC}, State=#state{replica_id=ReplicaId, known_barrier_wait_ms=WaitMs}) ->
     ok = decide_blue_internal(State#state.partition, WaitMs, ReplicaId, TxId, VC),
     {noreply, State};
 
 handle_cast(_Request, _State) ->
     erlang:error(not_implemented).
 
-handle_info({retry_op_wait, Promise, ReplicaId, Key, VC, Val}, State=#state{known_barrier_wait_ms=WaitMs}) ->
-    ok = perform_op_wait(Promise, WaitMs, ReplicaId, Key, VC, Val, State),
+handle_info({retry_op_wait, Promise, Key, VC, Val}, State) ->
+    ok = perform_op_wait(Promise, Key, VC, Val, State),
     {noreply, State};
 
-handle_info({retry_decide, ReplicaId, TxId, VC}, State=#state{known_barrier_wait_ms=WaitMs}) ->
+handle_info({retry_decide, TxId, VC}, State=#state{replica_id=ReplicaId, known_barrier_wait_ms=WaitMs}) ->
     ok = decide_blue_internal(State#state.partition, WaitMs, ReplicaId, TxId, VC),
     {noreply, State};
 
@@ -172,7 +172,6 @@ handle_info(Info, State) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -spec perform_op_internal(Promise :: grb_promise:t(),
-                          ReplicaId :: replica_id(),
                           Key :: key(),
                           SnapshotVC :: vclock(),
                           Val :: val(),
@@ -180,30 +179,31 @@ handle_info(Info, State) ->
 
 -ifdef(BASIC_REPLICATION).
 
-perform_op_internal(Promise, ReplicaId, Key, SnapshotVC, Val, State=#state{partition=Partition, known_barrier_wait_ms=WaitMs}) ->
+perform_op_internal(Promise, Key, SnapshotVC, Val, State=#state{partition=Partition}) ->
     _ = grb_propagation_vnode:merge_remote_stable_vc(Partition, SnapshotVC),
-    perform_op_wait(Promise, WaitMs, ReplicaId, Key, SnapshotVC, Val, State).
+    perform_op_wait(Promise, Key, SnapshotVC, Val, State).
 
 -else.
 
-perform_op_internal(Promise, ReplicaId, Key, SnapshotVC, Val, State=#state{partition=Partition, known_barrier_wait_ms=WaitMs}) ->
+perform_op_internal(Promise, Key, SnapshotVC, Val, State=#state{partition=Partition}) ->
     _ = grb_propagation_vnode:merge_remote_uniform_vc(Partition, SnapshotVC),
-    perform_op_wait(Promise, WaitMs, ReplicaId, Key, SnapshotVC, Val, State).
+    perform_op_wait(Promise, Key, SnapshotVC, Val, State).
 
 -endif.
 
 -spec perform_op_wait(Promise :: grb_promise:t(),
-                      WaitMs :: non_neg_integer(),
-                      ReplicaId :: replica_id(),
                       Key :: key(),
                       SnapshotVC :: vclock(),
                       Val :: val(),
                       State :: #state{}) -> ok.
 
-perform_op_wait(Promise, WaitMs, ReplicaId, Key, SnapshotVC, Val, S=#state{partition=Partition}) ->
+perform_op_wait(Promise, Key, SnapshotVC, Val, S=#state{partition=Partition,
+                                                        replica_id=ReplicaId,
+                                                        known_barrier_wait_ms=WaitMs}) ->
+
     case check_known_vc(Partition, ReplicaId, SnapshotVC) of
         not_ready ->
-            erlang:send_after(WaitMs, self(), {retry_op_wait, Promise, ReplicaId, Key, SnapshotVC, Val}),
+            erlang:send_after(WaitMs, self(), {retry_op_wait, Promise, Key, SnapshotVC, Val}),
             ok;
         ready ->
             perform_op_continue(Promise, Key, SnapshotVC, Val, S)
@@ -251,10 +251,10 @@ perform_op_continue(Promise, Key, VC, Val, State=#state{default_bottom_value=Bot
 decide_blue_internal(Partition, WaitMs, ReplicaId, TxId, VC) ->
     case check_current_clock(ReplicaId, VC) of
         not_ready ->
-            erlang:send_after(WaitMs, self(), {retry_decide, ReplicaId, TxId, VC}),
+            erlang:send_after(WaitMs, self(), {retry_decide, TxId, VC}),
             ok;
         ready ->
-            grb_main_vnode:decide_blue(Partition, ReplicaId, TxId, VC)
+            grb_main_vnode:decide_blue(Partition, TxId, VC)
     end.
 
 -spec check_current_clock(replica_id(), vclock()) -> ready | not_ready.
