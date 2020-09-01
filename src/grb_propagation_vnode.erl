@@ -313,6 +313,14 @@ handle_command(learn_dc_id, _Sender, S=#state{clock_cache=ClockTable}) ->
     ReplicaId = grb_dc_manager:replica_id(),
     true = ets:insert(ClockTable, {?known_key(ReplicaId), 0}),
 
+    %% Fill stableVC
+    OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
+    true = ets:update_element(ClockTable, ?stable_key, {2, grb_vclock:set_time(ReplicaId, 0, OldSVC)}),
+
+    %% Fill uniformVC
+    OldUVC = ets:lookup_element(ClockTable, ?uniform_key, 2),
+    true = ets:update_element(ClockTable, ?uniform_key, {2, grb_vclock:set_time(ReplicaId, 0, OldUVC)}),
+
     {reply, ok, S#state{local_replica=ReplicaId,
                         self_log=grb_blue_commit_log:new(ReplicaId)}};
 
@@ -421,6 +429,18 @@ populate_logs_internal(S=#state{remote_logs=Logs0,
 
     RemoteReplicas = grb_dc_manager:remote_replicas(),
     true = ets:insert(ClockTable, [{?known_key(R), 0} || R <- RemoteReplicas]),
+
+    FillClock = fun(Replica, Acc) -> grb_vclock:set_time(Replica, 0, Acc) end,
+
+    %% Fill stableVC
+    OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
+    true = ets:update_element(ClockTable, ?stable_key,
+                              {2, lists:foldl(FillClock, OldSVC, RemoteReplicas)}),
+
+    %% Fill uniformVC
+    OldUVC = ets:lookup_element(ClockTable, ?uniform_key, 2),
+    true = ets:update_element(ClockTable, ?uniform_key,
+                              {2, lists:foldl(FillClock, OldUVC, RemoteReplicas)}),
 
     Logs = lists:foldl(fun(Replica, LogAcc) ->
         L = grb_remote_commit_log:new(),
