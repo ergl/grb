@@ -4,14 +4,12 @@
 -export([new/0,
          get_time/2,
          set_time/3,
-         set_max_time/3,
          eq/2,
          leq/2,
          min/2,
          max/2,
          min_at/3,
          max_at/3,
-         max_except/3,
          max_at_keys/3,
          to_list/1]).
 
@@ -34,10 +32,6 @@ get_time(Key, VectorClock) ->
 -spec set_time(T, grb_time:ts(), vc(T)) -> vc(T).
 set_time(Key, Value, VectorClock) ->
     maps:put(Key, Value, VectorClock).
-
--spec set_max_time(T, grb_time:ts(), vc(T)) -> vc(T).
-set_max_time(Key, Value, VectorClock) ->
-    maps:update_with(Key, fun(Old) -> erlang:max(Old, Value) end, Value, VectorClock).
 
 -spec eq(vc(T), vc(T)) -> boolean().
 eq(VC, VC) -> true;
@@ -72,17 +66,6 @@ max(Left, Right) ->
             {ok, V} -> erlang:max(V, Value);
             error -> Value
         end
-    end, Right)).
-
--spec max_except(T, vc(T), vc(T)) -> vc(T).
-max_except(Key, Left, Right) ->
-    maps:merge(Left, maps:map(fun
-        (InnerKey, _) when InnerKey =:= Key -> get_time(Key, Left);
-        (InnerKey, Value) ->
-            case maps:find(InnerKey, Left) of
-                {ok, V} -> erlang:max(V, Value);
-                error -> Value
-            end
     end, Right)).
 
 -spec max_at(T, vc(T), vc(T)) -> vc(T).
@@ -180,21 +163,5 @@ grb_vclock_max_at_keys_test() ->
 
     F = grb_vclock:max_at_keys([a], A, B),
     ?assertEqual(A, F).
-
-grb_vclock_max_except_test() ->
-    A = #{a => 1,  b => 10},
-    B = #{b => 20},
-
-    C = grb_vclock:max_except(b, B, A),
-    ?assertEqual(grb_vclock:max(B, A), C),
-
-    D = grb_vclock:max_except(a, B, A),
-    ?assertEqual(#{a => 0, b => 20}, D),
-
-    E = grb_vclock:max_except(b, A, B),
-    ?assertEqual(A, E),
-
-    F = grb_vclock:max_except(a, A, B),
-    ?assertEqual(grb_vclock:max(A, B), F).
 
 -endif.
