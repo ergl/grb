@@ -4,6 +4,7 @@
 -export([new/0,
          get_time/2,
          set_time/3,
+         set_max_time/3,
          eq/2,
          leq/2,
          min/2,
@@ -32,6 +33,11 @@ get_time(Key, VectorClock) ->
 -spec set_time(T, grb_time:ts(), vc(T)) -> vc(T).
 set_time(Key, Value, VectorClock) ->
     maps:put(Key, Value, VectorClock).
+
+-spec set_max_time(T, grb_time:ts(), vc(T)) -> vc(T).
+set_max_time(Key, Value, VectorClock) ->
+    Old = get_time(Key, VectorClock),
+    VectorClock#{Key => erlang:max(Value, Old)}.
 
 -spec eq(vc(T), vc(T)) -> boolean().
 eq(VC, VC) -> true;

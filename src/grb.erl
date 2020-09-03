@@ -93,6 +93,7 @@ start_transaction(Partition, ClientVC) ->
     UpdatedUniformVC = grb_propagation_vnode:merge_remote_uniform_vc(Partition, ClientVC),
     SVC = grb_vclock:max(ClientVC, UpdatedUniformVC),
 
+    %% todo(borja, performance): Separate stableVC[red] into a separate ETS key, like we did with knownVC
     %% snapshotVC[replica] is the same as before, but merge it with stableVC at red
     StableVC = grb_propagation_vnode:stable_vc(Partition),
     grb_vclock:max_at(?RED_REPLICA, SVC, StableVC).
