@@ -61,7 +61,6 @@
 -define(prune_req, prune_event).
 -define(replication_req, replication_event).
 -define(uniform_req, uniform_replication_event).
--define(clock_send_req, clock_send_event).
 
 -define(known_key(Replica), {known_vc, Replica}).
 -define(stable_key, stable_vc).
@@ -92,10 +91,6 @@
     uniform_interval :: non_neg_integer(),
     uniform_timer = undefined :: reference() | undefined,
 
-    %% send our knownVC / stableVC to remote replicas
-    uniform_clock_send_interval :: non_neg_integer(),
-    uniform_clock_send_timer = undefined :: reference() | undefined,
-
     %% prune committedBlue
     prune_interval :: non_neg_integer(),
     prune_timer = undefined :: reference() | undefined,
@@ -113,12 +108,7 @@
 -ifdef(BASIC_REPLICATION).
 -define(timers_unset, #state{replication_timer=undefined}).
 -else.
--ifdef(DELAY_CLOCKS).
--define(timers_unset, #state{replication_timer=undefined, uniform_clock_send_timer=undefined,
-                             uniform_timer=undefined, prune_timer=undefined}).
--else.
 -define(timers_unset, #state{replication_timer=undefined, uniform_timer=undefined, prune_timer=undefined}).
--endif.
 -endif.
 
 -type state() :: #state{}.
@@ -278,7 +268,6 @@ init([Partition]) ->
     {ok, ReplInt} = application:get_env(grb, basic_replication_interval),
     {ok, PruneInterval} = application:get_env(grb, prune_committed_blue_interval),
     {ok, UniformInterval} = application:get_env(grb, uniform_replication_interval),
-    {ok, SendClockInterval} = application:get_env(grb, remote_clock_broadcast_interval),
 
     ClockTable = grb_dc_utils:new_cache(Partition, ?PARTITION_CLOCK_TABLE,
                                         [ordered_set, public, named_table, {read_concurrency, true}]),
@@ -291,7 +280,6 @@ init([Partition]) ->
                 prune_interval=PruneInterval,
                 replication_interval=ReplInt,
                 uniform_interval=UniformInterval,
-                uniform_clock_send_interval=SendClockInterval,
                 clock_cache=ClockTable}}.
 
 handle_command(ping, _Sender, State) ->
@@ -390,20 +378,6 @@ handle_info(?uniform_req, State=#state{partition=P,
     {ok, State#state{global_known_matrix=GlobalMatrix,
                      uniform_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
 
-handle_info(?clock_send_req, State=#state{partition=P,
-                                          local_replica=LocalId,
-                                          clock_cache=ClockCache,
-                                          uniform_clock_send_timer=Timer,
-                                          uniform_clock_send_interval=Interval}) ->
-    erlang:cancel_timer(Timer),
-    ?LOG_DEBUG("broadcast clocks"),
-    KnownVC = known_vc_internal(ClockCache),
-    StableVC = ets:lookup_element(ClockCache, ?stable_key, 2),
-    lists:foreach(fun(Target) ->
-        ok = grb_dc_connection_manager:send_clocks(Target, LocalId, P, KnownVC, StableVC)
-    end, grb_dc_connection_manager:connected_replicas()),
-    {ok, State#state{uniform_clock_send_timer=erlang:send_after(Interval, self(), ?clock_send_req)}};
-
 handle_info(?prune_req, S0=#state{prune_timer=Timer,
                                   prune_interval=Interval}) ->
 
@@ -479,30 +453,6 @@ stop_propagation_timers_internal(State) ->
     }.
 
 -else.
--ifdef(DELAY_CLOCKS).
-
-start_propagation_timers_internal(State) ->
-    State#state{
-        prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
-        uniform_timer=erlang:send_after(State#state.uniform_interval, self(), ?uniform_req),
-        replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req),
-        uniform_clock_send_timer=erlang:send_after(State#state.uniform_clock_send_interval, self(), ?clock_send_req)
-    }.
-
-
-stop_propagation_timers_internal(State) ->
-    erlang:cancel_timer(State#state.prune_timer),
-    erlang:cancel_timer(State#state.uniform_timer),
-    erlang:cancel_timer(State#state.replication_timer),
-    erlang:cancel_timer(State#state.uniform_clock_send_timer),
-    State#state{
-        prune_timer=undefined,
-        uniform_timer=undefined,
-        replication_timer=undefined,
-        uniform_clock_send_timer=undefined
-    }.
-
--else.
 
 start_propagation_timers_internal(State) ->
     State#state{
@@ -521,7 +471,6 @@ stop_propagation_timers_internal(State) ->
         replication_timer=undefined
     }.
 
--endif.
 -endif.
 
 -spec prune_commit_logs(state()) -> state().
@@ -641,48 +590,6 @@ replicate_internal(S=#state{self_log=LocalLog0,
 
 -else.
 
--ifdef(DELAY_CLOCKS).
-%% Difference here: don't send the clocks during heartbeats, only during transactions
-%% There's another timer sending the clocks from time to time
-%% todo(borja): Instead of a secondary timer, add a config that says: every X times we replicate,
-%% send a clock heartbeat
-
-replicate_internal(S=#state{self_log=LocalLog,
-                            partition=Partition,
-                            local_replica=LocalId,
-                            clock_cache=ClockTable,
-                            global_known_matrix=Matrix0}) ->
-
-    KnownVC = known_vc_internal(ClockTable),
-    LocalTime = grb_vclock:get_time(LocalId, KnownVC),
-
-    Matrix = lists:foldl(fun(Target, AccMatrix) ->
-        ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
-        ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
-        case ToSend of
-            [] ->
-                HBRes = grb_dc_connection_manager:send_heartbeat(Target, LocalId, Partition, LocalTime),
-                ?LOG_DEBUG("send heartbeat to ~p: ~p~n", [Target, HBRes]),
-                ok;
-            Transactions ->
-                StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
-                %% can't merge with other messages here, send one before
-                %% we could piggy-back on top of the first tx, but w/ever
-                ClockRes = grb_dc_connection_manager:send_clocks(Target, LocalId, Partition, KnownVC, StableVC),
-                ?LOG_DEBUG("send clocks to ~p: ~p~n", [Target, ClockRes]),
-                lists:foreach(fun(Tx) ->
-                    TxRes = grb_dc_connection_manager:send_tx(Target, LocalId, Partition, Tx),
-                    ?LOG_DEBUG("send transaction ~p to ~p: ~p~n", [Tx, Target, TxRes]),
-                    ok
-                end, Transactions)
-        end,
-        AccMatrix#{{Target, LocalId} => LocalTime}
-    end, Matrix0, grb_dc_connection_manager:connected_replicas()),
-
-    S#state{global_known_matrix=Matrix}.
-
--else.
-
 replicate_internal(S=#state{self_log=LocalLog,
                             partition=Partition,
                             local_replica=LocalId,
@@ -718,7 +625,6 @@ replicate_internal(S=#state{self_log=LocalLog,
 
     S#state{global_known_matrix=Matrix}.
 
--endif.
 -endif.
 
 -spec uniform_replicate_internal(state()) -> global_known_matrix().
