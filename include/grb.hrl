@@ -19,8 +19,6 @@
 
 -type replica_id() :: {atom(), erlang:timestamp()}.
 -type vclock() :: grb_vclock:vc(replica_id() | atom()).
-%% the entry for red transactions in the clock
--define(RED_REPLICA, red).
 
 %% Opaque types
 -type key() :: term().

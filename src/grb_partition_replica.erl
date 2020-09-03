@@ -211,13 +211,9 @@ perform_op_wait(Promise, Key, SnapshotVC, Val, S=#state{partition=Partition,
 
 -spec check_known_vc(partition_id(), replica_id(), vclock()) -> ready | not_ready.
 check_known_vc(Partition, ReplicaId, VC) ->
-    SelfBlue = grb_vclock:get_time(ReplicaId, VC),
-    SelfRed = grb_vclock:get_time(?RED_REPLICA, VC),
-    BlueTime = grb_propagation_vnode:known_time(Partition, ReplicaId),
-    RedTime = grb_propagation_vnode:known_time(Partition, ?RED_REPLICA),
-    BlueCheck = BlueTime >= SelfBlue,
-    RedCheck = RedTime >= SelfRed,
-    case (BlueCheck andalso RedCheck) of
+    ClientTime = grb_vclock:get_time(ReplicaId, VC),
+    LocalTime = grb_propagation_vnode:known_time(Partition, ReplicaId),
+    case LocalTime >= ClientTime of
         true ->
             ready;
         false ->
@@ -240,10 +236,9 @@ perform_op_continue(Promise, Key, VC, Val, State=#state{default_bottom_value=Bot
             %% todo(borja, red): Update redTS with dependence vectors
             case grb_version_log:get_first_lower(VC, Log) of
                 undefined -> grb_promise:resolve({ok, BaseVal, BottomRedTs}, Promise);
-                {_, LastVal, LastVC} ->
-                    RedTs = grb_vclock:get_time(?RED_REPLICA, LastVC),
+                {_, LastVal, _LastVC} ->
                     ReturnVal = case Val of <<>> -> LastVal; _ -> Val end,
-                    grb_promise:resolve({ok, ReturnVal, RedTs}, Promise)
+                    grb_promise:resolve({ok, ReturnVal, BottomRedTs}, Promise)
             end
     end.
 

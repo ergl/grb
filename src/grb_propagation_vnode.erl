@@ -283,8 +283,7 @@ init([Partition]) ->
     ClockTable = grb_dc_utils:new_cache(Partition, ?PARTITION_CLOCK_TABLE,
                                         [ordered_set, public, named_table, {read_concurrency, true}]),
     true = ets:insert(ClockTable, [{?uniform_key, grb_vclock:new()},
-                                   {?stable_key, grb_vclock:new()},
-                                   {?known_key(?RED_REPLICA), 0}]),
+                                   {?stable_key, grb_vclock:new()}]),
 
     {ok, #state{partition=Partition,
                 local_replica=undefined, % ok to do this, we'll overwrite it after join
