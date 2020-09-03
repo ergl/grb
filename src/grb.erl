@@ -81,11 +81,23 @@ start_transaction(Partition, ClientVC) ->
     grb_vclock:max(ClientVC, UpdatedStableVC).
 
 -else.
+-ifdef(UNIFORM_BLUE).
 
 start_transaction(Partition, ClientVC) ->
     UpdatedUniformVC = grb_propagation_vnode:merge_remote_uniform_vc(Partition, ClientVC),
     grb_vclock:max(ClientVC, UpdatedUniformVC).
 
+-else.
+
+start_transaction(Partition, ClientVC) ->
+    UpdatedUniformVC = grb_propagation_vnode:merge_remote_uniform_vc(Partition, ClientVC),
+    SVC = grb_vclock:max(ClientVC, UpdatedUniformVC),
+
+    %% snapshotVC[replica] is the same as before, but merge it with stableVC at red
+    StableVC = grb_propagation_vnode:stable_vc(Partition),
+    grb_vclock:max_at(?RED_REPLICA, SVC, StableVC).
+
+-endif.
 -endif.
 
 -spec perform_op(grb_promise:t(), partition_id(), key(), vclock(), val()) -> ok.

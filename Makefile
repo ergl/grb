@@ -24,16 +24,21 @@ check_binaries:
 xref:
 	$(REBAR) xref skip_deps=true
 	$(REBAR) as basic_replication xref skip_deps=true
+	$(REBAR) as uniform_blue xref skip_deps=true
 
 dialyzer:
 	$(REBAR) dialyzer
 	$(REBAR) as basic_replication dialyzer
+	$(REBAR) as uniform_blue dialyzer
 
 debug:
 	$(REBAR) as debug_log compile
 
 cure:
 	$(REBAR) as basic_replication compile
+
+uniform:
+	$(REBAR) as uniform_blue compile
 
 clean:
 	$(REBAR) clean --all
@@ -46,6 +51,9 @@ debugrel:
 
 curerel:
 	$(REBAR) as basic_replication release -n grb
+
+unirel:
+	$(REBAR) as uniform_blue release -n grb
 
 debugrel-clean:
 	rm -rf _build/debug_log/rel
@@ -71,6 +79,7 @@ attach:
 test:
 	${REBAR} eunit skip_deps=true
 	${REBAR} as basic_replication eunit skip_deps=true
+	${REBAR} as uniform_blue eunit skip_deps=true
 
 ct:
 	$(REBAR) ct
