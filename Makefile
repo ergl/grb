@@ -22,14 +22,14 @@ check_binaries:
 	$(REBAR) as debug_bin compile
 
 xref:
-	$(REBAR) xref skip_deps=true
-	$(REBAR) as basic_replication xref skip_deps=true
-	$(REBAR) as uniform_blue xref skip_deps=true
+	- $(REBAR) xref skip_deps=true
+	- $(REBAR) as basic_replication xref skip_deps=true
+	- $(REBAR) as uniform_blue xref skip_deps=true
 
 dialyzer:
-	$(REBAR) dialyzer
-	$(REBAR) as basic_replication dialyzer
-	$(REBAR) as uniform_blue dialyzer
+	- $(REBAR) dialyzer
+	- $(REBAR) as basic_replication dialyzer
+	- $(REBAR) as uniform_blue dialyzer
 
 debug:
 	$(REBAR) as debug_log compile
