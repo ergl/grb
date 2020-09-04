@@ -29,17 +29,19 @@ start_link() ->
 %% ===================================================================
 
 init(_Args) ->
-    BluePropMaster = ?VNODE(grb_propagation_vnode_master, grb_propagation_vnode),
-    MainVNodeMaster = ?VNODE(grb_main_vnode_master, grb_main_vnode),
+    PaxosVnode = ?VNODE(grb_paxos_vnode_master, grb_paxos_vnode),
+    ClockVNode = ?VNODE(grb_propagation_vnode_master, grb_propagation_vnode),
+    BlueTxVnode = ?VNODE(grb_main_vnode_master, grb_main_vnode),
 
-    ReplicaSup = ?CHILD(grb_partition_replica_sup, supervisor, []),
+    BlueTxReplicaSup = ?CHILD(grb_partition_replica_sup, supervisor, []),
     InterDCConnManager = ?CHILD(grb_dc_connection_manager, worker, []),
     LocalBroadcast = ?CHILD(grb_local_broadcast, worker, []),
 
     {ok,
         {{one_for_one, 5, 10},
-         [BluePropMaster,
-          MainVNodeMaster,
-          ReplicaSup,
+         [PaxosVnode,
+          ClockVNode,
+          BlueTxVnode,
+          BlueTxReplicaSup,
           LocalBroadcast,
           InterDCConnManager]}}.

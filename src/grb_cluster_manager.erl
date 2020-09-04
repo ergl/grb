@@ -381,19 +381,14 @@ add_node_children(N, Head, List, Fanout, Depth, AccTable) ->
 check_ready(Node) ->
     ?LOG_INFO("[master ready] Checking ~p~n", [Node]),
 
-    Res0 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_propagation_vnode_master, is_ready]),
-    Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, is_ready]),
-    Res2 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, replicas_ready]),
-    PropVnodeReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res0),
-    VNodeReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res1),
-    ReadReplicasReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res2),
+    VnodesReady = check_vnodes(Node),
+    Res3 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, replicas_ready]),
+    ReadReplicasReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res3),
 
-    NodeReady = PropVnodeReady andalso VNodeReady andalso ReadReplicasReady,
+    NodeReady = VnodesReady andalso ReadReplicasReady,
     case NodeReady of
-        true ->
-            ?LOG_INFO("Node ~w is ready! ~n~n", [Node]);
-        false ->
-            ?LOG_INFO("Node ~w is not ready ~n~n", [Node])
+        true -> ?LOG_INFO("Node ~w is ready! ~n~n", [Node]);
+        false -> ?LOG_INFO("Node ~w is not ready ~n~n", [Node])
     end,
 
     NodeReady.
@@ -401,18 +396,20 @@ check_ready(Node) ->
 check_vnodes(Node) ->
     ?LOG_INFO("[vnodes ready] Checking ~p~n", [Node]),
 
-    Res0 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_propagation_vnode_master, is_ready]),
-    Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, is_ready]),
-    PropReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res0),
-    MainReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res1),
-    Ready = PropReady andalso MainReady,
-    case Ready of
-        true ->
-            ?LOG_INFO("Vnodes ready at ~w~n", [Node]);
-        false ->
-            ?LOG_INFO("Vnodes not yet ready at ~w~n", [Node])
+    Res0 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_paxos_vnode_master, is_ready]),
+    Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_propagation_vnode_master, is_ready]),
+    Res2 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, is_ready]),
+
+    PaxosServiceReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res0),
+    PropServiceReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res1),
+    BlueTxServiceReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res2),
+
+    VnodesReady = PaxosServiceReady andalso PropServiceReady andalso BlueTxServiceReady,
+    case VnodesReady of
+        true -> ?LOG_INFO("Vnodes ready at ~w~n", [Node]);
+        false -> ?LOG_INFO("Vnodes not yet ready at ~w~n", [Node])
     end,
-    Ready.
+    VnodesReady.
 
 -spec wait_until_master_ready(node()) -> ok.
 wait_until_master_ready(MasterNode) ->

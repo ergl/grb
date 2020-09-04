@@ -15,6 +15,9 @@ start(_StartType, _StartArgs) ->
             {error, Reason};
 
         {ok, Pid} ->
+            ok = riak_core:register([{vnode_module, grb_paxos_vnode}]),
+            ok = riak_core_node_watcher:service_up(grb_paxos, self()),
+
             ok = riak_core:register([{vnode_module, grb_propagation_vnode}]),
             ok = riak_core_node_watcher:service_up(grb_propagation, self()),
 
