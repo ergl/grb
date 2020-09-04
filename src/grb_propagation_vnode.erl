@@ -158,11 +158,11 @@ known_vc_internal(ClockTable) ->
         grb_vclock:set_time(Replica, Ts, Acc)
     end, grb_vclock:new(), grb_dc_manager:all_replicas()).
 
--spec known_time(partition_id(), (replica_id() | red)) -> grb_time:ts().
+-spec known_time(partition_id(), (replica_id() | ?RED_REPLICA)) -> grb_time:ts().
 known_time(Partition, ReplicaId) ->
     known_time_internal(ReplicaId, grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
 
--spec known_time_internal((replica_id() | red), clock_cache()) -> grb_time:ts().
+-spec known_time_internal((replica_id() | ?RED_REPLICA), clock_cache()) -> grb_time:ts().
 known_time_internal(ReplicaId, ClockTable) ->
     try
         ets:lookup_element(ClockTable, ?known_key(ReplicaId), 2)
@@ -725,7 +725,7 @@ ureplicate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, ClockTable,
     ureplicate_to(TargetReplica, Rest, Partition, Logs, ClockTable, NewMatrix).
 
 %% @doc Set knownVC[ReplicaId] <-max- Time
--spec update_known_vc(replica_id(), grb_time:ts(), clock_cache()) -> ok.
+-spec update_known_vc((replica_id() | ?RED_REPLICA), grb_time:ts(), clock_cache()) -> ok.
 update_known_vc(ReplicaId, Time, ClockTable) ->
     KeyName = ?known_key(ReplicaId),
     %% select_replace over a single key is atomic, so no-one should interleave with us
