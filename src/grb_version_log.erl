@@ -28,11 +28,10 @@
 -export([new/1,
          append/2,
          get_lower/2,
-         get_first_lower/2,
-         to_list/1]).
+         get_first_lower/2]).
 
 -ifdef(TEST).
--export([from_list/2]).
+-export([to_list/1, from_list/2]).
 -endif.
 
 -spec new(non_neg_integer()) -> t().
@@ -128,6 +127,16 @@ get_first_lower(VC, Buff, Start, End, Mod) ->
             end
     end.
 
+mod(X,Y) when X > 0 -> X rem Y;
+mod(X,Y) when X < 0 ->
+    K = (-X div Y) + 1,
+    PositiveX = X + K*Y,
+    PositiveX rem Y;
+
+mod(0, _Y) -> 0.
+
+-ifdef(TEST).
+
 -spec to_list(t()) -> [entry()].
 to_list(#vlog{buffer=B, read_index=Start, write_index=End, max_size=Size}) ->
     case array:get(Start, B) of
@@ -146,16 +155,6 @@ to_list(#vlog{buffer=B, read_index=Start, write_index=End, max_size=Size}) ->
 to_list(_B, End, End, _Size, Acc) -> lists:reverse(Acc);
 to_list(Buff, Start, End, Size, Acc) ->
     to_list(Buff, (Start + 1) rem Size, End, Size, [array:get(Start, Buff) | Acc]).
-
-mod(X,Y) when X > 0 -> X rem Y;
-mod(X,Y) when X < 0 ->
-    K = (-X div Y) + 1,
-    PositiveX = X + K*Y,
-    PositiveX rem Y;
-
-mod(0, _Y) -> 0.
-
--ifdef(TEST).
 
 from_list(List, Limit) ->
     from_list_inner(List, new(Limit)).
