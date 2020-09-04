@@ -84,8 +84,14 @@ test:
 ct:
 	$(REBAR) ct
 
+full_ct: ct
+	$(REBAR) as basic_replication ct
+	$(REBAR) as uniform_blue ct
+
 ct_clean:
 	rm -rf $(BASEDIR)/_build/test/logs
+	rm -rf $(BASEDIR)/_build/basic_replication+test/logs
+	rm -rf $(BASEDIR)/_build/uniform_blue+test/logs
 
 dev1-rel:
 	$(REBAR) as $(DEV_PROFILE) release -n grb_local1

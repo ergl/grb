@@ -210,7 +210,7 @@ perform_op_wait(Promise, Key, SnapshotVC, Val, S=#state{partition=Partition,
     end.
 
 -spec check_known_vc(partition_id(), replica_id(), vclock()) -> ready | not_ready.
--ifdef(READ_BLUE_CHECK).
+-ifdef(BLUE_KNOWN_VC).
 check_known_vc(Partition, ReplicaId, VC) ->
     ClientTime = grb_vclock:get_time(ReplicaId, VC),
     LocalTime = grb_propagation_vnode:known_time(Partition, ReplicaId),

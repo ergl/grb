@@ -279,7 +279,6 @@ terminate(_Reason, _S) ->
 generate_name(Node) ->
     list_to_atom("grb_local_broadcast_" ++ atom_to_list(Node)).
 
-%% todo(borja, red): Add "red" entry when computing this
 -spec compute_local_svc([partition_id()]) -> vclock().
 compute_local_svc(Partitions) ->
     AllReplicas = grb_dc_manager:all_replicas(),
@@ -289,7 +288,7 @@ compute_local_svc(Partitions) ->
 
         (Partition, Acc) ->
             PSVC = grb_propagation_vnode:known_vc(Partition),
-            grb_vclock:min_at(AllReplicas, PSVC, Acc)
+            aggregate_known_vcs(PSVC, Acc, AllReplicas)
     end, undefined, Partitions).
 
 -spec compute_children_svc([vclock()], vclock()) -> vclock().
@@ -297,12 +296,24 @@ compute_children_svc(Children, AccSVC) ->
     AllReplicas = grb_dc_manager:all_replicas(),
     compute_svc(AllReplicas, Children, AccSVC).
 
-%% todo(borja, red): Add "red" entry when computing this
 -spec compute_svc([replica_id()], [vclock()], vclock()) -> vclock().
 compute_svc(AllReplicas, VCs, AccSVC) ->
     lists:foldl(fun(SVC, Acc) ->
-        grb_vclock:min_at(AllReplicas, SVC, Acc)
+        aggregate_known_vcs(SVC, Acc, AllReplicas)
     end, AccSVC, VCs).
+
+-spec aggregate_known_vcs(vclock(), vclock(), [replica_id()]) -> vclock().
+-ifdef(BLUE_KNOWN_VC).
+aggregate_known_vcs(KnownVC, AccKnownVC, AllReplicas) ->
+    grb_vclock:min_at(AllReplicas, KnownVC, AccKnownVC).
+-else.
+aggregate_known_vcs(KnownVC, AccKnownVC, AllReplicas) ->
+    MinBlue = grb_vclock:min_at(AllReplicas, KnownVC, AccKnownVC),
+    grb_vclock:set_time(?RED_REPLICA,
+                        erlang:min(grb_vclock:get_time(?RED_REPLICA, KnownVC),
+                                   grb_vclock:get_time(?RED_REPLICA, AccKnownVC)),
+                        MinBlue).
+-endif.
 
 %% @doc Update the stableVC of the given partitions
 %%
@@ -326,7 +337,7 @@ send_to_children(Self, Children, StableVC) ->
     end, Children).
 
 -ifdef(TEST).
-
+-ifdef(BLUE_KNOWN_VC).
 grb_local_broadcast_compute_stable_vc_test() ->
     Replicas = [dc_id1, dc_id2, dc_id3],
     SVCs = [
@@ -344,5 +355,25 @@ grb_local_broadcast_compute_stable_vc_test() ->
     [Head | Rest] = SVCs,
     ResultSVC = compute_svc(Replicas, Rest, Head),
     ?assertEqual(#{dc_id1 => 0, dc_id2 => 0, dc_id3 => 2}, ResultSVC).
+-else.
+grb_local_broadcast_compute_stable_vc_test() ->
+    Replicas = [dc_id1, dc_id2, dc_id3],
+    SVCs = [
+        #{?RED_REPLICA => 2, dc_id1 => 0, dc_id2 => 0, dc_id3 => 10},
+        #{?RED_REPLICA => 1, dc_id1 => 5, dc_id2 => 3, dc_id3 => 2},
+        #{?RED_REPLICA => 5, dc_id1 => 3, dc_id2 => 4, dc_id3 => 7},
+        #{?RED_REPLICA => 10, dc_id1 => 0, dc_id2 => 2, dc_id3 => 3}
+    ],
+
+    EmptySVC = compute_svc(Replicas, SVCs, grb_vclock:new()),
+    ?assertEqual(0, grb_vclock:get_time(?RED_REPLICA, EmptySVC)),
+    lists:foreach(fun(R) ->
+        ?assertEqual(0, grb_vclock:get_time(R, EmptySVC))
+    end, Replicas),
+
+    [Head | Rest] = SVCs,
+    ResultSVC = compute_svc(Replicas, Rest, Head),
+    ?assertEqual(#{?RED_REPLICA => 1, dc_id1 => 0, dc_id2 => 0, dc_id3 => 2}, ResultSVC).
+-endif.
 
 -endif.

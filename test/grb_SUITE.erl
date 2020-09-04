@@ -15,6 +15,7 @@
 -export([sanity_check_test/1,
          empty_read_test/1,
          read_your_writes_test/1,
+         stable_vc_red_test/1,
          propagate_updates_test/1,
          replication_queue_flush_test/1,
          uniform_barrier_flush_test/1,
@@ -36,10 +37,11 @@ groups() ->
         {pure_operations, [parallel], [sanity_check_test, empty_read_test, known_replicas_test, advance_clocks_test]},
         {basic_operations, [sequence], [{group, pure_operations}, read_your_writes_test]},
         {single_dc, [sequence], [{group, basic_operations}]},
+        {single_dc_red, [sequecne, {repeat_until_ok, 100}], [stable_vc_red_test]},
         {multi_dc, [sequence], [{group, basic_operations}]},
         {replication, [sequence, {repeat_until_ok, 100}], [propagate_updates_test, replication_queue_flush_test, uniform_barrier_flush_test]},
         {all_tests, [sequence], [
-            {group, single_dc}, {group, multi_dc}, {group, replication}
+            {group, single_dc}, {group, single_dc_red}, {group, multi_dc}, {group, replication}
         ]}
     ].
 
@@ -54,6 +56,9 @@ init_per_group(single_node_dc, C) ->
     grb_utils:init_single_node_dc(?MODULE, C);
 
 init_per_group(single_dc, C) ->
+    grb_utils:init_single_dc(?MODULE, [dev1, dev2], C);
+
+init_per_group(single_dc_red, C) ->
     grb_utils:init_single_dc(?MODULE, [dev1, dev2], C);
 
 init_per_group(multi_dc, C) ->
@@ -78,6 +83,10 @@ end_per_group(single_node_dc, C) ->
     C;
 
 end_per_group(single_dc, C) ->
+    ok = grb_utils:stop_clusters(?config(cluster_info, C)),
+    C;
+
+end_per_group(single_dc_red, C) ->
     ok = grb_utils:stop_clusters(?config(cluster_info, C)),
     C;
 
@@ -122,6 +131,31 @@ read_your_writes_test(C) ->
     CVC = update_transaction(Replica, Node, Partition, Key, Val, #{}),
     {Val, 0, _} = read_only_transaction(Replica, Node, Partition, Key, CVC).
 
+-ifndef(BLUE_KNOWN_VC).
+stable_vc_red_test(C) ->
+    ClusterMap = ?config(cluster_info, C),
+    #{main_node := MainNode} = maps:get(random_replica(ClusterMap), ClusterMap),
+    IndexNodes = erpc:call(MainNode, grb_dc_utils, get_index_nodes, []),
+    Times = lists:map(fun(_) -> rand:uniform(100) end, IndexNodes),
+    lists:foreach(fun({{Partition, Node}, Timestamp}) ->
+        ok = erpc:call(Node, grb_propagation_vnode, handle_red_heartbeat, [Partition, Timestamp]),
+        %% Sanity check
+        Timestamp = erpc:call(Node, grb_propagation_vnode, known_time, [Partition, ?RED_REPLICA]),
+        Timestamp = grb_vclock:get_time(?RED_REPLICA, erpc:call(Node, grb_propagation_vnode, known_vc, [Partition]))
+    end, lists:zip(IndexNodes, Times)),
+    %% Give time for the knownVCs to be aggregated
+    timer:sleep(500),
+    %% What should be the lower bound?
+    MinTime = lists:min(Times),
+    lists:foreach(fun({Partition, Node}) ->
+        %% All nodes should agree on the red timestamp
+        MinTime = erpc:call(Node, grb_propagation_vnode, stable_red, [Partition])
+    end, IndexNodes),
+    ok.
+-else.
+stable_vc_red_test(_) -> ok.
+-endif.
+
 propagate_updates_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     {Key, Val, CommitVC} = ?config(propagate_info, C),
@@ -164,6 +198,17 @@ known_replicas_test(C) ->
         ok = knows_replicas(Node, Partitions, Replicas, uniform_vc)
     end).
 
+-ifdef(BASIC_REPLICATION).
+advance_clocks_test(C) ->
+    ClusterMap = ?config(cluster_info, C),
+    Replicas = lists:sort(maps:keys(ClusterMap)),
+    ?foreach_node(ClusterMap, fun(_, Node) ->
+        Partitions = erpc:call(Node, grb_dc_utils, my_partitions, []),
+        Replicas = lists:sort(erpc:call(Node, grb_dc_manager, all_replicas, [])),
+        ok = advance_clock(Node, Partitions, Replicas, known_vc),
+        ok = advance_clock(Node, Partitions, Replicas, stable_vc)
+    end).
+-else.
 advance_clocks_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     Replicas = lists:sort(maps:keys(ClusterMap)),
@@ -174,6 +219,7 @@ advance_clocks_test(C) ->
         ok = advance_clock(Node, Partitions, Replicas, stable_vc),
         ok = advance_clock(Node, Partitions, Replicas, uniform_vc)
     end).
+-endif.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Util
