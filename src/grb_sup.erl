@@ -49,6 +49,8 @@ init(_Args) ->
 add_red_processes(ChildSpecs) -> ChildSpecs.
 -else.
 add_red_processes(ChildSpecs) ->
+    RedCoordManager = ?CHILD(grb_red_manager, worker, []),
+    RedCoordPool = grb_red_manager:pool_spec(),
     PaxosVnode = ?VNODE(grb_paxos_vnode_master, grb_paxos_vnode),
-    [PaxosVnode | ChildSpecs].
+    [RedCoordManager, RedCoordPool, PaxosVnode | ChildSpecs].
 -endif.

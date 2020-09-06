@@ -48,6 +48,8 @@
 
 -type inter_dc_conn() :: atom().
 
+-type red_coordinator() :: pid().
+
 -export_type([partition_id/0,
               index_node/0,
               cache_id/0,
@@ -60,4 +62,5 @@
               key/0,
               val/0,
               replica_descriptor/0,
-              inter_dc_conn/0]).
+              inter_dc_conn/0,
+              red_coordinator/0]).

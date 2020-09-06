@@ -23,7 +23,9 @@
          replica_descriptor/0,
          connect_to_replicas/1,
          stop_background_processes/0,
-         stop_propagation_processes/0]).
+         stop_propagation_processes/0,
+         start_paxos_leader/0,
+         start_paxos_follower/1]).
 
 %% All functions here are called through erpc
 -ignore_xref([create_replica_groups/1,
@@ -37,7 +39,9 @@
               replica_descriptor/0,
               connect_to_replicas/1,
               stop_background_processes/0,
-              stop_propagation_processes/0]).
+              stop_propagation_processes/0,
+              start_paxos_leader/0,
+              start_paxos_follower/1]).
 
 -spec replica_id() -> replica_id().
 replica_id() ->
@@ -96,11 +100,28 @@ create_replica_groups(Nodes) ->
                             ?LOG_ERROR("start_propagation_processes failed with ~p, aborting~n", [Reason]),
                             {error, Reason};
                         ok ->
+                            ok = start_red_processes(Nodes),
                             Ids = [Id || #replica_descriptor{replica_id=Id} <- Descriptors],
                             {ok, Ids}
                     end
             end
     end.
+
+-spec start_red_processes([node()]) -> ok.
+-ifdef(BLUE_KNOWN_VC).
+start_red_processes(_) -> ok.
+-else.
+start_red_processes(Nodes) ->
+    [Leader | Followers] =  lists:sort(Nodes),
+    LeaderId = erpc:call(Leader, ?MODULE, replica_id, []),
+
+    Res = erpc:multicall(Followers, ?MODULE, start_paxos_follower, [LeaderId]),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res),
+
+    ok = erpc:call(Leader, ?MODULE, start_paxos_leader, []),
+    ?LOG_INFO("started red processes, leader cluster: ~p", [LeaderId]),
+    ok.
+-endif.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% External API
@@ -187,6 +208,14 @@ start_propagation_processes() ->
     Res3 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_propagate_timer),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res3),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
+    ok.
+
+-spec start_paxos_leader() -> ok.
+start_paxos_leader() ->
+    ok.
+
+-spec start_paxos_follower(replica_id()) -> ok.
+start_paxos_follower(_LeaderReplica) ->
     ok.
 
 -spec persist_self_replica_info() -> ok.

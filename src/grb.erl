@@ -13,7 +13,8 @@
          start_transaction/2,
          perform_op/5,
          prepare_blue/4,
-         decide_blue/3]).
+         decide_blue/3,
+         commit_red/4]).
 
 %% Called by rel
 -ignore_xref([start/0,
@@ -109,3 +110,12 @@ prepare_blue(Partition, TxId, WriteSet, VC) ->
 -spec decide_blue(partition_id(), any(), vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->
     ok = grb_partition_replica:decide_blue(Partition, TxId, VC).
+
+-spec commit_red(grb_promise:t(), term(), vclock(), [{partition_id(), #{}, #{}}]) -> ok.
+-ifdef(BLUE_KNOWN_VC).
+commit_red(Promise, _, VC, _) -> grb_promise:resolve({ok, VC}, Promise).
+-else.
+commit_red(Promise, TxId, SnapshotVC, Prepares) ->
+    Coordinator = grb_red_manager:register_coordinator(TxId),
+    grb_red_coordinator:commit(Coordinator, Promise, TxId, SnapshotVC, Prepares).
+-endif.

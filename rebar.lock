@@ -1,7 +1,7 @@
 {"1.1.0",
 [{<<"foil">>,{pkg,<<"foil">>,<<"0.1.1">>},1},
  {<<"metal">>,{pkg,<<"metal">>,<<"0.1.1">>},1},
- {<<"poolboy">>,{pkg,<<"poolboy">>,<<"1.5.2">>},1},
+ {<<"poolboy">>,{pkg,<<"poolboy">>,<<"1.5.2">>},0},
  {<<"pvc_proto">>,
   {git,"https://github.com/ergl/pvc_proto.git",
        {ref,"b4f800d616fd572be7c7c1d7867d1c8e05a2449d"}},

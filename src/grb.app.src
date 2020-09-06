@@ -15,6 +15,7 @@
                   compiler,
                   shackle,
                   pvc_proto,
+                  poolboy,
                   runtime_tools,
                   recon
                  ]},
