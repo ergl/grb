@@ -77,6 +77,7 @@ handle_cast({commit, Promise, TxId, SnapshotVC, Prepares}, undefined) ->
             {proxy, LocalNode, RemoteReplica} ->
                 %% leader is in another replica, but we don't have a direct inter_dc connection, have
                 %% to go through a cluster-local proxy at `LocalNode`
+                %% todo(borja, red): LocalNode needs to be aware of how to route the messages back to this coordinator
                 ok = erpc:call(LocalNode, grb_dc_connection_manager, send_red_prepare, [RemoteReplica, ReplicaId, Partition,
                                                                                         TxId, Readset, Writeset, SnapshotVC])
         end,
