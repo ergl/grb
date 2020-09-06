@@ -15,15 +15,7 @@ start(_StartType, _StartArgs) ->
             {error, Reason};
 
         {ok, Pid} ->
-            ok = riak_core:register([{vnode_module, grb_paxos_vnode}]),
-            ok = riak_core_node_watcher:service_up(grb_paxos, self()),
-
-            ok = riak_core:register([{vnode_module, grb_propagation_vnode}]),
-            ok = riak_core_node_watcher:service_up(grb_propagation, self()),
-
-            ok = riak_core:register([{vnode_module, grb_main_vnode}]),
-            ok = riak_core_node_watcher:service_up(grb_main, self()),
-
+            ok = register_vnodes(),
             ok = enable_debug_logs(),
             ok = grb_tcp_server:start_server(),
             ok = grb_dc_connection_receiver:start_server(),
@@ -40,6 +32,26 @@ start(_StartType, _StartArgs) ->
             end,
             {ok, Pid}
     end.
+
+-spec register_vnodes() -> ok.
+-ifdef(BLUE_KNOWN_VC).
+register_vnodes() ->
+    ok = riak_core:register([{vnode_module, grb_propagation_vnode}]),
+    ok = riak_core_node_watcher:service_up(grb_propagation, self()),
+
+    ok = riak_core:register([{vnode_module, grb_main_vnode}]),
+    ok = riak_core_node_watcher:service_up(grb_main, self()).
+-else.
+register_vnodes() ->
+    ok = riak_core:register([{vnode_module, grb_paxos_vnode}]),
+    ok = riak_core_node_watcher:service_up(grb_paxos, self()),
+
+    ok = riak_core:register([{vnode_module, grb_propagation_vnode}]),
+    ok = riak_core_node_watcher:service_up(grb_propagation, self()),
+
+    ok = riak_core:register([{vnode_module, grb_main_vnode}]),
+    ok = riak_core_node_watcher:service_up(grb_main, self()).
+-endif.
 
 -ifdef(debug_log).
 -spec enable_debug_logs() -> ok.

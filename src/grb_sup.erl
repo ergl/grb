@@ -29,7 +29,6 @@ start_link() ->
 %% ===================================================================
 
 init(_Args) ->
-    PaxosVnode = ?VNODE(grb_paxos_vnode_master, grb_paxos_vnode),
     ClockVNode = ?VNODE(grb_propagation_vnode_master, grb_propagation_vnode),
     BlueTxVnode = ?VNODE(grb_main_vnode_master, grb_main_vnode),
 
@@ -37,11 +36,19 @@ init(_Args) ->
     InterDCConnManager = ?CHILD(grb_dc_connection_manager, worker, []),
     LocalBroadcast = ?CHILD(grb_local_broadcast, worker, []),
 
-    {ok,
-        {{one_for_one, 5, 10},
-         [PaxosVnode,
-          ClockVNode,
-          BlueTxVnode,
-          BlueTxReplicaSup,
-          LocalBroadcast,
-          InterDCConnManager]}}.
+    ChildSpecs = add_red_processes([ClockVNode,
+                                    BlueTxVnode,
+                                    BlueTxReplicaSup,
+                                    LocalBroadcast,
+                                    InterDCConnManager]),
+
+    {ok, {{one_for_one, 5, 10}, ChildSpecs}}.
+
+-spec add_red_processes([supervisor:child_spec()]) -> [supervisor:child_spec()].
+-ifdef(BLUE_KNOWN_VC).
+add_red_processes(ChildSpecs) -> ChildSpecs.
+-else.
+add_red_processes(ChildSpecs) ->
+    PaxosVnode = ?VNODE(grb_paxos_vnode_master, grb_paxos_vnode),
+    [PaxosVnode | ChildSpecs].
+-endif.

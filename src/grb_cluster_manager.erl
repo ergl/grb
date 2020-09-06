@@ -393,6 +393,23 @@ check_ready(Node) ->
 
     NodeReady.
 
+-ifdef(BLUE_KNOWN_VC).
+check_vnodes(Node) ->
+    ?LOG_INFO("[vnodes ready] Checking ~p~n", [Node]),
+
+    Res0 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_propagation_vnode_master, is_ready]),
+    Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, is_ready]),
+
+    PropServiceReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res0),
+    BlueTxServiceReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res1),
+
+    VnodesReady = PropServiceReady andalso BlueTxServiceReady,
+    case VnodesReady of
+        true -> ?LOG_INFO("Vnodes ready at ~w~n", [Node]);
+        false -> ?LOG_INFO("Vnodes not yet ready at ~w~n", [Node])
+    end,
+    VnodesReady.
+-else.
 check_vnodes(Node) ->
     ?LOG_INFO("[vnodes ready] Checking ~p~n", [Node]),
 
@@ -410,6 +427,7 @@ check_vnodes(Node) ->
         false -> ?LOG_INFO("Vnodes not yet ready at ~w~n", [Node])
     end,
     VnodesReady.
+-endif.
 
 -spec wait_until_master_ready(node()) -> ok.
 wait_until_master_ready(MasterNode) ->
