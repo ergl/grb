@@ -33,11 +33,11 @@
 -define(COORD_TABLE, grb_red_manager_coordinators).
 -define(QUORUM_KEY, quorum_size).
 
+-type leader_location() :: {local, index_node()} | {remote, replica_id()} | {proxy, node(), replica_id()}.
+
 -record(state, {
     pid_for_tx :: cache(term(), red_coordinator()),
-    partition_leaders :: cache(partition_id(),
-                                {local, index_node()} |
-                                {remote, replica_id()})
+    partition_leaders :: cache(partition_id(), leader_location())
 }).
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
@@ -72,7 +72,7 @@ persist_follower_info(LeaderReplica) ->
 quorum_size() ->
     persistent_term:get({?MODULE, ?QUORUM_KEY}).
 
--spec leader_of(partition_id()) -> {local, index_node()} | {remote, replica_id()}.
+-spec leader_of(partition_id()) -> leader_location().
 leader_of(Partition) ->
     ets:lookup_element(?LEADERS_TABLE, Partition, 2).
 
@@ -111,8 +111,13 @@ handle_call(set_leader, _From, S=#state{partition_leaders=Table}) ->
     {reply, ok, S};
 
 handle_call({set_follower, Leader}, _From, S=#state{partition_leaders=Table}) ->
-    Objects = [{P, {remote, Leader}}
-                || {P, _} <- grb_dc_utils:get_index_nodes()],
+    SelfNode = node(),
+    Objects = lists:map(fun({Partition, Node}) ->
+        case Node of
+            SelfNode -> {Partition, {remote, Leader}};
+            _ -> {Partition, {proxy, Node, Leader}}
+        end
+    end, grb_dc_utils:get_index_nodes()),
     true = ets:insert(Table, Objects),
     {reply, ok, S};
 

@@ -3,6 +3,10 @@
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
+%% api
+-export([local_prepare/5,
+         remote_prepare/6]).
+
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
          init/1,
@@ -31,6 +35,18 @@
 -record(state, {
     partition :: partition_id()
 }).
+
+-spec local_prepare(index_node(), term(), #{}, #{}, vclock()) -> ok.
+local_prepare(IndexNode, TxId, Readset, Writeset, SnapshotVC) ->
+    riak_core_vnode_master:command(IndexNode,
+                                   {local_prepare, TxId, Readset, Writeset, SnapshotVC},
+                                   ?master).
+
+-spec remote_prepare(partition_id(), replica_id(), term(), #{}, #{}, vclock()) -> ok.
+remote_prepare(Partition, SourceReplica, TxId, Readset, Writeset, SnapshotVC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {remote_prepare, SourceReplica, TxId, Readset, Writeset, SnapshotVC},
+                                   ?master).
 
 %%%===================================================================
 %%% api riak_core callbacks

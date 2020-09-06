@@ -67,15 +67,18 @@ handle_cast({commit, Promise, TxId, SnapshotVC, Prepares}, undefined) ->
     QuorumSize = grb_red_manager:quorum_size(),
     QuorumsToAck = lists:foldl(fun({Partition, Readset, Writeset}, Acc) ->
         case grb_red_manager:leader_of(Partition) of
-            {local, _IndexNode} ->
-                %% todo(borja, red): Handle local leader prepare
-                %% grb_paxos_vnode:prepare_leader(IndexNode, TxId, Readset, Writeset, SnapshotVC);
-                ok;
+            {local, IndexNode} ->
+                %% leader is in the local cluster, go through vnode directly
+                ok = grb_paxos_vnode:local_prepare(IndexNode, TxId, Readset, Writeset, SnapshotVC);
             {remote, RemoteReplica} ->
-                %% todo(borja, red): This will fail if we don't have a connection to that leader
-                %% use a local proxy to message the leader
+                %% leader is in another replica, and we have a direct inter_dc connection to it
                 ok = grb_dc_connection_manager:send_red_prepare(RemoteReplica, ReplicaId, Partition,
-                                                                TxId, Readset, Writeset, SnapshotVC)
+                                                                TxId, Readset, Writeset, SnapshotVC);
+            {proxy, LocalNode, RemoteReplica} ->
+                %% leader is in another replica, but we don't have a direct inter_dc connection, have
+                %% to go through a cluster-local proxy at `LocalNode`
+                ok = erpc:call(LocalNode, grb_dc_connection_manager, send_red_prepare, [RemoteReplica, ReplicaId, Partition,
+                                                                                        TxId, Readset, Writeset, SnapshotVC])
         end,
         Acc#{Partition => QuorumSize}
     end, #{}, Prepares),
