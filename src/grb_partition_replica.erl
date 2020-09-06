@@ -27,8 +27,6 @@
          handle_cast/2,
          handle_info/2]).
 
--ignore_xref([start_link/2]).
-
 -record(state, {
     %% Name of this read replica
     self :: atom(),
