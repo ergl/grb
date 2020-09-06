@@ -12,6 +12,7 @@
 -define(BLUE_HB_KIND, 1).
 -define(UPDATE_CLOCK_KIND, 2).
 -define(UPDATE_CLOCK_HEARTBEAT_KIND, 3).
+-define(RED_PREPARE_KIND, 4).
 
 -record(replicate_tx, {
     tx_id :: term(),
@@ -33,9 +34,17 @@
     stable_vc :: vclock()
 }).
 
+-record(prepare_red, {
+    tx_id :: term(),
+    readset :: #{},
+    writeset :: #{},
+    snapshot_vc :: vclock()
+}).
+
 -type replica_message() :: #replicate_tx{}
                          | #blue_heartbeat{}
                          | #update_clocks{}
-                         | #update_clocks_heartbeat{}.
+                         | #update_clocks_heartbeat{}
+                         | #prepare_red{}.
 
 -export_type([replica_message/0]).

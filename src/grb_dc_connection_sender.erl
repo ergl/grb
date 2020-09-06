@@ -10,6 +10,7 @@
          send_transaction/4,
          send_clocks/5,
          send_clocks_heartbeat/5,
+         send_red_prepare/7,
          close/1]).
 
 %% Shackle API
@@ -61,6 +62,10 @@ send_clocks(Pool, FromReplica, Partition, KnownVC, StableVC) ->
 send_clocks_heartbeat(Pool, FromReplica, Partition, KnownVC, StableVC) ->
     shackle:call(Pool, {clocks_heartbeat, FromReplica, Partition, KnownVC, StableVC}).
 
+-spec send_red_prepare(inter_dc_conn(), replica_id(), partition_id(), term(), #{}, #{}, vclock()) -> ok.
+send_red_prepare(Pool, FromReplica, Partition, TxId, RS, WS, VC) ->
+    shackle:call(Pool, {red_prepare, FromReplica, Partition, TxId, RS, WS, VC}).
+
 -spec close(inter_dc_conn()) -> ok.
 close(PoolName) ->
     _ = shackle_pool:stop(PoolName),
@@ -94,6 +99,13 @@ handle_request({clocks, FromReplica, Partition, KnownVC, StableVC}, State) ->
 handle_request({clocks_heartbeat, FromReplica, Partition, KnownVC, StableVC}, State) ->
     Msg = grb_dc_message_utils:encode_msg(FromReplica, Partition, #update_clocks_heartbeat{known_vc=KnownVC,
                                                                                            stable_vc=StableVC}),
+    {ok, Msg, State};
+
+handle_request({red_prepare, FromReplica, Partition, TxId, RS, WS, VC}, State) ->
+    Msg = grb_dc_message_utils:encode_msg(FromReplica, Partition, #prepare_red{tx_id=TxId,
+                                                                               readset=RS,
+                                                                               writeset=WS,
+                                                                               snapshot_vc=VC}),
     {ok, Msg, State};
 
 handle_request(_, _) ->

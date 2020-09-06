@@ -14,7 +14,8 @@
          send_tx/4,
          send_clocks/5,
          send_heartbeat/4,
-         send_clocks_heartbeat/5]).
+         send_clocks_heartbeat/5,
+         send_red_prepare/7]).
 
 %% Managemenet API
 -export([connection_closed/2,
@@ -159,6 +160,21 @@ send_clocks_heartbeat(ToId, FromId, Partition, KnownVC, StableVC) ->
     try
         PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
         grb_dc_connection_sender:send_clocks_heartbeat(PoolName, FromId, Partition, KnownVC, StableVC)
+    catch _:_ ->
+        {error, gone}
+    end.
+
+-spec send_red_prepare(ToId :: replica_id(),
+                       FromId :: replica_id(),
+                       Partition :: partition_id(),
+                       TxId :: term(),
+                       RS :: #{},
+                       WS :: #{},
+                       VC :: vclock()) -> ok | {error, term()}.
+send_red_prepare(ToId, FromId, Partition, TxId, RS, WS, VC) ->
+    try
+        PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
+        grb_dc_connection_sender:send_red_prepare(PoolName, FromId, Partition, TxId, RS, WS, VC)
     catch _:_ ->
         {error, gone}
     end.

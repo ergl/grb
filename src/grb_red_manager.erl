@@ -5,12 +5,16 @@
 
 %% Supervisor
 -export([start_link/0]).
--ignore_xref([start_link/0]).
+-ignore_xref([start_link/0, persist_leader_info/0]).
 
 %% pool api
 -export([pool_spec/0]).
 
--export([register_coordinator/1,
+-export([persist_leader_info/0,
+         persist_follower_info/1,
+         leader_of/1,
+         quorum_size/0,
+         register_coordinator/1,
          transaction_coordinator/1,
          unregister_coordinator/1]).
 
@@ -25,8 +29,15 @@
 -define(POOL_SIZE, (1 * erlang:system_info(schedulers_online))).
 -define(POOL_OVERFLOW, 5).
 
+-define(LEADERS_TABLE, grb_red_manager_leaders).
+-define(COORD_TABLE, grb_red_manager_coordinators).
+-define(QUORUM_KEY, quorum_size).
+
 -record(state, {
-    pid_for_tx :: cache(term(), red_coordinator())
+    pid_for_tx :: cache(term(), red_coordinator()),
+    partition_leaders :: cache(partition_id(),
+                                {local, index_node()} |
+                                {remote, replica_id()})
 }).
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
@@ -45,6 +56,26 @@ pool_spec() ->
     WorkerArgs = [],
     poolboy:child_spec(?POOL_NAME, Args, WorkerArgs).
 
+-spec persist_leader_info() -> ok.
+persist_leader_info() ->
+    RemoteReplicas = grb_dc_manager:remote_replicas(),
+    ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, length(RemoteReplicas)),
+    ok = gen_server:call(?MODULE, set_leader).
+
+-spec persist_follower_info(replica_id()) -> ok.
+persist_follower_info(LeaderReplica) ->
+    RemoteReplicas = grb_dc_manager:remote_replicas(),
+    ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, length(RemoteReplicas)),
+    ok = gen_server:call(?MODULE, {set_follower, LeaderReplica}).
+
+-spec quorum_size() -> non_neg_integer().
+quorum_size() ->
+    persistent_term:get({?MODULE, ?QUORUM_KEY}).
+
+-spec leader_of(partition_id()) -> {local, index_node()} | {remote, replica_id()}.
+leader_of(Partition) ->
+    ets:lookup_element(?LEADERS_TABLE, Partition, 2).
+
 -spec register_coordinator(term()) -> red_coordinator().
 register_coordinator(TxId) ->
     Pid = poolboy:checkout(?POOL_NAME),
@@ -53,7 +84,7 @@ register_coordinator(TxId) ->
 
 -spec transaction_coordinator(term()) -> {ok, red_coordinator()} | error.
 transaction_coordinator(TxId) ->
-    case ets:lookup(?MODULE, TxId) of
+    case ets:lookup(?COORD_TABLE, TxId) of
         [{TxId, Pid}] -> {ok, Pid};
         _ -> error
     end.
@@ -69,8 +100,21 @@ unregister_coordinator(TxId) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 init([]) ->
-    Table = ets:new(?MODULE, [set, protected, named_table, {read_concurrency, true}]),
-    {ok, #state{pid_for_tx=Table}}.
+    LeaderTable = ets:new(?LEADERS_TABLE, [set, protected, named_table, {read_concurrency, true}]),
+    CoordTable = ets:new(?COORD_TABLE, [set, protected, named_table, {read_concurrency, true}]),
+    {ok, #state{pid_for_tx=CoordTable, partition_leaders=LeaderTable}}.
+
+handle_call(set_leader, _From, S=#state{partition_leaders=Table}) ->
+    Objects = [{P, {local, IndexNode}}
+                || {P, _}=IndexNode <- grb_dc_utils:get_index_nodes()],
+    true = ets:insert(Table, Objects),
+    {reply, ok, S};
+
+handle_call({set_follower, Leader}, _From, S=#state{partition_leaders=Table}) ->
+    Objects = [{P, {remote, Leader}}
+                || {P, _} <- grb_dc_utils:get_index_nodes()],
+    true = ets:insert(Table, Objects),
+    {reply, ok, S};
 
 handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),

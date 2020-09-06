@@ -212,10 +212,24 @@ start_propagation_processes() ->
 
 -spec start_paxos_leader() -> ok.
 start_paxos_leader() ->
+    %% Persist replica info at every node in the cluster
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    LocalNodes = riak_core_ring:all_members(Ring),
+
+    Res0 = erpc:multicall(LocalNodes, grb_red_manager, persist_leader_info, []),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res0),
+
     ok.
 
 -spec start_paxos_follower(replica_id()) -> ok.
-start_paxos_follower(_LeaderReplica) ->
+start_paxos_follower(LeaderReplica) ->
+    %% Persist replica info at every node in the cluster
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    LocalNodes = riak_core_ring:all_members(Ring),
+
+    Res0 = erpc:multicall(LocalNodes, grb_red_manager, persist_follower_info, [LeaderReplica]),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res0),
+
     ok.
 
 -spec persist_self_replica_info() -> ok.
