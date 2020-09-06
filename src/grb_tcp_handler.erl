@@ -32,7 +32,13 @@ process(Promise, 'PrepareBlueNode', Args) ->
 process(_Promise, 'DecideBlueNode', Args) ->
     #{transaction_id := TxId, partitions := Ps, commit_vc := CVC} = Args,
     _ = [grb:decide_blue(P, TxId, CVC) || P <- Ps],
-    ok.
+    ok;
+
+process(Promise, 'CommitRed', Args) ->
+    #{transaction_id := _TxId, snapshot_vc := VC, prepares := _Prepares} = Args,
+    %% todo(borja, red): Do multiple prepares in parallel, will take a long time
+    %% do some kind of promise_all, with an intermediate process joining them
+    grb_promise:resolve({ok, VC}, Promise).
 
 -ifdef(TEST).
 %% @doc Useful for testing
