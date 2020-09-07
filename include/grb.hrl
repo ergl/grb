@@ -49,7 +49,7 @@
 -type inter_dc_conn() :: atom().
 
 -type red_coordinator() :: pid().
--type red_vote() :: {ok, vclock()} | {abort, atom()}.
+-type red_vote() :: ok | {abort, atom()}.
 
 -export_type([partition_id/0,
               index_node/0,

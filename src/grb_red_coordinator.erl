@@ -8,8 +8,8 @@
 -export([start_link/1]).
 
 -export([commit/5,
-         already_decided/2,
-         accept_ack/3]).
+         already_decided/3,
+         accept_ack/4]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -20,7 +20,7 @@
 -record(certify_state, {
     promise :: grb_promise:t(),
     quorums_to_ack = #{} :: #{partition_id() => pos_integer()},
-    accumulator = #{} :: #{partition_id() => red_vote()}
+    accumulator = #{} :: #{partition_id() => {red_vote(), vclock()}}
 }).
 
 -spec start_link(term()) -> {ok, pid()}.
@@ -31,15 +31,15 @@ start_link(Args) ->
 commit(Coordinator, Promise, TxId, SnapshotVC, Prepares) ->
     gen_server:cast(Coordinator, {commit, Promise, TxId, SnapshotVC, Prepares}).
 
--spec already_decided(term(), red_vote()) -> ok.
-already_decided(TxId, Vote) ->
+-spec already_decided(term(), red_vote(), vclock()) -> ok.
+already_decided(TxId, Vote, VoteVC) ->
     {ok, Coordinator} = grb_red_manager:transaction_coordinator(TxId),
-    gen_server:cast(Coordinator, {already_decided, TxId, Vote}).
+    gen_server:cast(Coordinator, {already_decided, TxId, Vote, VoteVC}).
 
--spec accept_ack(partition_id(), term(), red_vote()) -> ok.
-accept_ack(Partition, TxId, Vote) ->
+-spec accept_ack(partition_id(), term(), red_vote(), vclock()) -> ok.
+accept_ack(Partition, TxId, Vote, AcceptVC) ->
     {ok, Coordinator} = grb_red_manager:transaction_coordinator(TxId),
-    gen_server:cast(Coordinator, {accept_ack, Partition, TxId, Vote}).
+    gen_server:cast(Coordinator, {accept_ack, Partition, TxId, Vote, AcceptVC}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
@@ -85,15 +85,15 @@ handle_cast({commit, Promise, TxId, SnapshotVC, Prepares}, undefined) ->
     end, #{}, Prepares),
     {noreply, #certify_state{promise=Promise, quorums_to_ack=QuorumsToAck}};
 
-handle_cast({already_decided, TxId, Vote}, #certify_state{promise=Promise}) ->
-    grb_promise:resolve(Vote, Promise),
+handle_cast({already_decided, TxId, Vote, VoteVC}, #certify_state{promise=Promise}) ->
+    grb_promise:resolve({Vote, VoteVC}, Promise),
     ok = grb_red_manager:unregister_coordinator(TxId),
     {noreply, undefined};
 
-handle_cast({accept_ack, Partition, TxId, Vote}, S0=#certify_state{promise=Promise,
-                                                                   quorums_to_ack=Quorums0,
-                                                                   accumulator=Acc0}) ->
-    Acc = Acc0#{Partition => Vote},
+handle_cast({accept_ack, Partition, TxId, Vote, AcceptVC}, S0=#certify_state{promise=Promise,
+                                                                             quorums_to_ack=Quorums0,
+                                                                             accumulator=Acc0}) ->
+    Acc = Acc0#{Partition => {Vote, AcceptVC}},
     ToAck = maps:get(Partition, Quorums0),
     Quorums = case ToAck of
         1 ->
@@ -125,14 +125,14 @@ handle_info(Info, State) ->
 %% internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec decide_transaction(#{partition_id() => red_vote()}) -> red_vote().
+-spec decide_transaction(#{partition_id() => {red_vote(), vclock()}}) -> {red_vote(), vclock()}.
 decide_transaction(VoteMap) ->
     maps:fold(fun
-        (_, Vote, undefined) -> Vote;
-        (_, Vote, VoteAcc) -> reduce_vote(Vote, VoteAcc)
+        (_, {Vote, VC}, undefined) -> {Vote, VC};
+        (_, {Vote, VC}, VoteAcc) -> reduce_vote(Vote, VC, VoteAcc)
     end, undefined, VoteMap).
 
--spec reduce_vote(red_vote(), red_vote()) -> red_vote().
-reduce_vote(_, {abort, _}=Err) -> Err;
-reduce_vote({abort, _}=Err, _) -> Err;
-reduce_vote({ok, CommitVC}, {ok, AccCommitVC}) -> {ok, grb_vclock:max(CommitVC, AccCommitVC)}.
+-spec reduce_vote(red_vote(), vclock(), {red_vote(), vclock()}) -> {red_vote(), vclock()}.
+reduce_vote(_, _, {{abort, _}, _}=Err) -> Err;
+reduce_vote({abort, _}=Err, VC, _) -> {Err, VC};
+reduce_vote(ok, CommitVC, {ok, AccCommitVC}) -> {ok, grb_vclock:max(CommitVC, AccCommitVC)}.
