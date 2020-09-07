@@ -45,7 +45,7 @@
     replica_id = undefined :: replica_id() | undefined,
 
     synod_state :: grb_paxos_state:t(),
-    heartbeat_timer = undefined :: pid() | undefined
+    heartbeat_process = undefined :: pid() | undefined
 }).
 
 -spec init_leader_state() -> ok.
@@ -112,14 +112,14 @@ handle_command(ping, _Sender, State) ->
 handle_command(is_ready, _Sender, State) ->
     {reply, true, State};
 
-handle_command(init_leader, _Sender, S=#state{partition=P, heartbeat_timer=undefined}) ->
+handle_command(init_leader, _Sender, S=#state{partition=P, heartbeat_process=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
     {ok, Pid} = grb_red_timer:start(ReplicaId, P),
     {reply, ok, S#state{replica_id=ReplicaId,
-                        heartbeat_timer=Pid,
+                        heartbeat_process=Pid,
                         synod_state=grb_paxos_state:leader()}};
 
-handle_command(init_leader, _Sender, S=#state{heartbeat_timer=_Pid}) ->
+handle_command(init_leader, _Sender, S=#state{heartbeat_process=_Pid}) ->
     {reply, ok, S};
 
 handle_command(prepare_hb, _Sender, S=#state{replica_id=LocalId,
