@@ -76,6 +76,10 @@ handle_cast({accept_ack, Ballot}, S0=#state{current_ballot=Ballot, acked=N, quor
     end,
     {noreply, S};
 
+handle_cast({accept_ack, _BadBallot}, S0) ->
+    %% drop any other ACCEPT_ACK messages, we need only a quorum
+    {noreply, S0};
+
 handle_cast(E, S) ->
     ?LOG_WARNING("unexpected cast: ~p~n", [E]),
     {noreply, S}.

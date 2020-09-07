@@ -5,6 +5,7 @@
 
 %% api
 -export([init_leader_state/0,
+         init_follower_state/0,
          prepare_heartbeat/1,
          accept_heartbeat/4,
          broadcast_hb_decision/3,
@@ -37,20 +38,30 @@
               handle_info/2]).
 
 -define(master, grb_paxos_vnode_master).
--define(DECISION_RETRY, 5).
+-define(deliver, deliver_event).
 
-%% todo(borja, red): timer to process decidedRed and deliver updates + indexes
 -record(state, {
     partition :: partition_id(),
     replica_id = undefined :: replica_id() | undefined,
 
-    synod_state :: grb_paxos_state:t(),
+    last_delivered = 0 :: grb_time:ts(),
+
+    deliver_timer = undefined :: reference() | undefined,
+    deliver_interval :: non_neg_integer(),
+    decision_retry_interval :: non_neg_integer(),
+
+    synod_state = undefined :: grb_paxos_state:t() | undefined,
     heartbeat_process = undefined :: pid() | undefined
 }).
 
 -spec init_leader_state() -> ok.
 init_leader_state() ->
     Res = grb_dc_utils:bcast_vnode_sync(?master, init_leader),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res).
+
+-spec init_follower_state() -> ok.
+init_follower_state() ->
+    Res = grb_dc_utils:bcast_vnode_sync(?master, init_follower),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res).
 
 -spec prepare_heartbeat(partition_id()) -> {ok, ballot()}.
@@ -101,9 +112,13 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
+    {ok, RetryInterval} = application:get_env(grb, red_heartbeat_interval),
+    {ok, DeliverInterval} = application:get_env(grb, red_delivery_interval),
     State = #state{partition=Partition,
+                   deliver_interval=DeliverInterval,
+                   decision_retry_interval=RetryInterval,
                    %% don't care, we will overwrite it
-                   synod_state=grb_paxos_state:follower()},
+                   synod_state=undefined},
     {ok, State}.
 
 handle_command(ping, _Sender, State) ->
@@ -112,15 +127,20 @@ handle_command(ping, _Sender, State) ->
 handle_command(is_ready, _Sender, State) ->
     {reply, true, State};
 
-handle_command(init_leader, _Sender, S=#state{partition=P, heartbeat_process=undefined}) ->
+handle_command(init_leader, _Sender, S=#state{partition=P, heartbeat_process=undefined,
+                                              deliver_interval=Int, synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
     {ok, Pid} = grb_red_timer:start(ReplicaId, P),
     {reply, ok, S#state{replica_id=ReplicaId,
                         heartbeat_process=Pid,
-                        synod_state=grb_paxos_state:leader()}};
+                        synod_state=grb_paxos_state:leader(),
+                        deliver_timer=erlang:send_after(Int, self(), ?deliver)}};
 
-handle_command(init_leader, _Sender, S=#state{heartbeat_process=_Pid}) ->
-    {reply, ok, S};
+handle_command(init_follower, _Sender, S=#state{deliver_interval=Int, synod_state=undefined}) ->
+    ReplicaId = grb_dc_manager:replica_id(),
+    {reply, ok, S#state{replica_id=ReplicaId,
+                        synod_state=grb_paxos_state:follower(),
+                        deliver_timer=erlang:send_after(Int, self(), ?deliver)}};
 
 handle_command(prepare_hb, _Sender, S=#state{replica_id=LocalId,
                                              partition=Partition,
@@ -139,17 +159,26 @@ handle_command({accept_hb, SourceReplica, Ballot, Ts}, _Sender, S=#state{replica
     ok = grb_dc_connection_manager:send_red_heartbeat_ack(SourceReplica, LocalId, Partition, Ballot),
     {noreply, S};
 
-handle_command({decide_hb, Ballot}, _Sender, S=#state{synod_state=SynodState}) ->
-    ok = decide_hb_internal(Ballot, SynodState),
+handle_command({decide_hb, Ballot}, _Sender, S=#state{decision_retry_interval=Int, synod_state=SynodState}) ->
+    ok = decide_hb_internal(Ballot, SynodState, Int),
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
 
-handle_info({retry_decide_hb, Ballot}, S=#state{synod_state=SynodState}) ->
-    ok = decide_hb_internal(Ballot, SynodState),
+handle_info({retry_decide_hb, Ballot}, S=#state{decision_retry_interval=Int, synod_state=SynodState}) ->
+    ok = decide_hb_internal(Ballot, SynodState, Int),
     {ok, S};
+
+handle_info(?deliver, S=#state{partition=Partition,
+                               last_delivered=LastDelivered,
+                               synod_state=SynodState,
+                               deliver_timer=Timer,
+                               deliver_interval=Interval}) ->
+    erlang:cancel_timer(Timer),
+    {ok, S#state{last_delivered=deliver_updates(Partition, LastDelivered, SynodState),
+                 deliver_timer=erlang:send_after(Interval, self(), ?deliver)}};
 
 handle_info(Msg, State) ->
     ?LOG_WARNING("unhandled_info ~p", [Msg]),
@@ -159,13 +188,31 @@ handle_info(Msg, State) ->
 %%% internal
 %%%===================================================================
 
--spec decide_hb_internal(ballot(), grb_paxos_state:t()) -> ok.
-decide_hb_internal(Ballot, SynodState) ->
+-spec decide_hb_internal(ballot(), grb_paxos_state:t(), non_neg_integer()) -> ok.
+decide_hb_internal(Ballot, SynodState, Time) ->
+    %% todo(borja, red): This might return not_prepared at followers
+    %% if the coordinator receives a quorum of ACCEPT_ACK before this follower
+    %% receives an ACCEPT, it might be that we receive a DECISION before
+    %% the decided transaction has been processes. What to do?
+    %% if we set the quorum size to all replicas, this won't happen
     case grb_paxos_state:decision_hb_pre(Ballot, SynodState) of
         ok ->
             grb_paxos_state:decision_hb(SynodState);
         not_ready ->
-            erlang:send_after(?DECISION_RETRY, self(), {retry_decide_hb, Ballot})
+            erlang:send_after(Time, self(), {retry_decide_hb, Ballot})
+    end.
+
+-spec deliver_updates(partition_id(), grb_time:ts(), grb_paxos_state:t()) -> grb_time:ts().
+deliver_updates(Partition, From, SynodState) ->
+    case grb_paxos_state:get_next_ready(From, SynodState) of
+        false -> From;
+        {heartbeat, Ts} ->
+            ok = grb_propagation_vnode:handle_red_heartbeat(Partition, Ts),
+            deliver_updates(Partition, Ts, SynodState);
+        {NextFrom, {TxId, _Vote, CommitVC}} ->
+            %% todo(borja, red): Don't care about vote here, but we want the writeset
+            ok = grb_main_vnode:handle_red_transaction(Partition, TxId, #{}, NextFrom, CommitVC),
+            deliver_updates(Partition, NextFrom, SynodState)
     end.
 
 %%%===================================================================

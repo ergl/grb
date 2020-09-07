@@ -50,7 +50,11 @@ if [ -z "$COMMITTED_BLUE_PRUNE_INTERVAL_MS" ]; then
 fi
 
 if [ -z "$RED_HB_INTERVAL_MS" ]; then
-  export RED_HB_INTERVAL_MS=5
+  export RED_HB_INTERVAL_MS=50
+fi
+
+if [ -z "$RED_DELIVER_INTERVAL_MS" ]; then
+  export RED_DELIVER_INTERVAL_MS=100
 fi
 
 # Node config

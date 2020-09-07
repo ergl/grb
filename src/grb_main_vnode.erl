@@ -6,7 +6,8 @@
 %% Public API
 -export([prepare_blue/4,
          decide_blue/3,
-         handle_replicate/5]).
+         handle_replicate/5,
+         handle_red_transaction/5]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -100,6 +101,13 @@ handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
                                            {handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC},
                                            ?master)
     end.
+
+%% todo(borja, red): don't care about transaction identifier
+-spec handle_red_transaction(partition_id(), term(), #{}, grb_time:ts(), vclock()) -> ok.
+handle_red_transaction(Partition, _TxId, WS, RedTime, VC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {handle_red_tx, WS, RedTime, VC},
+                                   ?master).
 
 %%%===================================================================
 %%% api riak_core callbacks
@@ -203,6 +211,14 @@ handle_command({handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC}, _Fro
     ok = handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, State),
     {noreply, State};
 
+handle_command({handle_red_tx, WS, RedTime, VC}, _From, S=#state{partition=Partition,
+                                                                 op_log=OperationLog,
+                                                                 op_log_size=LogSize}) ->
+
+    ok = update_partition_state(?RED_REPLICA, WS, VC, OperationLog, LogSize),
+    ok = grb_propagation_vnode:handle_red_heartbeat(Partition, RedTime),
+    {noreply, S};
+
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
@@ -222,11 +238,10 @@ handle_info(Msg, State) ->
 
 -spec handle_remote_tx_internal(replica_id(), term(), #{}, grb_time:ts(), vclock(), state()) -> ok.
 -ifdef(NO_REMOTE_APPEND).
-%% same as above, but only toggle this change
-handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partition=Partition,
-                                                                          op_log=OperationLog,
-                                                                          op_log_size=LogSize}) ->
-    ok = update_partition_state(TxId, WS, VC, OperationLog, LogSize),
+handle_remote_tx_internal(SourceReplica, _, WS, CommitTime, VC, #state{partition=Partition,
+                                                                       op_log=OperationLog,
+                                                                       op_log_size=LogSize}) ->
+    ok = update_partition_state(WS, VC, OperationLog, LogSize),
     ok = grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, CommitTime),
     ok.
 
@@ -235,7 +250,7 @@ handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partit
 handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partition=Partition,
                                                                           op_log=OperationLog,
                                                                           op_log_size=LogSize}) ->
-    ok = update_partition_state(TxId, WS, VC, OperationLog, LogSize),
+    ok = update_partition_state(WS, VC, OperationLog, LogSize),
     ok = grb_propagation_vnode:append_remote_blue_commit(SourceReplica, Partition, CommitTime, TxId, WS, VC),
     ok.
 
@@ -251,7 +266,7 @@ decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
     {{WS, _}, PreparedBlue1} = maps:take(TxId, PreparedBlue),
-    ok = update_partition_state(TxId, WS, VC, OpLog, LogSize),
+    ok = update_partition_state(WS, VC, OpLog, LogSize),
     KnownTime = compute_new_known_time(PreparedBlue1),
     case ShouldAppend of
         true ->
@@ -261,19 +276,27 @@ decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
     end,
     S#state{prepared_blue=PreparedBlue1}.
 
--spec update_partition_state(TxId :: term(),
+-spec update_partition_state(WS :: #{},
+                             CommitVC :: vclock(),
+                             OpLog :: cache(key(), grb_version_log:t()),
+                             DefaultSize :: non_neg_integer()) -> ok.
+
+update_partition_state(WS, CommitVC, OpLog, DefaultSize) ->
+    update_partition_state(blue, WS, CommitVC, OpLog, DefaultSize).
+
+-spec update_partition_state(TxType :: transaction_type(),
                              WS :: #{},
                              CommitVC :: vclock(),
                              OpLog :: cache(key(), grb_version_log:t()),
                              DefaultSize :: non_neg_integer()) -> ok.
 
-update_partition_state(_TxId, WS, CommitVC, OpLog, DefaultSize) ->
+update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize) ->
     Objects = maps:fold(fun(Key, Value, Acc) ->
         Log = case ets:lookup(OpLog, Key) of
             [{Key, PrevLog}] -> PrevLog;
             [] -> grb_version_log:new(DefaultSize)
         end,
-        NewLog = grb_version_log:append({blue, Value, CommitVC}, Log),
+        NewLog = grb_version_log:append({TxType, Value, CommitVC}, Log),
         [{Key, NewLog} | Acc]
     end, [], WS),
     true = ets:insert(OpLog, Objects),

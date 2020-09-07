@@ -58,14 +58,12 @@ pool_spec() ->
 
 -spec persist_leader_info() -> ok.
 persist_leader_info() ->
-    RemoteReplicas = grb_dc_manager:remote_replicas(),
-    ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, length(RemoteReplicas)),
+    ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, length(grb_dc_manager:remote_replicas())),
     ok = gen_server:call(?MODULE, set_leader).
 
 -spec persist_follower_info(replica_id()) -> ok.
 persist_follower_info(LeaderReplica) ->
-    RemoteReplicas = grb_dc_manager:remote_replicas(),
-    ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, length(RemoteReplicas)),
+    ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, length(grb_dc_manager:remote_replicas())),
     ok = gen_server:call(?MODULE, {set_follower, LeaderReplica}).
 
 -spec quorum_size() -> non_neg_integer().
