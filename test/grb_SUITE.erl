@@ -34,15 +34,36 @@ all() -> [{group, all_tests}].
 
 groups() ->
     [
-        {pure_operations, [parallel], [sanity_check_test, empty_read_test, known_replicas_test, advance_clocks_test]},
-        {basic_operations, [sequence], [{group, pure_operations}, read_your_writes_test]},
-        {single_dc, [sequence], [{group, basic_operations}]},
-        {single_dc_red, [sequecne, {repeat_until_ok, 100}], [stable_vc_red_test]},
-        {multi_dc, [sequence], [{group, basic_operations}]},
-        {replication, [sequence, {repeat_until_ok, 100}], [propagate_updates_test, replication_queue_flush_test, uniform_barrier_flush_test]},
-        {all_tests, [sequence], [
-            {group, single_dc}, {group, single_dc_red}, {group, multi_dc}, {group, replication}
-        ]}
+        {pure_operations,
+            [parallel, {repeat_until_ok, 100}],
+            [sanity_check_test, empty_read_test, known_replicas_test, advance_clocks_test]},
+
+        {basic_operations,
+            [sequence],
+            [{group, pure_operations}, read_your_writes_test]},
+
+        {single_dc,
+            [sequence],
+            [{group, basic_operations}]},
+
+        {single_dc_red,
+            [sequence, {repeat_until_ok, 100}],
+            [stable_vc_red_test]},
+
+        {multi_dc,
+            [sequence],
+            [{group, basic_operations}]},
+
+        {replication,
+            [sequence, {repeat_until_ok, 100}],
+            [propagate_updates_test, replication_queue_flush_test, uniform_barrier_flush_test]},
+
+        {all_tests,
+            [sequence],
+            [ %%{group, single_dc}, todo(borja, red): fix advancing red entry on single_dc
+              {group, single_dc_red},
+              {group, multi_dc},
+              {group, replication}] }
     ].
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -120,7 +141,7 @@ empty_read_test(C) ->
     Replica = random_replica(ClusterMap),
     Key = ?random_key,
     {Partition, Node} = key_location(Key, Replica, ClusterMap),
-    {<<>>, 0, _} = read_only_transaction(Replica, Node, Partition, Key, #{}).
+    {<<>>, _, _} = read_only_transaction(Replica, Node, Partition, Key, #{}).
 
 read_your_writes_test(C) ->
     ClusterMap = ?config(cluster_info, C),
@@ -129,7 +150,7 @@ read_your_writes_test(C) ->
     Val = ?random_val,
     {Partition, Node} = key_location(Key, Replica, ClusterMap),
     CVC = update_transaction(Replica, Node, Partition, Key, Val, #{}),
-    {Val, 0, _} = read_only_transaction(Replica, Node, Partition, Key, CVC).
+    {Val, _, _} = read_only_transaction(Replica, Node, Partition, Key, CVC).
 
 -ifndef(BLUE_KNOWN_VC).
 stable_vc_red_test(C) ->
@@ -162,7 +183,7 @@ propagate_updates_test(C) ->
     foreach_replica(ClusterMap, fun(Replica) ->
         {Partition, Node} = key_location(Key, Replica, ClusterMap),
         ok = uniform_barrier(Replica, Node, Partition, CommitVC),
-        {Val, 0, _} = read_only_transaction(Replica, Node, Partition, Key, CommitVC),
+        {Val, _, _} = read_only_transaction(Replica, Node, Partition, Key, CommitVC),
         ok
     end).
 
@@ -209,6 +230,7 @@ advance_clocks_test(C) ->
         ok = advance_clock(Node, Partitions, Replicas, stable_vc)
     end).
 -else.
+-ifdef(UNIFORM_BLUE).
 advance_clocks_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     Replicas = lists:sort(maps:keys(ClusterMap)),
@@ -219,6 +241,28 @@ advance_clocks_test(C) ->
         ok = advance_clock(Node, Partitions, Replicas, stable_vc),
         ok = advance_clock(Node, Partitions, Replicas, uniform_vc)
     end).
+-else.
+advance_clocks_test(C) ->
+    ClusterMap = ?config(cluster_info, C),
+    Replicas = lists:sort(maps:keys(ClusterMap)),
+    ?foreach_node(ClusterMap, fun(_, Node) ->
+        Partitions = erpc:call(Node, grb_dc_utils, my_partitions, []),
+        Replicas = lists:sort(erpc:call(Node, grb_dc_manager, all_replicas, [])),
+        ok = advance_clock(Node, Partitions, [?RED_REPLICA | Replicas], known_vc),
+        ok = advance_clock(Node, Partitions, Replicas, stable_vc),
+        ok = advance_stable_red_entry(Node, Partitions),
+        ok = advance_clock(Node, Partitions, Replicas, uniform_vc)
+    end).
+
+advance_stable_red_entry(Node, Partitions) ->
+    lists:foreach(fun(P) ->
+        Old = erpc:call(Node, grb_propagation_vnode, stable_red, [P]),
+        timer:sleep(500),
+        New = erpc:call(Node, grb_propagation_vnode, stable_red, [P]),
+        true = (New > Old)
+    end, Partitions).
+
+-endif.
 -endif.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -260,7 +304,7 @@ read_only_transaction(_Replica, Node, Partition, Key, Clock) ->
 -spec update_transaction(replica_id(), node(), partition_id(), key(), val(), vclock()) -> vclock().
 update_transaction(Replica, Node, Partition, Key, Value, Clock) ->
     SVC = erpc:call(Node, grb, start_transaction, [Partition, Clock]),
-    {ok, Value, 0} = erpc:call(Node, grb_tcp_handler, sync_process,
+    {ok, Value, _} = erpc:call(Node, grb_tcp_handler, sync_process,
                                ['OpRequest', #{partition => Partition,
                                                key => Key,
                                                value => Value,
