@@ -15,7 +15,8 @@
 %% Managing ETS tables
 -export([new_cache/2,
          new_cache/3,
-         cache_name/2]).
+         cache_name/2,
+         safe_bin_to_atom/1]).
 
 %% For external script
 -export([is_ring_owner/0,

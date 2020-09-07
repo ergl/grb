@@ -51,6 +51,8 @@
 -type red_coordinator() :: pid().
 -type red_vote() :: ok | {abort, atom()}.
 
+-type ballot() :: non_neg_integer().
+
 -export_type([partition_id/0,
               index_node/0,
               cache_id/0,
@@ -65,4 +67,5 @@
               replica_descriptor/0,
               inter_dc_conn/0,
               red_coordinator/0,
-              red_vote/0]).
+              red_vote/0,
+              ballot/0]).

@@ -219,6 +219,8 @@ start_paxos_leader() ->
     Res0 = erpc:multicall(LocalNodes, grb_red_manager, persist_leader_info, []),
     ok = lists:foreach(fun({ok, ok}) -> ok end, Res0),
 
+    ok = grb_paxos_vnode:init_leader_state(),
+    ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
 -spec start_paxos_follower(replica_id()) -> ok.
@@ -229,7 +231,7 @@ start_paxos_follower(LeaderReplica) ->
 
     Res0 = erpc:multicall(LocalNodes, grb_red_manager, persist_follower_info, [LeaderReplica]),
     ok = lists:foreach(fun({ok, ok}) -> ok end, Res0),
-
+    ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
 -spec persist_self_replica_info() -> ok.

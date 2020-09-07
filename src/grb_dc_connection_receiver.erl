@@ -109,4 +109,13 @@ handle_request(Partition, SourceReplica, #update_clocks_heartbeat{known_vc=Known
     grb_propagation_vnode:handle_clock_heartbeat_update(Partition, SourceReplica, KnownVC, StableVC);
 
 handle_request(Partition, SourceReplica, #prepare_red{tx_id=TxId, readset=RS, writeset=WS, snapshot_vc=VC}) ->
-    grb_paxos_vnode:remote_prepare(Partition, SourceReplica, TxId, RS, WS, VC).
+    grb_paxos_vnode:remote_prepare(Partition, SourceReplica, TxId, RS, WS, VC);
+
+handle_request(Partition, SourceReplica, #red_heartbeat{ballot=B, timestamp=Ts}) ->
+    grb_paxos_vnode:accept_heartbeat(Partition, SourceReplica, B, Ts);
+
+handle_request(Partition, _SourceReplica, #red_heartbeat_ack{ballot=B}) ->
+    grb_red_timer:handle_accept_ack(Partition, B);
+
+handle_request(Partition, _SourceReplica, #red_heartbeat_decide{ballot=Ballot}) ->
+    grb_paxos_vnode:decide_heartbeat(Partition, Ballot).

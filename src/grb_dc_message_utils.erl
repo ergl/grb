@@ -29,7 +29,16 @@ encode_payload(Replica, #update_clocks_heartbeat{known_vc=KnownVC, stable_vc=Sta
     {?UPDATE_CLOCK_HEARTBEAT_KIND, term_to_binary({Replica, KnownVC, StableVC})};
 
 encode_payload(Replica, #prepare_red{tx_id=TxId, readset=RS, writeset=WS, snapshot_vc=VC}) ->
-    {?RED_PREPARE_KIND, term_to_binary({Replica, TxId, RS, WS, VC})}.
+    {?RED_PREPARE_KIND, term_to_binary({Replica, TxId, RS, WS, VC})};
+
+encode_payload(Replica, #red_heartbeat{ballot=B, timestamp=Ts}) ->
+    {?RED_HB_KIND, term_to_binary({Replica, B, Ts})};
+
+encode_payload(Replica, #red_heartbeat_ack{ballot=B}) ->
+    {?RED_HB_ACK_KIND, term_to_binary({Replica, B})};
+
+encode_payload(Replica, #red_heartbeat_decide{ballot=B}) ->
+    {?RED_HB_DECIDE_KIND, term_to_binary({Replica, B})}.
 
 -spec decode_payload(binary()) -> {replica_id(), replica_message()}.
 decode_payload(<<?REPL_TX_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
@@ -50,7 +59,19 @@ decode_payload(<<?UPDATE_CLOCK_HEARTBEAT_KIND:?MSG_KIND_BITS, Payload/binary>>) 
 
 decode_payload(<<?RED_PREPARE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {FromReplica, Tx, RS, WS, VC} = binary_to_term(Payload),
-    {FromReplica, #prepare_red{tx_id=Tx, readset=RS, writeset=WS, snapshot_vc=VC}}.
+    {FromReplica, #prepare_red{tx_id=Tx, readset=RS, writeset=WS, snapshot_vc=VC}};
+
+decode_payload(<<?RED_HB_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
+    {FromReplica, B, Ts} = binary_to_term(Payload),
+    {FromReplica, #red_heartbeat{ballot=B, timestamp=Ts}};
+
+decode_payload(<<?RED_HB_ACK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
+    {FromReplica, B} = binary_to_term(Payload),
+    {FromReplica, #red_heartbeat_ack{ballot=B}};
+
+decode_payload(<<?RED_HB_DECIDE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
+    {FromReplica, B} = binary_to_term(Payload),
+    {FromReplica, #red_heartbeat_decide{ballot=B}}.
 
 %% Util functions
 
@@ -72,7 +93,9 @@ grb_dc_message_utils_test() ->
         #update_clocks{known_vc=VC, stable_vc=VC},
         #update_clocks_heartbeat{known_vc=VC, stable_vc=VC},
         #replicate_tx{tx_id=ignore, writeset=#{foo => bar}, commit_vc=VC},
-        #prepare_red{tx_id=ignore, readset=#{foo => 0}, writeset=#{foo => bar}, snapshot_vc=VC}
+        #prepare_red{tx_id=ignore, readset=#{foo => 0}, writeset=#{foo => bar}, snapshot_vc=VC},
+        #red_heartbeat{ballot=4, timestamp=10},
+        #red_heartbeat_ack{ballot=10}
     ],
 
     lists:foreach(fun(Partition) ->

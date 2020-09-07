@@ -13,6 +13,9 @@
 -define(UPDATE_CLOCK_KIND, 2).
 -define(UPDATE_CLOCK_HEARTBEAT_KIND, 3).
 -define(RED_PREPARE_KIND, 4).
+-define(RED_HB_KIND, 5).
+-define(RED_HB_ACK_KIND, 6).
+-define(RED_HB_DECIDE_KIND, 7).
 
 -record(replicate_tx, {
     tx_id :: term(),
@@ -41,10 +44,26 @@
     snapshot_vc :: vclock()
 }).
 
+-record(red_heartbeat, {
+    ballot :: ballot(),
+    timestamp :: grb_time:ts()
+}).
+
+-record(red_heartbeat_ack, {
+    ballot :: ballot()
+}).
+
+-record(red_heartbeat_decide, {
+    ballot :: ballot()
+}).
+
 -type replica_message() :: #replicate_tx{}
                          | #blue_heartbeat{}
                          | #update_clocks{}
                          | #update_clocks_heartbeat{}
-                         | #prepare_red{}.
+                         | #prepare_red{}
+                         | #red_heartbeat{}
+                         | #red_heartbeat_ack{}
+                         | #red_heartbeat_decide{}.
 
 -export_type([replica_message/0]).

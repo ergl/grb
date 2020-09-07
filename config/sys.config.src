@@ -98,6 +98,9 @@
     {op_prepare_wait_ms, ${SELF_HB_INTERVAL_MS}},
 
     %% How often to prune the logs of all replicas
-    {prune_committed_blue_interval, ${COMMITTED_BLUE_PRUNE_INTERVAL_MS}}
+    {prune_committed_blue_interval, ${COMMITTED_BLUE_PRUNE_INTERVAL_MS}},
+
+    %% How often does a parition start a red heartbeat
+    {red_heartbeat_interval, ${RED_HB_INTERVAL_MS}}
   ]}
 ].
