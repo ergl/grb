@@ -39,6 +39,7 @@
 -define(master, grb_paxos_vnode_master).
 -define(DECISION_RETRY, 5).
 
+%% todo(borja, red): timer to process decidedRed and deliver updates + indexes
 -record(state, {
     partition :: partition_id(),
     replica_id = undefined :: replica_id() | undefined,
@@ -80,12 +81,14 @@ decide_heartbeat(Partition, Ballot) ->
 
 -spec local_prepare(index_node(), term(), #{}, #{}, vclock()) -> ok.
 local_prepare(IndexNode, TxId, Readset, Writeset, SnapshotVC) ->
+    %% todo(borja, red)
     riak_core_vnode_master:command(IndexNode,
                                    {local_prepare, TxId, Readset, Writeset, SnapshotVC},
                                    ?master).
 
 -spec remote_prepare(partition_id(), replica_id(), term(), #{}, #{}, vclock()) -> ok.
 remote_prepare(Partition, SourceReplica, TxId, Readset, Writeset, SnapshotVC) ->
+    %% todo(borja, red)
     riak_core_vnode_master:command({Partition, node()},
                                    {remote_prepare, SourceReplica, TxId, Readset, Writeset, SnapshotVC},
                                    ?master).
