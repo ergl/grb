@@ -64,11 +64,11 @@ init_follower_state() ->
     Res = grb_dc_utils:bcast_vnode_sync(?master, init_follower),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res).
 
--spec prepare_heartbeat(partition_id()) -> {ok, ballot()}.
+-spec prepare_heartbeat(partition_id()) -> ok.
 prepare_heartbeat(Partition) ->
-    riak_core_vnode_master:sync_command({Partition, node()},
-                                        prepare_hb,
-                                        ?master).
+    riak_core_vnode_master:command({Partition, node()},
+                                   prepare_hb,
+                                   ?master).
 
 -spec accept_heartbeat(partition_id(), replica_id(), ballot(), grb_time:ts()) -> ok.
 accept_heartbeat(Partition, SourceReplica, Ballot, Ts) ->
@@ -150,7 +150,8 @@ handle_command(prepare_hb, _Sender, S=#state{replica_id=LocalId,
     lists:foreach(fun(ReplicaId) ->
         grb_dc_connection_manager:send_red_heartbeat(ReplicaId, LocalId, Partition, Ballot, Ts)
     end, grb_dc_connection_manager:connected_replicas()),
-    {reply, {ok, Ballot}, S};
+    ok = grb_red_timer:handle_accept_ack(Partition, Ballot),
+    {noreply, S};
 
 handle_command({accept_hb, SourceReplica, Ballot, Ts}, _Sender, S=#state{replica_id=LocalId,
                                                                          partition=Partition,
