@@ -114,10 +114,10 @@ start_vnode(I) ->
 init([Partition]) ->
     {ok, RetryInterval} = application:get_env(grb, red_heartbeat_interval),
     {ok, DeliverInterval} = application:get_env(grb, red_delivery_interval),
+    %% don't care about setting bad values, we will overwrite it
     State = #state{partition=Partition,
                    deliver_interval=DeliverInterval,
                    decision_retry_interval=RetryInterval,
-                   %% don't care, we will overwrite it
                    synod_state=undefined},
     {ok, State}.
 

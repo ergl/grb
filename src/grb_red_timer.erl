@@ -90,7 +90,9 @@ handle_info(?red_hb, S=#state{partition=Partition,
 
     erlang:cancel_timer(Timer),
     {ok, LeaderBallot} = grb_paxos_vnode:prepare_heartbeat(Partition),
-    {noreply, S#state{timer=undefined, acked=1, current_ballot=LeaderBallot}};
+    %% message ourselves, let us know that the leader is sending an accept_ack
+    ok = handle_accept_ack(Partition, LeaderBallot),
+    {noreply, S#state{timer=undefined, acked=0, current_ballot=LeaderBallot}};
 
 handle_info(E, S) ->
     logger:warning("unexpected info: ~p~n", [E]),
