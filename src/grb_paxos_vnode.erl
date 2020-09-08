@@ -127,8 +127,11 @@ handle_command(ping, _Sender, State) ->
 handle_command(is_ready, _Sender, State) ->
     {reply, true, State};
 
-handle_command(init_leader, _Sender, S=#state{partition=P, heartbeat_process=undefined,
-                                              deliver_interval=Int, synod_state=undefined}) ->
+handle_command(init_leader, _Sender, S=#state{partition=P,
+                                              heartbeat_process=undefined,
+                                              deliver_interval=Int,
+                                              synod_state=undefined}) ->
+
     ReplicaId = grb_dc_manager:replica_id(),
     {ok, Pid} = grb_red_timer:start(ReplicaId, P),
     {reply, ok, S#state{replica_id=ReplicaId,
@@ -136,11 +139,16 @@ handle_command(init_leader, _Sender, S=#state{partition=P, heartbeat_process=und
                         synod_state=grb_paxos_state:leader(),
                         deliver_timer=erlang:send_after(Int, self(), ?deliver)}};
 
-handle_command(init_follower, _Sender, S=#state{deliver_interval=Int, synod_state=undefined}) ->
+handle_command(init_follower, _Sender, S=#state{deliver_interval=Int,
+                                                synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
     {reply, ok, S#state{replica_id=ReplicaId,
                         synod_state=grb_paxos_state:follower(),
                         deliver_timer=erlang:send_after(Int, self(), ?deliver)}};
+
+%%%===================================================================
+%%% leader protocol messages
+%%%===================================================================
 
 handle_command(prepare_hb, _Sender, S=#state{replica_id=LocalId,
                                              partition=Partition,
@@ -153,6 +161,10 @@ handle_command(prepare_hb, _Sender, S=#state{replica_id=LocalId,
     ok = grb_red_timer:handle_accept_ack(Partition, Ballot),
     {noreply, S};
 
+%%%===================================================================
+%%% follower protocol messages
+%%%===================================================================
+
 handle_command({accept_hb, SourceReplica, Ballot, Ts}, _Sender, S=#state{replica_id=LocalId,
                                                                          partition=Partition,
                                                                          synod_state=FollowerState}) ->
@@ -160,7 +172,13 @@ handle_command({accept_hb, SourceReplica, Ballot, Ts}, _Sender, S=#state{replica
     ok = grb_dc_connection_manager:send_red_heartbeat_ack(SourceReplica, LocalId, Partition, Ballot),
     {noreply, S};
 
-handle_command({decide_hb, Ballot}, _Sender, S=#state{decision_retry_interval=Int, synod_state=SynodState}) ->
+%%%===================================================================
+%%% leader / follower protocol messages
+%%%===================================================================
+
+handle_command({decide_hb, Ballot}, _Sender, S=#state{decision_retry_interval=Int,
+                                                      synod_state=SynodState}) ->
+
     ok = decide_hb_internal(Ballot, SynodState, Int),
     {noreply, S};
 

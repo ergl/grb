@@ -10,7 +10,8 @@
 %% pool api
 -export([pool_spec/0]).
 
--export([persist_leader_info/0,
+-export([persist_unique_leader_info/0,
+         persist_leader_info/0,
          persist_follower_info/1,
          leader_of/1,
          quorum_size/0,
@@ -55,6 +56,11 @@ pool_spec() ->
     %% todo(borja, red): Any args here?
     WorkerArgs = [],
     poolboy:child_spec(?POOL_NAME, Args, WorkerArgs).
+
+-spec persist_unique_leader_info() -> ok.
+persist_unique_leader_info() ->
+    ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, 1),
+    ok = gen_server:call(?MODULE, set_leader).
 
 -spec persist_leader_info() -> ok.
 persist_leader_info() ->

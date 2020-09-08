@@ -24,6 +24,7 @@
          connect_to_replicas/1,
          stop_background_processes/0,
          stop_propagation_processes/0,
+         start_paxos_unique_leader/0,
          start_paxos_leader/0,
          start_paxos_follower/1]).
 
@@ -40,6 +41,7 @@
               connect_to_replicas/1,
               stop_background_processes/0,
               stop_propagation_processes/0,
+              start_paxos_unique_leader/0,
               start_paxos_leader/0,
               start_paxos_follower/1]).
 
@@ -58,7 +60,8 @@ remote_replicas() ->
 -spec create_replica_groups([node()]) -> {ok, [replica_id()]} | {error, term()}.
 create_replica_groups([SingleNode]) ->
     ?LOG_INFO("Single-replica ~p, disabling blue append~n", [SingleNode]),
-    ok =  erpc:call(SingleNode, ?MODULE, single_replica_processes, []),
+    ok = erpc:call(SingleNode, ?MODULE, single_replica_processes, []),
+    ok = erpc:call(SingleNode, ?MODULE, start_paxos_unique_leader, []),
     {ok, [replica_id()]};
 
 create_replica_groups(Nodes) ->
@@ -207,6 +210,18 @@ start_propagation_processes() ->
 
     Res3 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, start_propagate_timer),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res3),
+    ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
+    ok.
+
+-spec start_paxos_unique_leader() -> ok.
+start_paxos_unique_leader() ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    LocalNodes = riak_core_ring:all_members(Ring),
+
+    Res0 = erpc:multicall(LocalNodes, grb_red_manager, persist_unique_leader_info, []),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res0),
+
+    ok = grb_paxos_vnode:init_leader_state(),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
