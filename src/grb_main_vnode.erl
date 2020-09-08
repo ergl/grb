@@ -7,7 +7,7 @@
 -export([prepare_blue/4,
          decide_blue/3,
          handle_replicate/5,
-         handle_red_transaction/5]).
+         handle_red_transaction/4]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -102,9 +102,8 @@ handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
                                            ?master)
     end.
 
-%% todo(borja, red): don't care about transaction identifier
--spec handle_red_transaction(partition_id(), term(), #{}, grb_time:ts(), vclock()) -> ok.
-handle_red_transaction(Partition, _TxId, WS, RedTime, VC) ->
+-spec handle_red_transaction(partition_id(), {}, grb_time:ts(), vclock()) -> ok.
+handle_red_transaction(Partition, WS, RedTime, VC) ->
     riak_core_vnode_master:command({Partition, node()},
                                    {handle_red_tx, WS, RedTime, VC},
                                    ?master).

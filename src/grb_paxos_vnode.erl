@@ -195,23 +195,25 @@ decide_hb_internal(Ballot, SynodState, Time) ->
     %% receives an ACCEPT, it might be that we receive a DECISION before
     %% the decided transaction has been processes. What to do?
     %% if we set the quorum size to all replicas, this won't happen
-    case grb_paxos_state:decision_hb_pre(Ballot, SynodState) of
-        ok ->
-            grb_paxos_state:decision_hb(SynodState);
+    case grb_paxos_state:decision_hb(Ballot, SynodState) of
         not_ready ->
-            erlang:send_after(Time, self(), {retry_decide_hb, Ballot})
+            erlang:send_after(Time, self(), {retry_decide_hb, Ballot});
+        ok ->
+            ok
     end.
 
 -spec deliver_updates(partition_id(), grb_time:ts(), grb_paxos_state:t()) -> grb_time:ts().
 deliver_updates(Partition, From, SynodState) ->
     case grb_paxos_state:get_next_ready(From, SynodState) of
-        false -> From;
+        false ->
+            From;
+
         {heartbeat, Ts} ->
             ok = grb_propagation_vnode:handle_red_heartbeat(Partition, Ts),
             deliver_updates(Partition, Ts, SynodState);
-        {NextFrom, {TxId, _Vote, CommitVC}} ->
-            %% todo(borja, red): Don't care about vote here, but we want the writeset
-            ok = grb_main_vnode:handle_red_transaction(Partition, TxId, #{}, NextFrom, CommitVC),
+
+        {NextFrom, WriteSet, CommitVC} ->
+            ok = grb_main_vnode:handle_red_transaction(Partition, WriteSet, NextFrom, CommitVC),
             deliver_updates(Partition, NextFrom, SynodState)
     end.
 
