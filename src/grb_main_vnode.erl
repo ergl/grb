@@ -35,6 +35,7 @@
 -define(master, grb_main_vnode_master).
 -define(blue_tick_req, blue_tick_event).
 
+-type op_log() :: cache(key(), grb_version_log:t()).
 -record(state, {
     partition :: partition_id(),
 
@@ -48,7 +49,7 @@
 
     %% todo(borja, crdt): change type of op_log when adding crdts
     op_log_size :: non_neg_integer(),
-    op_log :: cache(key(), cache(key(), grb_version_log:t())),
+    op_log :: op_log(),
 
     %% It doesn't make sense to append it if we're not connected to other clusters
     should_append_commit = true :: boolean(),
@@ -277,7 +278,7 @@ decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
 
 -spec update_partition_state(WS :: #{},
                              CommitVC :: vclock(),
-                             OpLog :: cache(key(), grb_version_log:t()),
+                             OpLog :: op_log(),
                              DefaultSize :: non_neg_integer()) -> ok.
 
 update_partition_state(WS, CommitVC, OpLog, DefaultSize) ->
@@ -286,20 +287,30 @@ update_partition_state(WS, CommitVC, OpLog, DefaultSize) ->
 -spec update_partition_state(TxType :: transaction_type(),
                              WS :: #{},
                              CommitVC :: vclock(),
-                             OpLog :: cache(key(), grb_version_log:t()),
+                             OpLog :: op_log(),
                              DefaultSize :: non_neg_integer()) -> ok.
 
 update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize) ->
     Objects = maps:fold(fun(Key, Value, Acc) ->
-        Log = case ets:lookup(OpLog, Key) of
-            [{Key, PrevLog}] -> PrevLog;
-            [] -> grb_version_log:new(DefaultSize)
-        end,
-        NewLog = grb_version_log:append({TxType, Value, CommitVC}, Log),
-        [{Key, NewLog} | Acc]
+        Log = append_to_log(TxType, Key, Value, CommitVC, OpLog, DefaultSize),
+        [{Key, Log} | Acc]
     end, [], WS),
     true = ets:insert(OpLog, Objects),
     ok.
+
+-spec append_to_log(Type :: transaction_type(),
+                        Key :: key(),
+                        Value :: val(),
+                        CommitVC :: vclock(),
+                        OpLog :: op_log(),
+                        Size ::non_neg_integer()) -> grb_version_log:t().
+
+append_to_log(Type, Key, Value, CommitVC, OpLog, Size) ->
+    Log = case ets:lookup(OpLog, Key) of
+        [{Key, PrevLog}] -> PrevLog;
+        [] -> grb_version_log:new(Size)
+    end,
+    grb_version_log:append({Type, Value, CommitVC}, Log).
 
 -spec compute_new_known_time(#{any() => {#{}, vclock()}}) -> grb_time:ts().
 compute_new_known_time(PreparedBlue) when map_size(PreparedBlue) =:= 0 ->
