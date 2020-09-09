@@ -92,11 +92,16 @@ decide_heartbeat(Partition, Ballot) ->
                                    ?master).
 
 
--spec local_prepare(index_node(), term(), #{}, #{}, vclock()) -> ok.
+-spec local_prepare(IndexNode :: index_node(),
+                    TxId :: term(),
+                    Readset :: #{key() => grb_time:ts()},
+                    WriteSet :: #{key() => val()},
+                    SnapshotVC :: vclock()) -> ok.
+
 local_prepare(IndexNode, TxId, Readset, Writeset, SnapshotVC) ->
-    %% todo(borja, red)
     riak_core_vnode_master:command(IndexNode,
                                    {local_prepare, TxId, Readset, Writeset, SnapshotVC},
+                                   {coordinator, node()},
                                    ?master).
 
 -spec remote_prepare(partition_id(), replica_id(), term(), #{}, #{}, vclock()) -> ok.
@@ -164,6 +169,31 @@ handle_command(prepare_hb, _Sender, S=#state{replica_id=LocalId,
     ok = grb_red_timer:handle_accept_ack(Partition, Ballot),
     {noreply, S};
 
+handle_command({local_prepare, TxId, RS, WS, SnapshotVC},
+               {coordinator, SenderNode}, S=#state{replica_id=LocalId,
+                                                   partition=Partition,
+                                                   synod_state=LeaderState,
+                                                   op_log_red_replica=LastRed}) ->
+
+    Result = grb_paxos_state:prepare(TxId, RS, WS, SnapshotVC, LastRed, LeaderState),
+    CoordNode = if
+        SenderNode =:= node() -> undefined;
+        true -> SenderNode
+    end,
+    case Result of
+        {already_decided, Decision, CommitVC} ->
+            %% skip replicas, this is enough to reply to the client
+            reply_local_already_decided(CoordNode, TxId, Decision, CommitVC);
+
+        {Vote, _Ballot, PrepareVC}=PrepareMsg ->
+            ok = reply_local_accept_ack(CoordNode, Partition, TxId, Vote, PrepareVC),
+            lists:foreach(fun(ReplicaId) ->
+                grb_dc_connection_manager:send_red_accept(ReplicaId, LocalId, Partition,
+                                                          TxId, RS, WS, PrepareMsg, CoordNode)
+            end, grb_dc_connection_manager:connected_replicas())
+    end,
+    {noreply, S};
+
 %%%===================================================================
 %%% follower protocol messages
 %%%===================================================================
@@ -209,6 +239,18 @@ handle_info(Msg, State) ->
 %%%===================================================================
 %%% internal
 %%%===================================================================
+
+-spec reply_local_already_decided(node() | undefined, term(), red_vote(), vclock()) -> ok.
+reply_local_already_decided(undefined, TxId, Decision, CommitVC) ->
+    grb_red_coordinator:already_decided(TxId, Decision, CommitVC);
+reply_local_already_decided(Node, TxId, Decision, CommitVC) ->
+    erpc:call(Node, grb_red_coordinator, already_decided, [TxId, Decision, CommitVC]).
+
+-spec reply_local_accept_ack(node() | undefined, partition_id(), term(), red_vote(), vclock()) -> ok.
+reply_local_accept_ack(undefined, Partition, TxId, Vote, PrepareVC) ->
+    grb_red_coordinator:accept_ack(Partition, TxId, Vote, PrepareVC);
+reply_local_accept_ack(Node, Partition, TxId, Vote, PrepareVC) ->
+    erpc:call(Node, grb_red_coordinator, accept_ack, [Partition, TxId, Vote, PrepareVC]).
 
 -spec decide_hb_internal(ballot(), grb_paxos_state:t(), non_neg_integer()) -> ok.
 %% this is here due to grb_paxos_state:decision_hb/2, that dialyzer doesn't like

@@ -54,6 +54,11 @@
 
 -type ballot() :: non_neg_integer().
 
+%% The location of a coordinator can be undefined, if it is the same node and replica that the leader,
+%% or a node if it is in the same replica as the leader, but in another node,
+%% or a {replica, node}, if the coordinator is in a different replica than the leader
+-type red_coord_location() :: {replica_id(), node()} | node() | undefined.
+
 -record(last_red_record, {
     key :: key(),
     red :: grb_time:ts(),
@@ -76,4 +81,5 @@
               inter_dc_conn/0,
               red_coordinator/0,
               red_vote/0,
-              ballot/0]).
+              ballot/0,
+              red_coord_location/0]).

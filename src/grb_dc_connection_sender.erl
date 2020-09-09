@@ -11,6 +11,7 @@
          send_clocks/5,
          send_clocks_heartbeat/5,
          send_red_prepare/7,
+         send_red_accept/8,
          send_red_heartbeat/5,
          send_red_heartbeat_ack/4,
          send_red_decide_heartbeat/4,
@@ -69,6 +70,18 @@ send_clocks_heartbeat(Pool, FromReplica, Partition, KnownVC, StableVC) ->
 send_red_prepare(Pool, FromReplica, Partition, TxId, RS, WS, VC) ->
     shackle:call(Pool, {red_prepare, FromReplica, Partition, TxId, RS, WS, VC}).
 
+-spec send_red_accept(Pool :: inter_dc_conn(),
+                      FromReplica :: replica_id(),
+                      Partition :: partition_id(),
+                      TxId :: term(),
+                      RS :: #{},
+                      WS :: #{},
+                      PrepareMsg :: {red_vote(), ballot(), vclock()},
+                      Coord :: red_coord_location()) -> ok.
+
+send_red_accept(Pool, FromReplica, Partition, TxId, RS, WS, PrepareMsg, Coord) ->
+    shackle:call(Pool, {red_accept, FromReplica, Partition, TxId, RS, WS, PrepareMsg, Coord}).
+
 -spec send_red_heartbeat(inter_dc_conn(), replica_id(), partition_id(), ballot(), grb_time:ts()) -> ok.
 send_red_heartbeat(Pool, FromReplica, Partition, Ballot, Time) ->
     shackle:call(Pool, {red_hb, FromReplica, Partition, Ballot, Time}).
@@ -122,6 +135,14 @@ handle_request({red_prepare, FromReplica, Partition, TxId, RS, WS, VC}, State) -
                                                                                writeset=WS,
                                                                                snapshot_vc=VC}),
     {ok, Msg, State};
+
+handle_request({red_accept, _FromReplica, _Partition, _TxId, _RS, _WS, _PrepareMsg, _Coord}, State) ->
+    %% todo(borja, red): Implement
+    %% Also, think about ways of not marshalling / unmarshalling data between nodes when using proxy,
+    %% maybe pre-serialize something into an io_list(), and send that to the proxy, so it doesn't have
+    %% to parse, then serialize again. An io_list() or a binary should be cheap to receive and send again,
+    %% since most probably is larger than 64 bytes and passed by reference.
+    {ok, <<>>, State};
 
 handle_request({red_hb, FromReplica, Partition, Ballot, TimeStamp}, State) ->
     Msg = grb_dc_message_utils:encode_msg(FromReplica, Partition, #red_heartbeat{ballot=Ballot, timestamp=TimeStamp}),

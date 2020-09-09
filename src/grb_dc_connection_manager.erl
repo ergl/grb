@@ -16,6 +16,7 @@
          send_heartbeat/4,
          send_clocks_heartbeat/5,
          send_red_prepare/7,
+         send_red_accept/8,
          send_red_heartbeat/5,
          send_red_heartbeat_ack/4,
          send_red_decide_heartbeat/4]).
@@ -178,6 +179,23 @@ send_red_prepare(ToId, FromId, Partition, TxId, RS, WS, VC) ->
     try
         PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
         grb_dc_connection_sender:send_red_prepare(PoolName, FromId, Partition, TxId, RS, WS, VC)
+    catch _:_ ->
+        {error, gone}
+    end.
+
+-spec send_red_accept(ToId :: replica_id(),
+                      FromId :: replica_id(),
+                      Partition :: partition_id(),
+                      TxId :: term(),
+                      RS :: #{},
+                      WS :: #{},
+                      Prepare :: {red_vote(), ballot(), vclock()},
+                      Coordinator :: red_coord_location()) -> ok | {error, term()}.
+
+send_red_accept(ToId, FromId, Partition, TxId, RS, WS, PrepareMsg, Coordinator) ->
+    try
+        PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
+        grb_dc_connection_sender:send_red_accept(PoolName, FromId, Partition, TxId, RS, WS, PrepareMsg, Coordinator)
     catch _:_ ->
         {error, gone}
     end.

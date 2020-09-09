@@ -104,6 +104,7 @@ handle_cast({accept_ack, Partition, TxId, Vote, AcceptVC}, S0=#certify_state{pro
 
     S = case map_size(Quorums) of
         0 ->
+            %% todo(borja, red): send decision
             grb_promise:resolve(decide_transaction(Acc), Promise),
             ok = grb_red_manager:unregister_coordinator(TxId),
             undefined;
