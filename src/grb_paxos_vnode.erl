@@ -211,20 +211,30 @@ handle_info(Msg, State) ->
 %%%===================================================================
 
 -spec decide_hb_internal(ballot(), grb_paxos_state:t(), non_neg_integer()) -> ok.
+%% this is here due to grb_paxos_state:decision_hb/2, that dialyzer doesn't like
+%% (it thinks it will never return not_ready because that is returned right after
+%% an ets:select with a record)
+-dialyzer({no_match, decide_hb_internal/3}).
 decide_hb_internal(Ballot, SynodState, Time) ->
-    %% todo(borja, red): This might return not_prepared at followers
-    %% if the coordinator receives a quorum of ACCEPT_ACK before this follower
-    %% receives an ACCEPT, it might be that we receive a DECISION before
-    %% the decided transaction has been processes. What to do?
-    %% if we set the quorum size to all replicas, this won't happen
     case grb_paxos_state:decision_hb(Ballot, SynodState) of
+        ok -> ok;
         not_ready ->
             erlang:send_after(Time, self(), {retry_decide_hb, Ballot});
-        ok ->
-            ok
+        bad_ballot ->
+            ?LOG_ERROR("Bad heartbeat ballot ~b", [Ballot]),
+            ok;
+        not_prepared ->
+            %% todo(borja, red): This might return not_prepared at followers
+            %% if the coordinator receives a quorum of ACCEPT_ACK before this follower
+            %% receives an ACCEPT, it might be that we receive a DECISION before
+            %% the decided transaction has been processes. What to do?
+            %% if we set the quorum size to all replicas, this won't happen
+            error
     end.
 
 -spec deliver_updates(partition_id(), grb_time:ts(), grb_paxos_state:t()) -> grb_time:ts().
+%% dialyzer doesn't like grb_paxos_state:get_next_ready/2 due to ets:select and records
+-dialyzer({no_return, deliver_updates/3}).
 deliver_updates(Partition, From, SynodState) ->
     case grb_paxos_state:get_next_ready(From, SynodState) of
         false ->

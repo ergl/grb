@@ -102,6 +102,7 @@ delete(#state{entries=Entries, index=Index, pending_reads=PendingReads, writes_c
 %%%===================================================================
 
 -spec get_next_ready(grb_time:ts(), t()) -> false | {heartbeat, grb_time:ts()} | {grb_time:ts(), #{}, vclock()}.
+-dialyzer({nowarn_function, get_next_ready/2}).
 get_next_ready(LastDelivered, #state{entries=Entries, index=Idx}) ->
     Result = ets:select(Idx,
                         [{ #index_entry{red='$1', id='$2', state=decided, vote=ok},
@@ -127,6 +128,7 @@ get_next_ready(LastDelivered, #state{entries=Entries, index=Idx}) ->
     end.
 
 -spec prep_committed_between(grb_time:ts(), grb_time:ts(), cache_id()) -> boolean().
+-dialyzer({no_unused, prep_committed_between/3}).
 prep_committed_between(From, To, Table) ->
     0 =/= ets:select_count(Table,
                           [{ #index_entry{red='$1', state=prepared, vote=ok, _='_'},
@@ -155,6 +157,7 @@ accept_hb(Ballot, Ts, #state{status=?follower, ballot=Ballot, entries=Entries, i
     ok.
 
 -spec decision_hb_pre(ballot(), grb_time:ts(), t()) -> ok | decision_error().
+-dialyzer({nowarn_function, decision_hb_pre/3}).
 decision_hb_pre(InBallot, _, #state{ballot=Ballot}) when InBallot > Ballot -> bad_ballot;
 
 decision_hb_pre(_, _, #state{status=?follower, entries=Entries}) ->
@@ -202,6 +205,7 @@ decision_hb(Ballot, S=#state{entries=Entries, index=Idx}) ->
               State :: t()) -> {red_vote(), ballot(), vclock()}
                              | {already_decided, red_vote(), vclock()}.
 
+-dialyzer({no_match, prepare/6}).
 prepare(TxId, RS, WS, SnapshotVC, LastRed, S=#state{status=?leader,
                                                     ballot=Ballot,
                                                     entries=Entries,
@@ -297,6 +301,7 @@ decision_pre(_, Id, CommitRed, ClockTime, #state{status=?leader, entries=Entries
     end.
 
 -spec decision(ballot(), term(), red_vote(), vclock(), t()) -> ok | decision_error().
+-dialyzer({no_match, decision/5}).
 decision(Ballot, TxId, Vote, CommitVC, S=#state{entries=Entries, index=Idx,
                                                 pending_reads=PrepReads, writes_cache=WriteCache}) ->
     Id = {tx, TxId},
@@ -341,6 +346,7 @@ decision(Ballot, TxId, Vote, CommitVC, S=#state{entries=Entries, index=Idx,
                         PendingReads :: cache_id(),
                         WriteCache :: cache_id()) -> ok.
 
+-dialyzer({no_unused, move_pending_data/7}).
 move_pending_data(Id, RedTs, Vote, RKeys, WKeys, PendingReads, WriteCache) ->
     %% even if the new vote is abort, we clean up the reads,
     %% since we're moving out of preparedRed

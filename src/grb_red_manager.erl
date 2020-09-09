@@ -5,7 +5,11 @@
 
 %% Supervisor
 -export([start_link/0]).
--ignore_xref([start_link/0, persist_leader_info/0]).
+%% erpc
+-ignore_xref([start_link/0,
+              persist_unique_leader_info/0,
+              persist_leader_info/0,
+              persist_follower_info/1]).
 
 %% pool api
 -export([pool_spec/0]).

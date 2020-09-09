@@ -4,8 +4,7 @@
 -include_lib("kernel/include/logger.hrl").
 
 %% Start/Util
--export([start/2,
-         generate_name/1]).
+-export([start/2]).
 
 %% Protocol
 -export([handle_accept_ack/2]).
