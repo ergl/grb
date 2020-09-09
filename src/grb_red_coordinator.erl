@@ -23,7 +23,7 @@
     accumulator = #{} :: #{partition_id() => {red_vote(), vclock()}}
 }).
 
--spec start_link(term()) -> {ok, pid()}.
+-spec start_link(proplists:proplist()) -> {ok, pid()}.
 start_link(Args) ->
     gen_server:start_link(?MODULE, Args, []).
 

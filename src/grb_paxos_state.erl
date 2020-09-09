@@ -60,7 +60,7 @@
          decision_hb/2]).
 
 %% transactional api
--export([prepare/5,
+-export([prepare/6,
          accept/6,
          decision/5]).
 
@@ -136,14 +136,14 @@ prepare_hb(#state{status=?leader, ballot=Ballot, entries=Entries, index=Idx}) ->
     true = ets:insert(Idx, #index_entry{red=Ts, id=?heartbeat, state=prepared, vote=ok}),
     {Ballot, Ts}.
 
--spec accept_hb(ballot(), grb_time:ts(), vclock()) -> ok | bad_ballot.
+-spec accept_hb(ballot(), grb_time:ts(), t()) -> ok | bad_ballot.
 accept_hb(InBallot, _, #state{ballot=Ballot}) when InBallot =/= Ballot -> bad_ballot;
 accept_hb(Ballot, Ts, #state{status=?follower, ballot=Ballot, entries=Entries, index=Idx}) ->
     true = ets:insert(Entries, #record{id=?heartbeat, red=Ts, vote=ok, state=prepared}),
     true = ets:insert(Idx, #index_entry{red=Ts, id=?heartbeat, state=prepared, vote=ok}),
     ok.
 
--spec decision_hb_pre(ballot(), grb_time:ts(), t()) -> ok | bad_ballot | not_prepared | not_ready.
+-spec decision_hb_pre(ballot(), grb_time:ts(), t()) -> ok | decision_error().
 decision_hb_pre(InBallot, _, #state{ballot=Ballot}) when InBallot > Ballot -> bad_ballot;
 
 decision_hb_pre(_, _, #state{status=?follower, entries=Entries}) ->
@@ -151,7 +151,7 @@ decision_hb_pre(_, _, #state{status=?follower, entries=Entries}) ->
         prepared = ets:lookup_element(Entries, ?heartbeat, #record.state),
         ok
     catch _:_ ->
-        no_prepared
+        not_prepared
     end;
 
 decision_hb_pre(_, ClockTime, #state{status=?leader, entries=Entries}) ->
@@ -164,7 +164,7 @@ decision_hb_pre(_, ClockTime, #state{status=?leader, entries=Entries}) ->
             false -> not_ready
         end
     catch _:_ ->
-        no_prepared
+        not_prepared
     end.
 
 -spec decision_hb(ballot(), t()) -> ok | decision_error().
@@ -183,11 +183,16 @@ decision_hb(Ballot, S=#state{entries=Entries, index=Idx}) ->
 %%% transaction api
 %%%===================================================================
 
--spec prepare(term(), #{}, #{}, vclock(), t()) -> {red_vote(), ballot(), vclock()}
-                                                | {already_decided, red_vote(), vclock()}.
+-spec prepare(TxId :: term(),
+              RS :: #{key() => grb_time:ts()},
+              WS :: #{key() => val()},
+              SnapshotVC :: vclock(),
+              LastRed :: cache(key(), grb_time:ts()),
+              State :: t()) -> {red_vote(), ballot(), vclock()}
+                             | {already_decided, red_vote(), vclock()}.
 
-prepare(TxId, RS, WS, SnapshotVC, #state{status=?leader, ballot=Ballot,
-                                         entries=Entries, index=Idx}) ->
+prepare(TxId, RS, WS, SnapshotVC, LastRed, #state{status=?leader, ballot=Ballot,
+                                                  entries=Entries, index=Idx}) ->
     Id = {tx, TxId},
     Status =
         try ets:lookup_element(Entries, Id, #record.state)
@@ -210,7 +215,7 @@ prepare(TxId, RS, WS, SnapshotVC, #state{status=?leader, ballot=Ballot,
 
         empty ->
             RedTs = grb_time:timestamp(),
-            {Decision, VC0} = check_transaction(RS, WS, SnapshotVC),
+            {Decision, VC0} = check_transaction(RS, WS, SnapshotVC, LastRed),
             PrepareVC = grb_vclock:set_time(?RED_REPLICA, RedTs, VC0),
 
             true = ets:insert(Entries, #record{id=Id, writeset=WS, red=RedTs, clock=PrepareVC,
@@ -242,7 +247,7 @@ decision_pre(_, Id, _, _, #state{status=?follower, entries=Entries}) ->
         prepared = ets:lookup_element(Entries, Id, #record.state),
         ok
     catch _:_ ->
-        no_prepared
+        not_prepared
     end;
 
 decision_pre(_, Id, CommitRed, ClockTime, #state{status=?leader, entries=Entries}) ->
@@ -253,7 +258,7 @@ decision_pre(_, Id, CommitRed, ClockTime, #state{status=?leader, entries=Entries
             false -> not_ready
         end
     catch _:_ ->
-        no_prepared
+        not_prepared
     end.
 
 -spec decision(ballot(), term(), red_vote(), vclock(), t()) -> ok | decision_error().
@@ -277,9 +282,40 @@ decision(Ballot, TxId, Vote, CommitVC, S=#state{entries=Entries, index=Idx}) ->
     end.
 
 
-%% todo(borja, red)
--spec check_transaction(#{}, #{}, vclock()) -> {red_vote(), vclock()}.
-check_transaction(_, _, VC) -> {ok, VC}.
+%% todo(borja, red): check against prep/dec
+
+-spec check_transaction(RS :: #{key() => grb_time:ts()},
+                        WS :: #{key() => val()},
+                        CommitVC :: vclock(),
+                        LastRed :: grb_main_vnode:last_red()) -> {red_vote(), vclock()}.
+
+check_transaction(RS, _, CommitVC, LastRed) ->
+    AllReplicas = [?RED_REPLICA | grb_dc_manager:all_replicas()],
+    maps:fold(fun
+        (_Key, _Vsn, {{abort, _}, _}=Err) ->
+            Err;
+
+        (Key, Vsn, {ok, AccVC}) ->
+            try
+                LastRedVsn = ets:lookup_element(LastRed, Key, #last_red_record.red),
+                case LastRedVsn =< Vsn of
+                    false -> {{abort, stale_committed}, CommitVC};
+                    true ->
+                        PrepVC = compact_clocks(AllReplicas, AccVC,
+                                                ets:lookup_element(LastRed, Key, #last_red_record.clocks)),
+                        {ok, PrepVC}
+                end
+            catch _:_ ->
+                {ok, AccVC}
+            end
+
+    end, {ok, CommitVC}, RS).
+
+-spec compact_clocks([replica_id()], vclock(), [vclock()]) -> vclock().
+compact_clocks(AtReplicas, Init, Clocks) ->
+    lists:foldl(fun(VC, Acc) ->
+        grb_vclock:max_at_keys(AtReplicas, VC, Acc)
+    end, Init, Clocks).
 
 -ifdef(TEST).
 
@@ -310,15 +346,18 @@ grb_paxos_state_heartbeat_test() ->
         ?assertEqual(false, grb_paxos_state:get_next_ready(LR, F))
     end).
 
+%% todo(borja, test): figure out if we can setup / teardown this
 grb_paxos_state_transaction_test() ->
+    ok = persistent_term:put({grb_dc_manager, my_replica}, ignore),
+    LastRed = ets:new(dummy, [set, {keypos, #last_red_record.key}]),
     with_states([grb_paxos_state:leader(),
                  grb_paxos_state:follower()], fun([L, F]) ->
 
         TxId = tx_1, RS = #{}, WS = #{}, PVC = #{},
 
-        Res={ok, Ballot, CVC} = grb_paxos_state:prepare(TxId, RS, WS, PVC, L),
+        Res={ok, Ballot, CVC} = grb_paxos_state:prepare(TxId, RS, WS, PVC, LastRed, L),
         %% preparing again should result in the same result
-        ?assertEqual(Res, grb_paxos_state:prepare(TxId, RS, WS, PVC, L)),
+        ?assertEqual(Res, grb_paxos_state:prepare(TxId, RS, WS, PVC, LastRed, L)),
 
         ok = grb_paxos_state:accept(Ballot, TxId, WS, ok, CVC, F),
 
@@ -326,7 +365,7 @@ grb_paxos_state_transaction_test() ->
         ok = grb_paxos_state:decision(Ballot, TxId, ok, CVC, F),
 
         %% preparing after decision should return early
-        ?assertEqual({already_decided, ok, CVC} , grb_paxos_state:prepare(TxId, RS, WS, PVC, L)),
+        ?assertEqual({already_decided, ok, CVC} , grb_paxos_state:prepare(TxId, RS, WS, PVC, LastRed, L)),
 
         Expected = grb_vclock:get_time(?RED_REPLICA, CVC),
         Ready={CommitTime, WS, Clock} = grb_paxos_state:get_next_ready(0, L),
@@ -336,7 +375,9 @@ grb_paxos_state_transaction_test() ->
 
         ?assertEqual(false, grb_paxos_state:get_next_ready(CommitTime, L)),
         ?assertEqual(false, grb_paxos_state:get_next_ready(CommitTime, F))
-    end).
+    end),
+    true = ets:delete(LastRed),
+    true = persistent_term:erase({grb_dc_manager, my_replica}).
 
 grb_paxos_state_get_next_ready_test() ->
     VC = fun(I) -> #{?RED_REPLICA => I} end,
@@ -419,5 +460,18 @@ grb_paxos_state_hb_clash_test() ->
         ?assertEqual({heartbeat, Ts0}, grb_paxos_state:get_next_ready(0, L)),
         ?assertEqual({heartbeat, Ts1}, grb_paxos_state:get_next_ready(Ts0, L))
     end).
+
+grb_paxos_state_check_transactions_test() ->
+    LastRed = ets:new(dummy, [set, {keypos, #last_red_record.key}]),
+    ok = persistent_term:put({grb_dc_manager, my_replica}, undefined),
+
+    ?assertEqual({ok, #{}}, check_transaction(#{}, #{}, #{}, LastRed)),
+
+    ets:insert(LastRed, #last_red_record{key=0, red=10, length=1, clocks=[#{?RED_REPLICA => 10}]}),
+    ?assertEqual({{abort, stale_committed}, #{}}, check_transaction(#{0 => 9}, #{}, #{}, LastRed)),
+    ?assertMatch({ok, #{?RED_REPLICA := 10}}, check_transaction(#{0 => 11}, #{}, #{}, LastRed)),
+
+    true = ets:delete(LastRed),
+    true = persistent_term:erase({grb_dc_manager, my_replica}).
 
 -endif.

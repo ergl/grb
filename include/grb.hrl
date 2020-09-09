@@ -29,6 +29,7 @@
 
 %% Different ETS tables
 -define(OP_LOG_TABLE, op_log_table).
+-define(OP_LOG_LAST_RED, op_log_last_red_table).
 -define(PARTITION_CLOCK_TABLE, partition_clock_table).
 -define(CLOG(Replica, Partition), {commit_log, Replica, Partition}).
 
@@ -52,6 +53,13 @@
 -type red_vote() :: ok | {abort, atom()}.
 
 -type ballot() :: non_neg_integer().
+
+-record(last_red_record, {
+    key :: key(),
+    red :: grb_time:ts(),
+    length :: non_neg_integer(),
+    clocks :: [vclock()]
+}).
 
 -export_type([partition_id/0,
               index_node/0,

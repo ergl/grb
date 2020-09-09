@@ -120,6 +120,7 @@ get_index_nodes() ->
 new_cache(Partition, Name) ->
     new_cache(Partition, Name, [set, protected, named_table, {read_concurrency, true}]).
 
+-spec new_cache(partition_id(), atom(), [term()]) -> cache_id().
 new_cache(Partition, Name, Options) ->
     CacheName = cache_name(Partition, Name),
     case ets:info(CacheName) of

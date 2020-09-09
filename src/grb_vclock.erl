@@ -76,7 +76,7 @@ max(Left, Right) ->
 
 -spec max_at(T, vc(T), vc(T)) -> vc(T).
 max_at(Key, Left, Right) ->
-    Left#{Key => erlang:max(maps:get(Key, Left, 0), maps:get(Key, Right, 0))}.
+    Left#{Key => erlang:max(get_time(Key, Left), get_time(Key, Right))}.
 
 -spec max_at_keys([T], vc(T), vc(T)) -> vc(T).
 max_at_keys(Keys, Left, Right) ->

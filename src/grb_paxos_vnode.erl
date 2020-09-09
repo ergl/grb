@@ -50,6 +50,8 @@
     deliver_interval :: non_neg_integer(),
     decision_retry_interval :: non_neg_integer(),
 
+    %% read replica of the last version cache by grb_main_vnode
+    op_log_red_replica :: atom(),
     synod_state = undefined :: grb_paxos_state:t() | undefined,
     heartbeat_process = undefined :: pid() | undefined
 }).
@@ -118,6 +120,7 @@ init([Partition]) ->
     State = #state{partition=Partition,
                    deliver_interval=DeliverInterval,
                    decision_retry_interval=RetryInterval,
+                   op_log_red_replica=grb_dc_utils:cache_name(Partition, ?OP_LOG_LAST_RED),
                    synod_state=undefined},
     {ok, State}.
 
