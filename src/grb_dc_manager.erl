@@ -214,6 +214,9 @@ start_propagation_processes() ->
     ok.
 
 -spec start_paxos_unique_leader() -> ok.
+-ifdef(BLUE_KNOWN_VC).
+start_paxos_unique_leader() -> ok.
+-else.
 start_paxos_unique_leader() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     LocalNodes = riak_core_ring:all_members(Ring),
@@ -224,6 +227,7 @@ start_paxos_unique_leader() ->
     ok = grb_paxos_vnode:init_leader_state(),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
+-endif.
 
 -spec start_paxos_leader() -> ok.
 start_paxos_leader() ->
