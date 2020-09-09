@@ -43,7 +43,8 @@
 
     %% A pair of inverted indices over the transactions read/write sets
     %% Used to compute write-write and read-write conflicts in a quick way
-    pending_reads :: cache_id()
+    pending_reads :: cache_id(),
+    writes_cache :: cache_id()
 }).
 
 -type decision_error() :: bad_ballot | not_prepared | not_ready.
@@ -84,13 +85,15 @@ fresh_state(Status) ->
     #state{status=Status,
            entries=ets:new(state_entries, [set, {keypos, #record.id}]),
            index=ets:new(state_entries_index, [ordered_set, {keypos, #index_entry.red}]),
-           pending_reads=ets:new(state_pending_reads, [bag])}.
+           pending_reads=ets:new(state_pending_reads, [bag]),
+           writes_cache=ets:new(state_pending_writes, [ordered_set])}.
 
 -spec delete(t()) -> ok.
-delete(#state{entries=Entries, index=Index, pending_reads=PendingReads}) ->
+delete(#state{entries=Entries, index=Index, pending_reads=PendingReads, writes_cache=Writes}) ->
     true = ets:delete(Entries),
     true = ets:delete(Index),
     true = ets:delete(PendingReads),
+    true = ets:delete(Writes),
     ok.
 
 %%%===================================================================
@@ -201,7 +204,8 @@ decision_hb(Ballot, S=#state{entries=Entries, index=Idx}) ->
 prepare(TxId, RS, WS, SnapshotVC, LastRed, S=#state{status=?leader,
                                                     ballot=Ballot,
                                                     entries=Entries,
-                                                    pending_reads=PendingReads}) ->
+                                                    pending_reads=PendingReads,
+                                                    writes_cache=PendingWrites}) ->
 
     Id = {tx, TxId},
     Status =
@@ -225,7 +229,7 @@ prepare(TxId, RS, WS, SnapshotVC, LastRed, S=#state{status=?leader,
 
         empty ->
             RedTs = grb_time:timestamp(),
-            {Decision, VC0} = check_transaction(RS, WS, SnapshotVC, LastRed, PendingReads),
+            {Decision, VC0} = check_transaction(RS, WS, SnapshotVC, LastRed, PendingReads, PendingWrites),
             PrepareVC = grb_vclock:set_time(?RED_REPLICA, RedTs, VC0),
 
             ok = insert_prepared(Id, RS, WS, RedTs, PrepareVC, Decision, S),
@@ -243,13 +247,19 @@ accept(Ballot, TxId, RS, WS, Vote, PrepareVC, S=#state{ballot=Ballot}) ->
 -spec insert_prepared(record_id(), #{}, #{}, grb_time:ts(), vclock(), red_vote(), t()) -> ok.
 insert_prepared(Id, RS, WS, RedTs, VC, Decision, #state{index=Idx,
                                                         entries=Entries,
-                                                        pending_reads=Reads}) ->
+                                                        pending_reads=Reads,
+                                                        writes_cache=Writes}) ->
 
     Record = case Decision of
         ok ->
             %% only add the keys if the transaction is committed, otherwise, don't bother
             ReadKeys = maps:keys(RS),
             true = ets:insert(Reads, [{K, Id} || K <- ReadKeys]),
+            %% We can't do the same for reads, because we need to distinguish between prepared
+            %% and decided writes. We can't do update_element or select_repace over bag tables,
+            %% so use a normal ordered_set with a double key of {Key, Identifier}, which should
+            %% be unique
+            true = ets:insert(Writes, [ {{K, Id}, prepared, RedTs} || K <- maps:keys(WS)]),
             #record{id=Id, read_keys=ReadKeys, writeset=WS,
                     red=RedTs, clock=VC, state=prepared, vote=Decision};
         _ ->
@@ -311,24 +321,36 @@ decision(Ballot, TxId, Vote, CommitVC, S=#state{entries=Entries, index=Idx}) ->
                         WS :: #{key() => val()},
                         CommitVC :: vclock(),
                         LastRed :: grb_main_vnode:last_red(),
-                        PrepReads :: cache_id()) -> {red_vote(), vclock()}.
+                        PrepReads :: cache_id(),
+                        Writes :: cache_id()) -> {red_vote(), vclock()}.
 
-check_transaction(RS, WS, CommitVC, LastRed, PrepReads) ->
-    case check_prepared(RS, WS, PrepReads) of
+check_transaction(RS, WS, CommitVC, LastRed, PrepReads, Writes) ->
+    case check_prepared(RS, WS, PrepReads, Writes) of
         {abort, _}=Abort ->
             {Abort, CommitVC};
         ok ->
             check_op_log(RS, CommitVC, LastRed)
     end.
 
--spec check_prepared(#{}, #{key() => val()}, cache_id()) -> red_vote().
-check_prepared(_RS, WS, PendingReads) ->
-    WRConflict = lists:any(fun(Key) ->
-        true =:= ets:member(PendingReads, Key)
-    end, maps:keys(WS)),
-    case WRConflict of
+-spec check_prepared(RS :: #{key() => grb_time:ts()},
+                     WS :: #{key() => val()},
+                     PendingReads :: cache_id(),
+                     PendingWrites :: cache_id()) -> red_vote().
+
+check_prepared(RS, WS, PendingReads, PendingWrites) ->
+    RWConflict = lists:any(fun(Key) ->
+        0 =/= ets:select_count(PendingWrites, [{ {{Key, '_'}, prepared, '_'}, [], [true] }])
+    end, maps:keys(RS)),
+    case RWConflict of
         true -> {abort, conflict};
-        false -> ok
+        false ->
+            WRConflict = lists:any(fun(Key) ->
+                true =:= ets:member(PendingReads, Key)
+            end, maps:keys(WS)),
+            case WRConflict of
+                true -> {abort, conflict};
+                false -> ok
+            end
     end.
 
 -spec check_op_log(#{key() => grb_time:ts()}, vclock(), cache_id()) -> {red_vote(), vclock()}.
@@ -504,16 +526,41 @@ grb_paxos_state_hb_clash_test() ->
         ?assertEqual({heartbeat, Ts1}, grb_paxos_state:get_next_ready(Ts0, L))
     end).
 
-grb_paxos_state_check_prepared_test() ->
-    PendingReads = ets:new(dummy, [bag]),
+%%%% fixme(borja, red): This shouldn't fail
+%%grb_paxos_state_tx_clash_test() ->
+%%    VC = fun(I) -> #{?RED_REPLICA => I} end,
+%%
+%%    with_states(grb_paxos_state:follower(), fun(F) ->
+%%        ok = grb_paxos_state:accept(0, tx_1, #{a => 0}, ok, VC(0), F),
+%%        ok = grb_paxos_state:accept(0, tx_2, #{a => 1}, ok, VC(5), F),
+%%
+%%        ok = grb_paxos_state:decision(0, tx_1, ok, VC(5), F),
+%%        ok = grb_paxos_state:decision(0, tx_2, ok, VC(5), F),
+%%
+%%        ?assertEqual([ {5, #{a => 0}, VC(5)}, {5, #{a => 1}, VC(5)} ],
+%%                     grb_paxos_state:get_next_ready(0, F) )
+%%    end).
 
-    ?assertEqual(ok, check_prepared(#{}, #{}, PendingReads)),
+grb_paxos_state_check_prepared_test() ->
+    PendingReads = ets:new(dummy_reads, [bag]),
+    PendingWrites =  ets:new(dummy_writes, [ordered_set]),
+
+    ?assertEqual(ok, check_prepared(#{}, #{}, PendingReads, PendingWrites)),
 
     true = ets:insert(PendingReads, [{a, ignore}, {b, ignore}, {c, ignore}]),
-    ?assertMatch({abort, conflict}, check_prepared(#{}, #{a => <<>>}, PendingReads)),
-    ?assertMatch(ok, check_prepared(#{}, #{d => <<"hey">>}, PendingReads)),
+    ?assertMatch({abort, conflict}, check_prepared(#{}, #{a => <<>>}, PendingReads, PendingWrites)),
+    ?assertMatch(ok, check_prepared(#{}, #{d => <<"hey">>}, PendingReads, PendingWrites)),
 
-    true = ets:delete(PendingReads).
+    %% The first aborts over a read-write conflict, while the second one doesn't, because `b` is decided
+    true = ets:insert(PendingWrites, [{{a, tx_1}, prepared, 0}, {{b, tx_2}, decided, 0}]),
+    ?assertMatch({abort, conflict}, check_prepared(#{a => 0}, #{}, PendingReads, PendingWrites)),
+    ?assertMatch(ok, check_prepared(#{b => 0}, #{}, PendingReads, PendingWrites)),
+
+    %% aborts due to write-read conflict
+    ?assertMatch({abort, conflict}, check_prepared(#{a => 0, b => 0}, #{a => <<>>}, PendingReads, PendingWrites)),
+
+    true = ets:delete(PendingReads),
+    true = ets:delete(PendingWrites).
 
 grb_paxos_state_check_op_log_test() ->
     LastRed = ets:new(dummy, [set, {keypos, #last_red_record.key}]),
