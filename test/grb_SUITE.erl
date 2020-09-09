@@ -168,6 +168,8 @@ stable_vc_red_test(C) ->
     timer:sleep(500),
     %% What should be the lower bound?
     MinTime = lists:min(Times),
+    %% todo(borja, red): This test should be run without red heartbeats, since it will screw the timings
+    %% either find a way to make it work, or disable this test
     lists:foreach(fun({Partition, Node}) ->
         %% All nodes should agree on the red timestamp
         MinTime = erpc:call(Node, grb_propagation_vnode, stable_red, [Partition])
