@@ -10,6 +10,12 @@
 -define(heartbeat, heartbeat_entry).
 -type status() :: ?leader | ?follower.
 
+%% How many commit times to delete at once
+%% If this is too low, we could spend quite a bit of time deleting
+%% If the value is too high, we could hurt performance from copying too much
+%% todo(borja, red): Make config for this
+-define(PRUNE_LIMIT, 50).
+
 -type record_id() :: ?heartbeat | {tx, term()}.
 -record(record, {
     id :: record_id(),
@@ -58,8 +64,9 @@
          follower/0,
          delete/1]).
 
-%% ready api
--export([get_next_ready/2]).
+%% ready / prune api
+-export([get_next_ready/2,
+         prune_decided_before/2]).
 
 %% heartbeat api
 -export([prepare_hb/1,
@@ -98,7 +105,7 @@ delete(#state{entries=Entries, index=Index, pending_reads=PendingReads, writes_c
     ok.
 
 %%%===================================================================
-%%% ready
+%%% ready / prune
 %%%===================================================================
 
 -spec get_next_ready(grb_time:ts(), t()) -> false | {heartbeat, grb_time:ts()} | {grb_time:ts(), #{}, vclock()}.
@@ -135,6 +142,47 @@ prep_committed_between(From, To, Table) ->
                              [{'andalso', {'>', '$1', {const, From}},
                               {'<', '$1', {const, To}}}],
                              [true]  }]).
+
+%% @doc Remove all transactions in decidedRed with a commitVC[red] timestamp lower than the given one
+%%
+%%      This should only be done when the caller is sure that _all_ replicas have delivered all
+%%      transactions below the supplied time.
+%%
+%%      It will clean up all pending data, and after this, it will be possible to re-prepare a
+%%      transaction with the same transaction identifier.
+%%
+-spec prune_decided_before(grb_time:ts(), t()) -> ok.
+-dialyzer({nowarn_function, prune_decided_before/2}).
+prune_decided_before(MinLastDelivered, #state{entries=Entries, index=Idx, writes_cache=WriteKeys}) ->
+    Result = ets:select(Idx,
+                        [{ #index_entry{red='$1', id='$2', state=decided, vote='$3', _='_'},
+                           [{'<', '$1', {const, MinLastDelivered}}],
+                           [{{'$1', '$2', '$3'}}] }],
+                        ?PRUNE_LIMIT),
+
+    prune_decided_before_continue(Entries, Idx, WriteKeys, Result).
+
+-spec prune_decided_before_continue(Entries :: cache_id(),
+                                    Idx :: cache_id(),
+                                    Writes :: cache_id(),
+                                    Match :: ( {[{grb_time:ts(), record_id()}], ets:continuation()}
+                                               | '$end_of_table') ) -> ok.
+
+prune_decided_before_continue(_Entries, _Idx, _Writes, '$end_of_table') -> ok;
+prune_decided_before_continue(Entries, Idx, Writes, {Objects, Cont}) ->
+    lists:foreach(fun({Time, Id, Decision}) ->
+        ok = clear_pending(Id, Decision, Entries, Writes),
+        true = ets:delete(Idx, Time),
+        true = ets:delete(Entries, Id)
+    end, Objects),
+    prune_decided_before_continue(Entries, Idx, Writes, ets:select(Cont)).
+
+-spec clear_pending(record_id(), red_vote(), cache_id(), cache_id()) -> ok.
+clear_pending(_Id, {abort, _}, _Entries, _Writes) -> ok;
+clear_pending(?heartbeat, ok, _Entries, _Writes) -> ok;
+clear_pending(Id, ok, Entries, Writes) ->
+    Keys = ets:lookup_element(Entries, Id, #record.write_keys),
+    lists:foreach(fun(K) -> ets:delete(Writes, {K, Id}) end, Keys).
 
 %%%===================================================================
 %%% heartbeat api
@@ -661,6 +709,48 @@ grb_paxos_state_check_committed_test() ->
 
     true = ets:delete(LastRed),
     true = ets:delete(PendingWrites),
+    true = persistent_term:erase({grb_dc_manager, my_replica}).
+
+grb_paxos_state_prune_decided_before_test() ->
+    ok = persistent_term:put({grb_dc_manager, my_replica}, ignore),
+    LastRed = ets:new(dummy, [set, {keypos, #last_red_record.key}]),
+
+    with_states(grb_paxos_state:leader(), fun(L) ->
+
+        TxId1 = tx_1, RS1 = #{a => 5}, WS1 = #{a => <<"hello">>}, PVC1 = #{},
+
+        {ok, Ballot, CVC1} = grb_paxos_state:prepare(TxId1, RS1, WS1, PVC1, LastRed, L),
+        ok = grb_paxos_state:decision(Ballot, TxId1, ok, CVC1, L),
+
+        %% preparing after decision should return early
+        ?assertEqual({already_decided, ok, CVC1} , grb_paxos_state:prepare(TxId1, RS1, WS1, PVC1, LastRed, L)),
+
+        Expected = grb_vclock:get_time(?RED_REPLICA, CVC1),
+        ?assertEqual({Expected, WS1, CVC1}, grb_paxos_state:get_next_ready(0, L)),
+        ?assertEqual(false, grb_paxos_state:get_next_ready(Expected, L)),
+
+        %% preparing even after delivery should return early
+        ?assertEqual({already_decided, ok, CVC1} , grb_paxos_state:prepare(TxId1, RS1, WS1, PVC1, LastRed, L)),
+
+        %% let's do a heartbeat now
+        {Ballot, _} = grb_paxos_state:prepare_hb(L),
+        ok = grb_paxos_state:decision_hb(Ballot, L),
+        {heartbeat, LR} = grb_paxos_state:get_next_ready(Expected, L),
+        ?assertEqual(false, grb_paxos_state:get_next_ready(LR, L)),
+
+        %% prune, now we should only have the heartbeat
+        ok = grb_paxos_state:prune_decided_before(Expected + 1, L),
+        ?assertMatch({heartbeat, LR}, grb_paxos_state:get_next_ready(0, L)),
+
+        %% but if we prune past that, then the heartbeat should be gone
+        ok = grb_paxos_state:prune_decided_before(LR + 1, L),
+        ?assertMatch(false, grb_paxos_state:get_next_ready(0, L)),
+
+        %% now we can prepare this transaction again
+        ?assertMatch({ok, Ballot, #{}} , grb_paxos_state:prepare(TxId1, RS1, WS1, PVC1, LastRed, L))
+    end),
+
+    true = ets:delete(LastRed),
     true = persistent_term:erase({grb_dc_manager, my_replica}).
 
 -endif.
