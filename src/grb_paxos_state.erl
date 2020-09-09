@@ -14,6 +14,7 @@
 -record(record, {
     id :: record_id(),
     read_keys = [] :: [key()],
+    write_keys = [] :: [key()],
     writeset = #{} :: #{},
     red :: grb_time:ts(),
     clock = undefined :: vclock() | undefined,
@@ -259,8 +260,9 @@ insert_prepared(Id, RS, WS, RedTs, VC, Decision, #state{index=Idx,
             %% and decided writes. We can't do update_element or select_repace over bag tables,
             %% so use a normal ordered_set with a double key of {Key, Identifier}, which should
             %% be unique
-            true = ets:insert(Writes, [ {{K, Id}, prepared, RedTs} || K <- maps:keys(WS)]),
-            #record{id=Id, read_keys=ReadKeys, writeset=WS,
+            WriteKeys = maps:keys(WS),
+            true = ets:insert(Writes, [ {{K, Id}, prepared, RedTs} || K <- WriteKeys]),
+            #record{id=Id, read_keys=ReadKeys, write_keys=WriteKeys, writeset=WS,
                     red=RedTs, clock=VC, state=prepared, vote=Decision};
         _ ->
             %% don't store read keys, waste of space
@@ -295,13 +297,30 @@ decision_pre(_, Id, CommitRed, ClockTime, #state{status=?leader, entries=Entries
     end.
 
 -spec decision(ballot(), term(), red_vote(), vclock(), t()) -> ok | decision_error().
-decision(Ballot, TxId, Vote, CommitVC, S=#state{entries=Entries, index=Idx}) ->
+decision(Ballot, TxId, Vote, CommitVC, S=#state{entries=Entries, index=Idx,
+                                                pending_reads=PrepReads, writes_cache=WriteCache}) ->
     Id = {tx, TxId},
     RedTs = grb_vclock:get_time(?RED_REPLICA, CommitVC),
     case decision_pre(Ballot, Id, RedTs, grb_time:timestamp(), S) of
         ok ->
-            OldTs = ets:lookup_element(Entries, Id, #record.red),
+            [{OldTs, OldVote}] =
+                ets:select(Entries,
+                           [{ #record{id=Id, red='$1', vote='$2', _='_'}, [], [{{'$1', '$2'}}] }]),
+
             true = ets:delete(Idx, OldTs),
+            case OldVote of
+                ok ->
+                    %% if we voted commit during prepare, we need to clean up / move pending data
+                    [{RKeys, WKeys}] =
+                        ets:select(Entries,
+                                   [{ #record{id=Id, read_keys='$1', write_keys='$2', _='_'}, [],
+                                       [{{'$1', '$2'}}] }]),
+
+                    move_pending_data(Id, RedTs, Vote, RKeys, WKeys, PrepReads, WriteCache);
+                _ ->
+                    %% if we voted abort, we didn't store anything
+                    ok
+            end,
 
             true = ets:update_element(Entries, Id, [{#record.red, RedTs},
                                                     {#record.clock, CommitVC},
@@ -314,8 +333,32 @@ decision(Ballot, TxId, Vote, CommitVC, S=#state{entries=Entries, index=Idx}) ->
         Other -> Other
     end.
 
+-spec move_pending_data(Id :: record_id(),
+                        RedTs :: grb_time:ts(),
+                        Vote :: red_vote(),
+                        RKeys :: [key()],
+                        WKeys :: [key()],
+                        PendingReads :: cache_id(),
+                        WriteCache :: cache_id()) -> ok.
 
-%% todo(borja, red): check against dec
+move_pending_data(Id, RedTs, Vote, RKeys, WKeys, PendingReads, WriteCache) ->
+    %% even if the new vote is abort, we clean up the reads,
+    %% since we're moving out of preparedRed
+    lists:foreach(fun(ReadKey) ->
+        ets:delete_object(PendingReads, {ReadKey, Id})
+    end, RKeys),
+
+    case Vote of
+        {abort, _} ->
+            %% if the vote is abort, don't bother to move, simply delete
+            lists:foreach(fun(K) -> ets:delete(WriteCache, {K, Id}) end, WKeys);
+        ok ->
+            %% if the vote is commit, we should mark all the entries as decided,
+            %% and add the red timestamp
+            lists:foreach(fun(K) ->
+                true = ets:update_element(WriteCache, {K, Id}, [{2, decided}, {3, RedTs}])
+            end, WKeys)
+    end.
 
 -spec check_transaction(RS :: #{key() => grb_time:ts()},
                         WS :: #{key() => val()},
@@ -329,7 +372,7 @@ check_transaction(RS, WS, CommitVC, LastRed, PrepReads, Writes) ->
         {abort, _}=Abort ->
             {Abort, CommitVC};
         ok ->
-            check_op_log(RS, CommitVC, LastRed)
+            check_committed(RS, CommitVC, Writes, LastRed)
     end.
 
 -spec check_prepared(RS :: #{key() => grb_time:ts()},
@@ -353,28 +396,51 @@ check_prepared(RS, WS, PendingReads, PendingWrites) ->
             end
     end.
 
--spec check_op_log(#{key() => grb_time:ts()}, vclock(), cache_id()) -> {red_vote(), vclock()}.
-check_op_log(RS, CommitVC, LastRed) ->
+-spec check_committed(#{key() => grb_time:ts()}, vclock(), cache_id(), cache_id()) -> {red_vote(), vclock()}.
+check_committed(RS, CommitVC, PendingWrites, LastRed) ->
     AllReplicas = [?RED_REPLICA | grb_dc_manager:all_replicas()],
-    maps:fold(fun
-        (_Key, _Vsn, {{abort, _}, _}=Err) ->
-            Err;
+    try
+        FinalVC = maps:fold(fun(Key, Version, AccVC) ->
+            case stale_decided(Key, Version, PendingWrites) of
+                true ->
+                    throw({{abort, stale_decided}, CommitVC});
+                false ->
+                    Res = stale_committed(Key, Version, AllReplicas, AccVC, LastRed),
+                    case Res of
+                        false ->
+                            throw({{abort, stale_committed}, CommitVC});
 
-        (Key, Vsn, {ok, AccVC}) ->
-            try
-                LastRedVsn = ets:lookup_element(LastRed, Key, #last_red_record.red),
-                case LastRedVsn =< Vsn of
-                    false -> {{abort, stale_committed}, CommitVC};
-                    true ->
-                        PrepVC = compact_clocks(AllReplicas, AccVC,
-                                                ets:lookup_element(LastRed, Key, #last_red_record.clocks)),
-                        {ok, PrepVC}
-                end
-            catch _:_ ->
-                {ok, AccVC}
+                        PrepareVC ->
+                            PrepareVC
+                    end
             end
+        end, CommitVC, RS),
+        {ok, FinalVC}
+    catch Decision ->
+        Decision
+    end.
 
-    end, {ok, CommitVC}, RS).
+-spec stale_decided(key(), grb_time:ts(), cache_id()) -> boolean().
+stale_decided(Key, Version, PendingWrites) ->
+    Match = ets:select(PendingWrites, [{ {{Key, '_'}, decided, '$1'}, [], ['$1'] }]),
+    case Match of
+        [] -> false;
+        Times -> lists:any(fun(T) -> T > Version end, Times)
+    end.
+
+-spec stale_committed(key(), grb_time:ts(), [replica_id()], vclock(), cache_id()) -> false | vclock().
+stale_committed(Key, Version, AtReplicas, CommitVC, LastRed) ->
+    try
+        LastRedVsn = ets:lookup_element(LastRed, Key, #last_red_record.red),
+        case LastRedVsn =< Version of
+            false -> false;
+            true ->
+                compact_clocks(AtReplicas, CommitVC,
+                               ets:lookup_element(LastRed, Key, #last_red_record.clocks))
+        end
+    catch _:_ ->
+        CommitVC
+    end.
 
 -spec compact_clocks([replica_id()], vclock(), [vclock()]) -> vclock().
 compact_clocks(AtReplicas, Init, Clocks) ->
@@ -562,17 +628,33 @@ grb_paxos_state_check_prepared_test() ->
     true = ets:delete(PendingReads),
     true = ets:delete(PendingWrites).
 
-grb_paxos_state_check_op_log_test() ->
-    LastRed = ets:new(dummy, [set, {keypos, #last_red_record.key}]),
+grb_paxos_state_check_committed_test() ->
+    LastRed = ets:new(dummy_red, [set, {keypos, #last_red_record.key}]),
+    PendingWrites =  ets:new(dummy_writes, [ordered_set]),
     ok = persistent_term:put({grb_dc_manager, my_replica}, undefined),
 
-    ?assertEqual({ok, #{}}, check_op_log(#{}, #{}, LastRed)),
+    ?assertEqual({ok, #{}}, check_committed(#{}, #{}, PendingWrites, LastRed)),
 
+    true = ets:insert(PendingWrites, [{{a, tx_1}, prepared, 10},
+                                      {{b, tx_2}, decided, 0},
+                                      {{c, tx_3}, decided, 10}]),
+
+    %% this won't clash with a, even if it has a higher Red time, because it's in prepared, so we don't care
+    ?assertEqual({ok, #{}}, check_committed(#{a => 0}, #{}, PendingWrites, LastRed)),
+
+    %% this commits too, since we're not stale
+    ?assertEqual({ok, #{}}, check_committed(#{b => 5}, #{}, PendingWrites, LastRed)),
+
+    %% this will abort, since tx_3 will be delivered with a higher red timestamp
+    ?assertEqual({{abort, stale_decided}, #{}}, check_committed(#{c => 8}, #{}, PendingWrites, LastRed)),
+
+    %% none of these are affected by the above, since they don't share any keys
     ets:insert(LastRed, #last_red_record{key=0, red=10, length=1, clocks=[#{?RED_REPLICA => 10}]}),
-    ?assertEqual({{abort, stale_committed}, #{}}, check_op_log(#{0 => 9}, #{}, LastRed)),
-    ?assertMatch({ok, #{?RED_REPLICA := 10}}, check_op_log(#{0 => 11}, #{}, LastRed)),
+    ?assertEqual({{abort, stale_committed}, #{}}, check_committed(#{0 => 9}, #{}, PendingWrites, LastRed)),
+    ?assertMatch({ok, #{?RED_REPLICA := 10}}, check_committed(#{0 => 11}, #{}, PendingWrites, LastRed)),
 
     true = ets:delete(LastRed),
+    true = ets:delete(PendingWrites),
     true = persistent_term:erase({grb_dc_manager, my_replica}).
 
 -endif.
