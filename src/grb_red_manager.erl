@@ -38,8 +38,6 @@
 -define(COORD_TABLE, grb_red_manager_coordinators).
 -define(QUORUM_KEY, quorum_size).
 
--type leader_location() :: {local, index_node()} | {remote, replica_id()} | {proxy, node(), replica_id()}.
-
 -record(state, {
     pid_for_tx :: cache(term(), red_coordinator()),
     partition_leaders :: cache(partition_id(), leader_location())

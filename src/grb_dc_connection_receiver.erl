@@ -108,8 +108,31 @@ handle_request(Partition, SourceReplica, #update_clocks{known_vc=KnownVC, stable
 handle_request(Partition, SourceReplica, #update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}) ->
     grb_propagation_vnode:handle_clock_heartbeat_update(Partition, SourceReplica, KnownVC, StableVC);
 
-handle_request(Partition, SourceReplica, #prepare_red{tx_id=TxId, readset=RS, writeset=WS, snapshot_vc=VC}) ->
-    grb_paxos_vnode:remote_prepare(Partition, SourceReplica, TxId, RS, WS, VC);
+handle_request(Partition, Coordinator, #red_prepare{tx_id=TxId, readset=RS, writeset=WS, snapshot_vc=VC}) ->
+    grb_paxos_vnode:prepare({Partition, node()}, TxId, RS, WS, VC, Coordinator);
+
+handle_request(Partition, Coordinator, #red_accept{ballot=Ballot, tx_id=TxId, readset=RS,
+                                                   writeset=WS, decision=Vote, prepare_vc=VC}) ->
+
+    grb_paxos_vnode:accept(Partition, Ballot, TxId, RS, WS, Vote, VC, Coordinator);
+
+handle_request(Partition, Node, #red_accept_ack{ballot=Ballot, tx_id=TxId,
+                                                  decision=Vote, prepare_vc=PrepareVC}) ->
+    MyNode = node(),
+    case Node of
+        MyNode -> grb_red_coordinator:accept_ack(Partition, Ballot, TxId, Vote, PrepareVC);
+        _ -> erpc:call(Node, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC])
+    end;
+
+handle_request(Partition, _SourceReplica, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->
+    grb_paxos_vnode:decide(Partition, Ballot, TxId, Decision, CommitVC);
+
+handle_request(_Partition, Node, #red_already_decided{tx_id=TxId, decision=Vote, commit_vc=CommitVC}) ->
+    MyNode = node(),
+    case Node of
+        MyNode -> grb_red_coordinator:already_decided(TxId, Vote, CommitVC);
+        _ -> erpc:call(Node, grb_red_coordinator, already_decided, [TxId, Vote, CommitVC])
+    end;
 
 handle_request(Partition, SourceReplica, #red_heartbeat{ballot=B, timestamp=Ts}) ->
     grb_paxos_vnode:accept_heartbeat(Partition, SourceReplica, B, Ts);

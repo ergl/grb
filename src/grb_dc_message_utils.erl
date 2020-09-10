@@ -28,8 +28,22 @@ encode_payload(Replica, #update_clocks{known_vc=KnownVC, stable_vc=StableVC}) ->
 encode_payload(Replica, #update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}) ->
     {?UPDATE_CLOCK_HEARTBEAT_KIND, term_to_binary({Replica, KnownVC, StableVC})};
 
-encode_payload(Replica, #prepare_red{tx_id=TxId, readset=RS, writeset=WS, snapshot_vc=VC}) ->
-    {?RED_PREPARE_KIND, term_to_binary({Replica, TxId, RS, WS, VC})};
+encode_payload(Coordinator, #red_prepare{tx_id=TxId, readset=RS, writeset=WS, snapshot_vc=VC}) ->
+    {?RED_PREPARE_KIND, term_to_binary({Coordinator, TxId, RS, WS, VC})};
+
+encode_payload(Coordinator, #red_accept{ballot=Ballot, tx_id=TxId,
+                                        readset=RS, writeset=WS, decision=Vote, prepare_vc=VC}) ->
+
+    {?RED_ACCEPT_KIND, term_to_binary({Coordinator, Ballot, TxId, RS, WS, Vote, VC})};
+
+encode_payload(TargetNode, #red_accept_ack{ballot=Ballot, tx_id=TxId, decision=Vote, prepare_vc=PrepareVC}) ->
+    {?RED_ACCEPT_ACK_KIND, term_to_binary({TargetNode, Ballot, TxId, Vote, PrepareVC})};
+
+encode_payload(Replica, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->
+    {?RED_DECIDE_KIND, term_to_binary({Replica, Ballot, TxId, Decision, CommitVC})};
+
+encode_payload(TargetNode, #red_already_decided{tx_id=TxId, decision=Vote, commit_vc=CommitVC}) ->
+    {?RED_ALREADY_DECIDED_KIND, term_to_binary({TargetNode, TxId, Vote, CommitVC})};
 
 encode_payload(Replica, #red_heartbeat{ballot=B, timestamp=Ts}) ->
     {?RED_HB_KIND, term_to_binary({Replica, B, Ts})};
@@ -58,8 +72,25 @@ decode_payload(<<?UPDATE_CLOCK_HEARTBEAT_KIND:?MSG_KIND_BITS, Payload/binary>>) 
     {FromReplica, #update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}};
 
 decode_payload(<<?RED_PREPARE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {FromReplica, Tx, RS, WS, VC} = binary_to_term(Payload),
-    {FromReplica, #prepare_red{tx_id=Tx, readset=RS, writeset=WS, snapshot_vc=VC}};
+    {Coordinator, Tx, RS, WS, VC} = binary_to_term(Payload),
+    {Coordinator, #red_prepare{tx_id=Tx, readset=RS, writeset=WS, snapshot_vc=VC}};
+
+decode_payload(<<?RED_ACCEPT_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
+    {Coordinator, Ballot, TxId, RS, WS, Vote, VC} = binary_to_term(Payload),
+    {Coordinator, #red_accept{ballot=Ballot, tx_id=TxId,
+                              readset=RS, writeset=WS, decision=Vote, prepare_vc=VC}};
+
+decode_payload(<<?RED_ACCEPT_ACK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
+    {TargetNode, Ballot, TxId, Vote, PrepareVC} = binary_to_term(Payload),
+    {TargetNode, #red_accept_ack{ballot=Ballot, tx_id=TxId, decision=Vote, prepare_vc=PrepareVC}};
+
+decode_payload(<<?RED_DECIDE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
+    {Replica, Ballot, TxId, Decision, CommitVC} = binary_to_term(Payload),
+    {Replica, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}};
+
+decode_payload(<<?RED_ALREADY_DECIDED_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
+    {TargetNode, TxId, Vote, CommitVC} = binary_to_term(Payload),
+    {TargetNode, #red_already_decided{tx_id=TxId, decision=Vote, commit_vc=CommitVC}};
 
 decode_payload(<<?RED_HB_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {FromReplica, B, Ts} = binary_to_term(Payload),
@@ -93,9 +124,16 @@ grb_dc_message_utils_test() ->
         #update_clocks{known_vc=VC, stable_vc=VC},
         #update_clocks_heartbeat{known_vc=VC, stable_vc=VC},
         #replicate_tx{tx_id=ignore, writeset=#{foo => bar}, commit_vc=VC},
-        #prepare_red{tx_id=ignore, readset=#{foo => 0}, writeset=#{foo => bar}, snapshot_vc=VC},
+
+        #red_prepare{tx_id=ignore, readset=#{foo => 0}, writeset=#{foo => bar}, snapshot_vc=VC},
+        #red_accept{ballot=0, tx_id=ignore, readset=#{foo => 0}, writeset=#{foo => bar}, decision=ok, prepare_vc=VC},
+        #red_accept_ack{ballot=0, tx_id=ignore, decision={abort, ignore}, prepare_vc=VC},
+        #red_decision{ballot=10, tx_id=ignore, decision=ok, commit_vc=VC},
+        #red_already_decided{tx_id=ignore, decision=ok, commit_vc=VC},
+
         #red_heartbeat{ballot=4, timestamp=10},
-        #red_heartbeat_ack{ballot=10}
+        #red_heartbeat_ack{ballot=10},
+        #red_heartbeat_decide{ballot=10}
     ],
 
     lists:foreach(fun(Partition) ->

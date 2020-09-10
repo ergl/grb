@@ -16,7 +16,10 @@
          send_heartbeat/4,
          send_clocks_heartbeat/5,
          send_red_prepare/7,
-         send_red_accept/8,
+         send_red_accept/7,
+         send_red_accept_ack/7,
+         send_red_decided/6,
+         send_red_decision/7,
          send_red_heartbeat/5,
          send_red_heartbeat_ack/4,
          send_red_decide_heartbeat/4]).
@@ -169,33 +172,60 @@ send_clocks_heartbeat(ToId, FromId, Partition, KnownVC, StableVC) ->
     end.
 
 -spec send_red_prepare(ToId :: replica_id(),
-                       FromId :: replica_id(),
+                       Coordinator :: red_coord_location(),
                        Partition :: partition_id(),
                        TxId :: term(),
                        RS :: #{},
                        WS :: #{},
                        VC :: vclock()) -> ok | {error, term()}.
-send_red_prepare(ToId, FromId, Partition, TxId, RS, WS, VC) ->
+
+send_red_prepare(ToId, Coordinator, Partition, TxId, RS, WS, VC) ->
     try
         PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
-        grb_dc_connection_sender:send_red_prepare(PoolName, FromId, Partition, TxId, RS, WS, VC)
+        grb_dc_connection_sender:send_red_prepare(PoolName, Coordinator, Partition, TxId, RS, WS, VC)
     catch _:_ ->
         {error, gone}
     end.
 
 -spec send_red_accept(ToId :: replica_id(),
-                      FromId :: replica_id(),
+                      Coordinator :: red_coord_location(),
                       Partition :: partition_id(),
                       TxId :: term(),
                       RS :: #{},
                       WS :: #{},
-                      Prepare :: {red_vote(), ballot(), vclock()},
-                      Coordinator :: red_coord_location()) -> ok | {error, term()}.
+                      Prepare :: {red_vote(), ballot(), vclock()}) -> ok | {error, term()}.
 
-send_red_accept(ToId, FromId, Partition, TxId, RS, WS, PrepareMsg, Coordinator) ->
+send_red_accept(ToId, Coordinator, Partition, TxId, RS, WS, PrepareMsg) ->
     try
         PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
-        grb_dc_connection_sender:send_red_accept(PoolName, FromId, Partition, TxId, RS, WS, PrepareMsg, Coordinator)
+        grb_dc_connection_sender:send_red_accept(PoolName, Coordinator, Partition, TxId, RS, WS, PrepareMsg)
+    catch _:_ ->
+        {error, gone}
+    end.
+
+-spec send_red_accept_ack(replica_id(), node(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+send_red_accept_ack(ToId, ToNode, Partition, Ballot, TxId, Vote, PrepareVC) ->
+    try
+        PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
+        grb_dc_connection_sender:send_red_accept_ack(PoolName, ToNode, Partition, Ballot, TxId, Vote, PrepareVC)
+    catch _:_ ->
+        {error, gone}
+    end.
+
+-spec send_red_decided(replica_id(), node(), partition_id(), term(), red_vote(), vclock()) -> ok.
+send_red_decided(ToId, ToNode, Partition, TxId, Decision, CommitVC) ->
+    try
+        PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
+        grb_dc_connection_sender:send_red_decided(PoolName, ToNode, Partition, TxId, Decision, CommitVC)
+    catch _:_ ->
+        {error, gone}
+    end.
+
+-spec send_red_decision(replica_id(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+send_red_decision(ToId, FromId, Partition, Ballot, TxId, Decision, CommitVC) ->
+    try
+        PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
+        grb_dc_connection_sender:send_red_decision(PoolName, FromId, Partition, Ballot, TxId, Decision, CommitVC)
     catch _:_ ->
         {error, gone}
     end.

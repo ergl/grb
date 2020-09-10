@@ -12,10 +12,18 @@
 -define(BLUE_HB_KIND, 1).
 -define(UPDATE_CLOCK_KIND, 2).
 -define(UPDATE_CLOCK_HEARTBEAT_KIND, 3).
+
+%% Red transactions
 -define(RED_PREPARE_KIND, 4).
--define(RED_HB_KIND, 5).
--define(RED_HB_ACK_KIND, 6).
--define(RED_HB_DECIDE_KIND, 7).
+-define(RED_ACCEPT_KIND, 5).
+-define(RED_ACCEPT_ACK_KIND, 6).
+-define(RED_DECIDE_KIND, 7).
+-define(RED_ALREADY_DECIDED_KIND, 8).
+
+%% Red heartbeats
+-define(RED_HB_KIND, 9).
+-define(RED_HB_ACK_KIND, 10).
+-define(RED_HB_DECIDE_KIND, 11).
 
 -record(replicate_tx, {
     tx_id :: term(),
@@ -37,11 +45,40 @@
     stable_vc :: vclock()
 }).
 
--record(prepare_red, {
+-record(red_prepare, {
     tx_id :: term(),
     readset :: #{},
     writeset :: #{},
     snapshot_vc :: vclock()
+}).
+
+-record(red_accept, {
+    ballot :: ballot(),
+    tx_id :: term(),
+    readset :: #{},
+    writeset :: #{},
+    decision :: term(),
+    prepare_vc :: vclock()
+}).
+
+-record(red_accept_ack, {
+    ballot :: ballot(),
+    tx_id :: term(),
+    decision :: term(),
+    prepare_vc :: vclock()
+}).
+
+-record(red_decision, {
+    ballot :: ballot(),
+    tx_id :: term(),
+    decision :: term(),
+    commit_vc :: vclock()
+}).
+
+-record(red_already_decided, {
+    tx_id :: term(),
+    decision :: term(),
+    commit_vc :: vclock()
 }).
 
 -record(red_heartbeat, {
@@ -61,7 +98,11 @@
                          | #blue_heartbeat{}
                          | #update_clocks{}
                          | #update_clocks_heartbeat{}
-                         | #prepare_red{}
+                         | #red_prepare{}
+                         | #red_accept{}
+                         | #red_accept_ack{}
+                         | #red_decision{}
+                         | #red_already_decided{}
                          | #red_heartbeat{}
                          | #red_heartbeat_ack{}
                          | #red_heartbeat_decide{}.
