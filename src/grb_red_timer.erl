@@ -50,7 +50,7 @@ init([ReplicaId, Partition]) ->
     {ok, Interval} = application:get_env(grb, red_heartbeat_interval),
     State = #state{partition=Partition,
                    replica=ReplicaId,
-                   quorum_size=grb_red_manager:quorum_size(),
+                   quorum_size=length(grb_dc_manager:all_replicas()),
                    interval=Interval,
                    timer=erlang:send_after(Interval, self(), ?red_hb)},
     {ok, State}.

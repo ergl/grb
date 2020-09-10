@@ -68,13 +68,18 @@ persist_unique_leader_info() ->
 
 -spec persist_leader_info() -> ok.
 persist_leader_info() ->
-    ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, length(grb_dc_manager:remote_replicas())),
+    ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, calc_quorum_size()),
     ok = gen_server:call(?MODULE, set_leader).
 
 -spec persist_follower_info(replica_id()) -> ok.
 persist_follower_info(LeaderReplica) ->
-    ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, length(grb_dc_manager:remote_replicas())),
+    ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, calc_quorum_size()),
     ok = gen_server:call(?MODULE, {set_follower, LeaderReplica}).
+
+-spec calc_quorum_size() -> non_neg_integer().
+calc_quorum_size() ->
+    AllLen = length(grb_dc_manager:all_replicas()),
+    floor(AllLen / 2) + 1.
 
 -spec quorum_size() -> non_neg_integer().
 quorum_size() ->
