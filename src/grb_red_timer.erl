@@ -20,9 +20,10 @@
 -record(state, {
     partition :: partition_id(),
     replica :: replica_id(),
-
     quorum_size :: non_neg_integer(),
-    acc = undefined :: {ballot(), non_neg_integer()} | undefined,
+
+    quorum_ack :: pos_integer(),
+    acc_ballot = undefined :: ballot() | undefined,
 
     interval :: non_neg_integer(),
     timer :: reference() | undefined
@@ -48,9 +49,11 @@ handle_accept_ack(Partition, Ballot) ->
 
 init([ReplicaId, Partition]) ->
     {ok, Interval} = application:get_env(grb, red_heartbeat_interval),
+    QuorumSize = length(grb_dc_manager:all_replicas()),
     State = #state{partition=Partition,
                    replica=ReplicaId,
-                   quorum_size=length(grb_dc_manager:all_replicas()),
+                   quorum_size=QuorumSize,
+                   quorum_ack=QuorumSize,
                    interval=Interval,
                    timer=erlang:send_after(Interval, self(), ?red_hb)},
     {ok, State}.
@@ -59,41 +62,33 @@ handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
-handle_cast({accept_ack, Ballot}, State=#state{acc=undefined}) ->
-    {noreply, update_ack_state(Ballot, 1, State)};
-
-handle_cast({accept_ack, Ballot}, State=#state{acc={Ballot, N}}) ->
-    {noreply, update_ack_state(Ballot, N + 1, State)};
-
-handle_cast({accept_ack, BadBallot}, S0) ->
-    %% drop any other ACCEPT_ACK messages, we need only a quorum
-    ?LOG_WARNING("Heartbeat ACCEPT_ACK with bad ballot ~b at ~p", [BadBallot, S0#state.partition]),
-    {noreply, S0};
+handle_cast({accept_ack, InBallot}, S0=#state{acc_ballot=Ballot0, quorum_ack=ToAck}) ->
+    %% todo(borja, red): handle bad ballot?
+    {ok, Ballot} = check_ballot(InBallot, Ballot0),
+    S = case ToAck of
+        N when N > 1 ->
+            S0#state{acc_ballot=Ballot, quorum_ack=ToAck - 1};
+        1 ->
+            #state{partition=Partition, replica=LocalId, interval=Int} = S0,
+            ok = grb_paxos_vnode:broadcast_hb_decision(Partition, LocalId, Ballot),
+            S0#state{acc_ballot=undefined, timer=erlang:send_after(Int, self(), ?red_hb)}
+    end,
+    {noreply, S};
 
 handle_cast(E, S) ->
     ?LOG_WARNING("unexpected cast: ~p~n", [E]),
     {noreply, S}.
 
-handle_info(?red_hb, S=#state{partition=Partition, acc=undefined, timer=Timer}) ->
-
+handle_info(?red_hb, S=#state{partition=Partition, acc_ballot=undefined, quorum_size=QSize, timer=Timer}) ->
     erlang:cancel_timer(Timer),
     ok = grb_paxos_vnode:prepare_heartbeat(Partition),
-    {noreply, S#state{timer=undefined}};
+    {noreply, S#state{timer=undefined, quorum_ack=QSize}};
 
 handle_info(E, S) ->
     logger:warning("unexpected info: ~p~n", [E]),
     {noreply, S}.
 
--spec update_ack_state(ballot(), non_neg_integer(), #state{}) -> #state{}.
-update_ack_state(Ballot, Acked, S0=#state{quorum_size=QSize}) ->
-    case Acked >=  QSize of
-        false ->
-            %% still haven't received quorum, wait
-            S0#state{acc={Ballot, Acked}};
-
-        true ->
-            %% quorum has been reached, broadcast decision and restart with another heartbeat
-            #state{partition=P, replica=LocalId, interval=Interval} = S0,
-            ok = grb_paxos_vnode:broadcast_hb_decision(P, LocalId, Ballot),
-            S0#state{acc=undefined, timer=erlang:send_after(Interval, self(), ?red_hb)}
-    end.
+-spec check_ballot(ballot(), ballot() | undefined) -> {ok, ballot()} | error.
+check_ballot(Ballot, undefined) -> {ok, Ballot};
+check_ballot(InBallot, Ballot) when InBallot =:= Ballot -> {ok, Ballot};
+check_ballot(_, _) -> error.
