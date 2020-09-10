@@ -65,8 +65,9 @@ handle_cast({accept_ack, Ballot}, State=#state{acc=undefined}) ->
 handle_cast({accept_ack, Ballot}, State=#state{acc={Ballot, N}}) ->
     {noreply, update_ack_state(Ballot, N + 1, State)};
 
-handle_cast({accept_ack, _BadBallot}, S0) ->
+handle_cast({accept_ack, BadBallot}, S0) ->
     %% drop any other ACCEPT_ACK messages, we need only a quorum
+    ?LOG_WARNING("Heartbeat ACCEPT_ACK with bad ballot ~b at ~p", [BadBallot, S0#state.partition]),
     {noreply, S0};
 
 handle_cast(E, S) ->

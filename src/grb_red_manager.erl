@@ -63,6 +63,7 @@ pool_spec() ->
 
 -spec persist_unique_leader_info() -> ok.
 persist_unique_leader_info() ->
+    %% todo(borja, red): remove, redundant with calc_quorum_size/0
     ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, 1),
     ok = gen_server:call(?MODULE, set_leader).
 

@@ -204,26 +204,35 @@ accept_hb(Ballot, Ts, #state{status=?follower, ballot=Ballot, entries=Entries, i
     true = ets:insert(Idx, #index_entry{red=Ts, id=?heartbeat, state=prepared, vote=ok}),
     ok.
 
--spec decision_hb_pre(ballot(), grb_time:ts(), t()) -> ok | decision_error().
+-spec decision_hb_pre(ballot(), grb_time:ts(), t()) -> ok | already_decided | decision_error().
 -dialyzer({nowarn_function, decision_hb_pre/3}).
 decision_hb_pre(InBallot, _, #state{ballot=Ballot}) when InBallot > Ballot -> bad_ballot;
 
 decision_hb_pre(_, _, #state{status=?follower, entries=Entries}) ->
     try
-        prepared = ets:lookup_element(Entries, ?heartbeat, #record.state),
-        ok
+        Status = ets:lookup_element(Entries, ?heartbeat, #record.state),
+        case Status of
+            prepared ->
+                ok;
+            decided ->
+                already_decided
+        end
     catch _:_ ->
         not_prepared
     end;
 
 decision_hb_pre(_, ClockTime, #state{status=?leader, entries=Entries}) ->
     try
-        [[prepared, RedTs]] = ets:match(Entries,
-                                        #record{id=?heartbeat, state='$1', red='$2', _='_'}),
-
-        case ClockTime >= RedTs of
-            true -> ok;
-            false -> not_ready
+        [[Status, RedTs]] = ets:match(Entries,
+                                      #record{id=?heartbeat, state='$1', red='$2', _='_'}),
+        case Status of
+            decided ->
+                already_decided;
+            prepared ->
+                case ClockTime >= RedTs of
+                    true -> ok;
+                    false -> not_ready
+                end
         end
     catch _:_ ->
         not_prepared
@@ -232,6 +241,7 @@ decision_hb_pre(_, ClockTime, #state{status=?leader, entries=Entries}) ->
 -spec decision_hb(ballot(), t()) -> ok | decision_error().
 decision_hb(Ballot, S=#state{entries=Entries, index=Idx}) ->
     case decision_hb_pre(Ballot, grb_time:timestamp(), S) of
+        already_decided -> ok;
         ok ->
             RedTs = ets:lookup_element(Entries, ?heartbeat, #record.red),
             true = ets:update_element(Entries, ?heartbeat, {#record.state, decided}),
@@ -325,24 +335,34 @@ insert_prepared(Id, RS, WS, RedTs, VC, Decision, #state{index=Idx,
     true = ets:insert(Idx, #index_entry{red=RedTs, id=Id, state=prepared, vote=Decision}),
     ok.
 
--spec decision_pre(ballot(), record_id(), grb_time:ts(), grb_time:ts(), t()) -> ok | decision_error().
+-spec decision_pre(ballot(), record_id(), grb_time:ts(), grb_time:ts(), t()) -> ok | already_decided | decision_error().
 decision_pre(InBallot, _, _, _, #state{ballot=Ballot}) when InBallot > Ballot ->
     bad_ballot;
 
 decision_pre(_, Id, _, _, #state{status=?follower, entries=Entries}) ->
     try
-        prepared = ets:lookup_element(Entries, Id, #record.state),
-        ok
+        Status = ets:lookup_element(Entries, Id, #record.state),
+        case Status of
+            prepared ->
+                ok;
+            decided ->
+                already_decided
+        end
     catch _:_ ->
         not_prepared
     end;
 
 decision_pre(_, Id, CommitRed, ClockTime, #state{status=?leader, entries=Entries}) ->
     try
-        prepared = ets:lookup_element(Entries, Id, #record.state),
-        case ClockTime >= CommitRed of
-            true -> ok;
-            false -> not_ready
+        Status = ets:lookup_element(Entries, Id, #record.state),
+        case Status of
+            decided ->
+                already_decided;
+            prepared ->
+                case ClockTime >= CommitRed of
+                    true -> ok;
+                    false -> not_ready
+                end
         end
     catch _:_ ->
         not_prepared
@@ -355,6 +375,7 @@ decision(Ballot, TxId, Vote, CommitVC, S=#state{entries=Entries, index=Idx,
     Id = {tx, TxId},
     RedTs = grb_vclock:get_time(?RED_REPLICA, CommitVC),
     case decision_pre(Ballot, Id, RedTs, grb_time:timestamp(), S) of
+        already_decided -> ok;
         ok ->
             [{OldTs, OldVote}] =
                 ets:select(Entries,

@@ -3,10 +3,12 @@
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
-%% api
+%% init api
 -export([init_leader_state/0,
-         init_follower_state/0,
-         prepare_heartbeat/1,
+         init_follower_state/0]).
+
+%% heartbeat api
+-export([prepare_heartbeat/1,
          accept_heartbeat/4,
          broadcast_hb_decision/3,
          decide_heartbeat/2]).
@@ -69,8 +71,8 @@ init_follower_state() ->
 -spec prepare_heartbeat(partition_id()) -> ok.
 prepare_heartbeat(Partition) ->
     riak_core_vnode_master:command({Partition, node()},
-                                   prepare_hb,
-                                   ?master).
+                                    prepare_hb,
+                                    ?master).
 
 -spec accept_heartbeat(partition_id(), replica_id(), ballot(), grb_time:ts()) -> ok.
 accept_heartbeat(Partition, SourceReplica, Ballot, Ts) ->
@@ -209,18 +211,19 @@ handle_command({accept_hb, SourceReplica, Ballot, Ts}, _Sender, S=#state{replica
 %%% leader / follower protocol messages
 %%%===================================================================
 
-handle_command({decide_hb, Ballot}, _Sender, S=#state{decision_retry_interval=Int,
+handle_command({decide_hb, Ballot}, _Sender, S=#state{partition=P,
+                                                      decision_retry_interval=Int,
                                                       synod_state=SynodState}) ->
 
-    ok = decide_hb_internal(Ballot, SynodState, Int),
+    ok = decide_hb_internal(P, Ballot, SynodState, Int),
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("unhandled_command ~p", [Message]),
     {noreply, State}.
 
-handle_info({retry_decide_hb, Ballot}, S=#state{decision_retry_interval=Int, synod_state=SynodState}) ->
-    ok = decide_hb_internal(Ballot, SynodState, Int),
+handle_info({retry_decide_hb, Ballot}, S=#state{partition=P, decision_retry_interval=Int, synod_state=SynodState}) ->
+    ok = decide_hb_internal(P, Ballot, SynodState, Int),
     {ok, S};
 
 handle_info(?deliver, S=#state{partition=Partition,
@@ -252,12 +255,12 @@ reply_local_accept_ack(undefined, Partition, TxId, Vote, PrepareVC) ->
 reply_local_accept_ack(Node, Partition, TxId, Vote, PrepareVC) ->
     erpc:call(Node, grb_red_coordinator, accept_ack, [Partition, TxId, Vote, PrepareVC]).
 
--spec decide_hb_internal(ballot(), grb_paxos_state:t(), non_neg_integer()) -> ok.
+-spec decide_hb_internal(partition_id(), ballot(), grb_paxos_state:t(), non_neg_integer()) -> ok.
 %% this is here due to grb_paxos_state:decision_hb/2, that dialyzer doesn't like
 %% (it thinks it will never return not_ready because that is returned right after
 %% an ets:select with a record)
--dialyzer({no_match, decide_hb_internal/3}).
-decide_hb_internal(Ballot, SynodState, Time) ->
+-dialyzer({no_match, decide_hb_internal/4}).
+decide_hb_internal(P, Ballot, SynodState, Time) ->
     case grb_paxos_state:decision_hb(Ballot, SynodState) of
         ok -> ok;
         not_ready ->
@@ -266,6 +269,7 @@ decide_hb_internal(Ballot, SynodState, Time) ->
             ?LOG_ERROR("Bad heartbeat ballot ~b", [Ballot]),
             ok;
         not_prepared ->
+            ?LOG_ERROR("~p ~p DECIDE_HEARTBEAT(~b) := not_prepared", [P, self(), Ballot]),
             %% todo(borja, red): This might return not_prepared at followers
             %% if the coordinator receives a quorum of ACCEPT_ACK before this follower
             %% receives an ACCEPT, it might be that we receive a DECISION before
