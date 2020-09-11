@@ -4,21 +4,27 @@
 -include("dc_messages.hrl").
 -include_lib("kernel/include/logger.hrl").
 
-%% External API
+%% Constructors
 -export([start_connection/4,
-         send_heartbeat/4,
+         close/1]).
+
+%% Blue Transactions
+-export([send_heartbeat/4,
          send_transaction/4,
          send_clocks/5,
-         send_clocks_heartbeat/5,
-         send_red_prepare/7,
+         send_clocks_heartbeat/5]).
+
+%% Red transactions
+-export([send_red_prepare/7,
          send_red_accept/7,
          send_red_accept_ack/7,
          send_red_decided/6,
-         send_red_decision/7,
-         send_red_heartbeat/5,
-         send_red_heartbeat_ack/4,
-         send_red_decide_heartbeat/4,
-         close/1]).
+         send_red_decision/7]).
+
+%% Red hearbeats
+-export([send_red_heartbeat/6,
+         send_red_heartbeat_ack/6,
+         send_red_decide_heartbeat/6]).
 
 %% Shackle API
 -export([init/1,
@@ -96,17 +102,17 @@ send_red_decided(Pool, ToNode, Partition, TxId, Decision, CommitVC) ->
 send_red_decision(Pool, FromReplica, Partition, Ballot, TxId, Decision, CommitVC) ->
     shackle:call(Pool, {red_decision, FromReplica, Partition, Ballot, TxId, Decision, CommitVC}).
 
--spec send_red_heartbeat(inter_dc_conn(), replica_id(), partition_id(), ballot(), grb_time:ts()) -> ok.
-send_red_heartbeat(Pool, FromReplica, Partition, Ballot, Time) ->
-    shackle:call(Pool, {red_hb, FromReplica, Partition, Ballot, Time}).
+-spec send_red_heartbeat(inter_dc_conn(), replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok.
+send_red_heartbeat(Pool, FromReplica, Partition, Ballot, Id, Time) ->
+    shackle:call(Pool, {red_hb, FromReplica, Partition, Ballot, Id, Time}).
 
--spec send_red_heartbeat_ack(inter_dc_conn(), replica_id(), partition_id(), ballot()) -> ok.
-send_red_heartbeat_ack(Pool, FromReplica, Partition, Ballot) ->
-    shackle:call(Pool, {red_hb_ack, FromReplica, Partition, Ballot}).
+-spec send_red_heartbeat_ack(inter_dc_conn(), replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok.
+send_red_heartbeat_ack(Pool, FromReplica, Partition, Ballot, Id, Time) ->
+    shackle:call(Pool, {red_hb_ack, FromReplica, Partition, Ballot, Id, Time}).
 
--spec send_red_decide_heartbeat(inter_dc_conn(), replica_id(), partition_id(), ballot()) -> ok.
-send_red_decide_heartbeat(Pool, FromReplica, Partition, Ballot) ->
-    shackle:call(Pool, {red_hb_decide, FromReplica, Partition, Ballot}).
+-spec send_red_decide_heartbeat(inter_dc_conn(), replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok.
+send_red_decide_heartbeat(Pool, FromReplica, Partition, Ballot, Id, Time) ->
+    shackle:call(Pool, {red_hb_decide, FromReplica, Partition, Ballot, Id, Time}).
 
 -spec close(inter_dc_conn()) -> ok.
 close(PoolName) ->
@@ -179,16 +185,25 @@ handle_request({red_decision, FromReplica, Partition, Ballot, TxId, Decision, Co
                                                                                 commit_vc=CommitVC}),
     {ok, Msg, State};
 
-handle_request({red_hb, FromReplica, Partition, Ballot, TimeStamp}, State) ->
-    Msg = grb_dc_message_utils:encode_msg(FromReplica, Partition, #red_heartbeat{ballot=Ballot, timestamp=TimeStamp}),
+handle_request({red_hb, FromReplica, Partition, Ballot, Id, Timestamp}, State) ->
+    Msg = grb_dc_message_utils:encode_msg(FromReplica, Partition,
+                                          #red_heartbeat{ballot=Ballot,
+                                                         heartbeat_id=Id,
+                                                         timestamp=Timestamp}),
     {ok, Msg, State};
 
-handle_request({red_hb_ack, FromReplica, Partition, Ballot}, State) ->
-    Msg = grb_dc_message_utils:encode_msg(FromReplica, Partition, #red_heartbeat_ack{ballot=Ballot}),
+handle_request({red_hb_ack, FromReplica, Partition, Ballot, Id, Timestamp}, State) ->
+    Msg = grb_dc_message_utils:encode_msg(FromReplica, Partition,
+                                          #red_heartbeat_ack{ballot=Ballot,
+                                                             heartbeat_id=Id,
+                                                             timestamp=Timestamp}),
     {ok, Msg, State};
 
-handle_request({red_hb_decide, FromReplica, Partition, Ballot}, State) ->
-    Msg = grb_dc_message_utils:encode_msg(FromReplica, Partition, #red_heartbeat_decide{ballot=Ballot}),
+handle_request({red_hb_decide, FromReplica, Partition, Ballot, Id, Timestamp}, State) ->
+    Msg = grb_dc_message_utils:encode_msg(FromReplica, Partition,
+                                          #red_heartbeat_decide{ballot=Ballot,
+                                                                heartbeat_id=Id,
+                                                                timestamp=Timestamp}),
     {ok, Msg, State};
 
 handle_request(_, _) ->

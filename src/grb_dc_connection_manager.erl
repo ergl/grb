@@ -14,15 +14,19 @@
          send_tx/4,
          send_clocks/5,
          send_heartbeat/4,
-         send_clocks_heartbeat/5,
-         send_red_prepare/7,
+         send_clocks_heartbeat/5]).
+
+%% Red transactions
+-export([send_red_prepare/7,
          send_red_accept/7,
          send_red_accept_ack/7,
          send_red_decided/6,
-         send_red_decision/7,
-         send_red_heartbeat/5,
-         send_red_heartbeat_ack/4,
-         send_red_decide_heartbeat/4]).
+         send_red_decision/7]).
+
+%% Red heartbeats
+-export([send_red_heartbeat/6,
+         send_red_heartbeat_ack/6,
+         send_red_decide_heartbeat/6]).
 
 %% Managemenet API
 -export([connection_closed/2,
@@ -234,30 +238,31 @@ send_red_decision(ToId, FromId, Partition, Ballot, TxId, Decision, CommitVC) ->
                          FromId :: replica_id(),
                          Partition :: partition_id(),
                          Ballot :: ballot(),
+                         Id :: term(),
                          Time :: grb_time:ts()) -> ok | {error, term()}.
 
-send_red_heartbeat(ToId, FromId, Partition, Ballot, Time) ->
+send_red_heartbeat(ToId, FromId, Partition, Ballot, Id, Time) ->
     try
         PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
-        grb_dc_connection_sender:send_red_heartbeat(PoolName, FromId, Partition, Ballot, Time)
+        grb_dc_connection_sender:send_red_heartbeat(PoolName, FromId, Partition, Ballot, Id, Time)
     catch _:_ ->
         {error, gone}
     end.
 
--spec send_red_heartbeat_ack(replica_id(), replica_id(), partition_id(), ballot()) -> ok | {error, term()}.
-send_red_heartbeat_ack(ToId, FromId, Partition, Ballot) ->
+-spec send_red_heartbeat_ack(replica_id(), replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok | {error, term()}.
+send_red_heartbeat_ack(ToId, FromId, Partition, Ballot, Id, Time) ->
     try
         PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
-        grb_dc_connection_sender:send_red_heartbeat_ack(PoolName, FromId, Partition, Ballot)
+        grb_dc_connection_sender:send_red_heartbeat_ack(PoolName, FromId, Partition, Ballot, Id, Time)
     catch _:_ ->
         {error, gone}
     end.
 
--spec send_red_decide_heartbeat(replica_id(), replica_id(), partition_id(), ballot()) -> ok | {error, term()}.
-send_red_decide_heartbeat(ToId, FromId, Partition, Ballot) ->
+-spec send_red_decide_heartbeat(replica_id(), replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok | {error, term()}.
+send_red_decide_heartbeat(ToId, FromId, Partition, Ballot, Id, Time) ->
     try
         PoolName = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
-        grb_dc_connection_sender:send_red_decide_heartbeat(PoolName, FromId, Partition, Ballot)
+        grb_dc_connection_sender:send_red_decide_heartbeat(PoolName, FromId, Partition, Ballot, Id, Time)
     catch _:_ ->
         {error, gone}
     end.

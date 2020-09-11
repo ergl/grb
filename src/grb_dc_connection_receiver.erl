@@ -134,11 +134,11 @@ handle_request(_Partition, Node, #red_already_decided{tx_id=TxId, decision=Vote,
         _ -> erpc:call(Node, grb_red_coordinator, already_decided, [TxId, Vote, CommitVC])
     end;
 
-handle_request(Partition, SourceReplica, #red_heartbeat{ballot=B, timestamp=Ts}) ->
-    grb_paxos_vnode:accept_heartbeat(Partition, SourceReplica, B, Ts);
+handle_request(Partition, SourceReplica, #red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
+    grb_paxos_vnode:accept_heartbeat(Partition, SourceReplica, B, Id, Ts);
 
-handle_request(Partition, _SourceReplica, #red_heartbeat_ack{ballot=B}) ->
-    grb_red_timer:handle_accept_ack(Partition, B);
+handle_request(Partition, _SourceReplica, #red_heartbeat_ack{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
+    grb_red_timer:handle_accept_ack(Partition, B, Id, Ts);
 
-handle_request(Partition, _SourceReplica, #red_heartbeat_decide{ballot=Ballot}) ->
-    grb_paxos_vnode:decide_heartbeat(Partition, Ballot).
+handle_request(Partition, _SourceReplica, #red_heartbeat_decide{ballot=Ballot, heartbeat_id=Id, timestamp=Ts}) ->
+    grb_paxos_vnode:decide_heartbeat(Partition, Ballot, Id, Ts).

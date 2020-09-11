@@ -83,15 +83,20 @@
 
 -record(red_heartbeat, {
     ballot :: ballot(),
+    heartbeat_id :: term(),
     timestamp :: grb_time:ts()
 }).
 
 -record(red_heartbeat_ack, {
-    ballot :: ballot()
+    ballot :: ballot(),
+    heartbeat_id :: term(),
+    timestamp :: grb_time:ts()
 }).
 
 -record(red_heartbeat_decide, {
-    ballot :: ballot()
+    ballot :: ballot(),
+    heartbeat_id :: term(),
+    timestamp :: grb_time:ts()
 }).
 
 -type replica_message() :: #replicate_tx{}

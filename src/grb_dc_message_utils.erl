@@ -45,14 +45,14 @@ encode_payload(Replica, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decisi
 encode_payload(TargetNode, #red_already_decided{tx_id=TxId, decision=Vote, commit_vc=CommitVC}) ->
     {?RED_ALREADY_DECIDED_KIND, term_to_binary({TargetNode, TxId, Vote, CommitVC})};
 
-encode_payload(Replica, #red_heartbeat{ballot=B, timestamp=Ts}) ->
-    {?RED_HB_KIND, term_to_binary({Replica, B, Ts})};
+encode_payload(Replica, #red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
+    {?RED_HB_KIND, term_to_binary({Replica, B, Id, Ts})};
 
-encode_payload(Replica, #red_heartbeat_ack{ballot=B}) ->
-    {?RED_HB_ACK_KIND, term_to_binary({Replica, B})};
+encode_payload(Replica, #red_heartbeat_ack{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
+    {?RED_HB_ACK_KIND, term_to_binary({Replica, B, Id, Ts})};
 
-encode_payload(Replica, #red_heartbeat_decide{ballot=B}) ->
-    {?RED_HB_DECIDE_KIND, term_to_binary({Replica, B})}.
+encode_payload(Replica, #red_heartbeat_decide{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
+    {?RED_HB_DECIDE_KIND, term_to_binary({Replica, B, Id, Ts})}.
 
 -spec decode_payload(binary()) -> {replica_id(), replica_message()}.
 decode_payload(<<?REPL_TX_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
@@ -93,16 +93,16 @@ decode_payload(<<?RED_ALREADY_DECIDED_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {TargetNode, #red_already_decided{tx_id=TxId, decision=Vote, commit_vc=CommitVC}};
 
 decode_payload(<<?RED_HB_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {FromReplica, B, Ts} = binary_to_term(Payload),
-    {FromReplica, #red_heartbeat{ballot=B, timestamp=Ts}};
+    {FromReplica, B, Id, Ts} = binary_to_term(Payload),
+    {FromReplica, #red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts}};
 
 decode_payload(<<?RED_HB_ACK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {FromReplica, B} = binary_to_term(Payload),
-    {FromReplica, #red_heartbeat_ack{ballot=B}};
+    {FromReplica, B, Id, Ts} = binary_to_term(Payload),
+    {FromReplica, #red_heartbeat_ack{ballot=B, heartbeat_id=Id, timestamp=Ts}};
 
 decode_payload(<<?RED_HB_DECIDE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {FromReplica, B} = binary_to_term(Payload),
-    {FromReplica, #red_heartbeat_decide{ballot=B}}.
+    {FromReplica, B, Id, Ts} = binary_to_term(Payload),
+    {FromReplica, #red_heartbeat_decide{ballot=B, heartbeat_id=Id, timestamp=Ts}}.
 
 %% Util functions
 
@@ -131,9 +131,9 @@ grb_dc_message_utils_test() ->
         #red_decision{ballot=10, tx_id=ignore, decision=ok, commit_vc=VC},
         #red_already_decided{tx_id=ignore, decision=ok, commit_vc=VC},
 
-        #red_heartbeat{ballot=4, timestamp=10},
-        #red_heartbeat_ack{ballot=10},
-        #red_heartbeat_decide{ballot=10}
+        #red_heartbeat{ballot=4, heartbeat_id={heartbeat,0}, timestamp=10},
+        #red_heartbeat_ack{ballot=10, heartbeat_id={heartbeat, 0}, timestamp=10},
+        #red_heartbeat_decide{ballot=10, heartbeat_id={heartbeat, 0}, timestamp=10}
     ],
 
     lists:foreach(fun(Partition) ->
