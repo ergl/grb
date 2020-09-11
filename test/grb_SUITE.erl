@@ -15,7 +15,6 @@
 -export([sanity_check_test/1,
          empty_read_test/1,
          read_your_writes_test/1,
-         stable_vc_red_test/1,
          propagate_updates_test/1,
          replication_queue_flush_test/1,
          uniform_barrier_flush_test/1,
@@ -46,9 +45,10 @@ groups() ->
             [sequence],
             [{group, basic_operations}]},
 
+        %% todo(borja, red): Add tests here
         {single_dc_red,
             [sequence, {repeat_until_ok, 100}],
-            [stable_vc_red_test]}, %% fixme(borja, red): remove this test, I don't think we can make it work
+            []},
 
         {multi_dc,
             [sequence],
@@ -61,7 +61,7 @@ groups() ->
         {all_tests,
             [sequence],
             [ {group, single_dc},
-              {group, single_dc_red},
+              %% {group, single_dc_red},
               {group, multi_dc},
               {group, replication}] }
     ].
@@ -151,33 +151,6 @@ read_your_writes_test(C) ->
     {Partition, Node} = key_location(Key, Replica, ClusterMap),
     CVC = update_transaction(Replica, Node, Partition, Key, Val, #{}),
     {Val, _, _} = read_only_transaction(Replica, Node, Partition, Key, CVC).
-
--ifndef(BLUE_KNOWN_VC).
-stable_vc_red_test(C) ->
-    ClusterMap = ?config(cluster_info, C),
-    #{main_node := MainNode} = maps:get(random_replica(ClusterMap), ClusterMap),
-    IndexNodes = erpc:call(MainNode, grb_dc_utils, get_index_nodes, []),
-    Times = lists:map(fun(_) -> rand:uniform(100) end, IndexNodes),
-    lists:foreach(fun({{Partition, Node}, Timestamp}) ->
-        ok = erpc:call(Node, grb_propagation_vnode, handle_red_heartbeat, [Partition, Timestamp]),
-        %% Sanity check
-        Timestamp = erpc:call(Node, grb_propagation_vnode, known_time, [Partition, ?RED_REPLICA]),
-        Timestamp = grb_vclock:get_time(?RED_REPLICA, erpc:call(Node, grb_propagation_vnode, known_vc, [Partition]))
-    end, lists:zip(IndexNodes, Times)),
-    %% Give time for the knownVCs to be aggregated
-    timer:sleep(500),
-    %% What should be the lower bound?
-    MinTime = lists:min(Times),
-    %% todo(borja, red): This test should be run without red heartbeats, since it will screw the timings
-    %% either find a way to make it work, or disable this test
-    lists:foreach(fun({Partition, Node}) ->
-        %% All nodes should agree on the red timestamp
-        MinTime = erpc:call(Node, grb_propagation_vnode, stable_red, [Partition])
-    end, IndexNodes),
-    ok.
--else.
-stable_vc_red_test(_) -> ok.
--endif.
 
 propagate_updates_test(C) ->
     ClusterMap = ?config(cluster_info, C),
