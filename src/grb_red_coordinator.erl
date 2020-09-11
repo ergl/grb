@@ -37,8 +37,13 @@ commit(Coordinator, Promise, TxId, SnapshotVC, Prepares) ->
 
 -spec already_decided(term(), red_vote(), vclock()) -> ok.
 already_decided(TxId, Vote, VoteVC) ->
-    {ok, Coordinator} = grb_red_manager:transaction_coordinator(TxId),
-    gen_server:cast(Coordinator, {already_decided, TxId, Vote, VoteVC}).
+    case grb_red_manager:transaction_coordinator(TxId) of
+        error -> ok;
+        {ok, Coordinator} ->
+            %% this might happen in multi-partition transactions. It is enough for
+            %% one of the leaders to reply, so ignore the rest
+            gen_server:cast(Coordinator, {already_decided, TxId, Vote, VoteVC})
+    end.
 
 -spec accept_ack(partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
 accept_ack(Partition, Ballot, TxId, Vote, AcceptVC) ->
