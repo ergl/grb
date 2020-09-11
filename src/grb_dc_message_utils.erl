@@ -10,7 +10,7 @@
 -export([encode_msg/3,
          decode_payload/1]).
 
--spec encode_msg(replica_id(), partition_id(), replica_message()) -> binary().
+-spec encode_msg(replica_id() | red_coord_location() | node(), partition_id(), replica_message()) -> binary().
 encode_msg(FromReplica, ToPartition, Payload) ->
     PBin = pad(?PARTITION_BYTES, binary:encode_unsigned(ToPartition)),
     {Kind, PayloadBin} = encode_payload(FromReplica, Payload),
@@ -54,7 +54,7 @@ encode_payload(Replica, #red_heartbeat_ack{ballot=B, heartbeat_id=Id, timestamp=
 encode_payload(Replica, #red_heartbeat_decide{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
     {?RED_HB_DECIDE_KIND, term_to_binary({Replica, B, Id, Ts})}.
 
--spec decode_payload(binary()) -> {replica_id(), replica_message()}.
+-spec decode_payload(binary()) -> {replica_id() | red_coordinator() | node(), replica_message()}.
 decode_payload(<<?REPL_TX_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {FromReplica, Tx, WS, CommitVC} = binary_to_term(Payload),
     {FromReplica, #replicate_tx{tx_id=Tx, writeset=WS, commit_vc=CommitVC}};

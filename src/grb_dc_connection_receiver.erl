@@ -95,7 +95,10 @@ handle_info(E, S) ->
     ?LOG_WARNING("replication server received unexpected info with msg ~w", [E]),
     {noreply, S}.
 
--spec handle_request(partition_id(), replica_id(), replica_message()) -> ok.
+%% We would have to add type information to every {_, replica_message} pair so that
+%% dialyzer doesn't complain about the second argument being different types
+-dialyzer({nowarn_function, handle_request/3}).
+-spec handle_request(partition_id(), replica_id() | red_coord_location() | node(), replica_message()) -> ok.
 handle_request(Partition, SourceReplica, #blue_heartbeat{timestamp=Ts}) ->
     grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, Ts);
 

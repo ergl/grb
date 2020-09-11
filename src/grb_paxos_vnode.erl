@@ -325,7 +325,7 @@ reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decisi
             grb_dc_connection_manager:send_red_decided(OtherReplica, Node, Partition, TxId, Decision, CommitVC)
     end.
 
--spec decide_hb_internal(partition_id(), ballot(), term(), grb_time:ts(), grb_paxos_state:t(), non_neg_integer()) -> ok.
+-spec decide_hb_internal(partition_id(), ballot(), term(), grb_time:ts(), grb_paxos_state:t(), non_neg_integer()) -> ok | error.
 %% this is here due to grb_paxos_state:decision_hb/4, that dialyzer doesn't like
 %% (it thinks it will never return not_ready because that is returned right after
 %% an ets:select with a record)
@@ -334,7 +334,8 @@ decide_hb_internal(P, Ballot, Id, Ts, SynodState, Time) ->
     case grb_paxos_state:decision_hb(Ballot, Id, Ts, SynodState) of
         ok -> ok;
         not_ready ->
-            erlang:send_after(Time, self(), {retry_decide_hb, Ballot, Id, Ts});
+            erlang:send_after(Time, self(), {retry_decide_hb, Ballot, Id, Ts}),
+            ok;
         bad_ballot ->
             ?LOG_ERROR("Bad heartbeat ballot ~b", [Ballot]),
             ok;
@@ -349,12 +350,13 @@ decide_hb_internal(P, Ballot, Id, Ts, SynodState, Time) ->
             error
     end.
 
--spec decide_internal(partition_id(), ballot(), term(), red_vote(), vclock(), grb_paxos_state:t(), non_neg_integer()) -> ok.
+-spec decide_internal(partition_id(), ballot(), term(), red_vote(), vclock(), grb_paxos_state:t(), non_neg_integer()) -> ok | error.
 decide_internal(Partition, Ballot, TxId, Decision, CommitVC, State, Time) ->
     case grb_paxos_state:decision(Ballot, TxId, Decision, CommitVC, State) of
         ok -> ok;
         not_ready ->
-            erlang:send_after(Time, self(), {retry_decision, Ballot, TxId, Decision, CommitVC});
+            erlang:send_after(Time, self(), {retry_decision, Ballot, TxId, Decision, CommitVC}),
+            ok;
         bad_ballot ->
             ?LOG_ERROR("~p: bad ballot ~b for ~p", [Partition, Ballot, TxId]),
             ok;
