@@ -193,6 +193,7 @@ handle_command({prepare_hb, Id}, _Sender, S=#state{replica_id=LocalId,
     Result = grb_paxos_state:prepare_hb(Id, LeaderState),
     case Result of
         {ok, Ballot, Timestamp} ->
+            ?LOG_DEBUG("~p: HEARTBEAT_PREPARE(~b, ~p, ~b)", [Partition, Ballot, Id, Timestamp]),
             grb_red_timer:handle_accept_ack(Partition, Ballot, Id, Timestamp),
             lists:foreach(fun(ReplicaId) ->
                 grb_dc_connection_manager:send_red_heartbeat(ReplicaId, LocalId, Partition,
@@ -213,6 +214,7 @@ handle_command({prepare, TxId, RS, WS, SnapshotVC},
                                      op_log_red_replica=LastRed}) ->
 
     Result = grb_paxos_state:prepare(TxId, RS, WS, SnapshotVC, LastRed, LeaderState),
+    ?LOG_DEBUG("~p: ~p prepared as ~p, reply to coordinator ~p", [Partition, TxId, Result, Coordinator]),
     case Result of
         {already_decided, Decision, CommitVC} ->
             %% skip replicas, this is enough to reply to the client
@@ -231,6 +233,7 @@ handle_command({prepare, TxId, RS, WS, SnapshotVC},
 %%%===================================================================
 
 handle_command({accept, Ballot, TxId, RS, WS, Vote, PrepareVC}, Coordinator, S) ->
+    ?LOG_DEBUG("~p ACCEPT(~p, ~b), reply to coordinator ~p", [TxId, S#state.partition, Ballot, Coordinator]),
     ok = grb_paxos_state:accept(Ballot, TxId, RS, WS, Vote, PrepareVC, S#state.synod_state),
     reply_accept_ack(Coordinator, S#state.replica_id, S#state.partition, Ballot, TxId, Vote, PrepareVC),
     {noreply, S};
@@ -238,6 +241,7 @@ handle_command({accept, Ballot, TxId, RS, WS, Vote, PrepareVC}, Coordinator, S) 
 handle_command({accept_hb, SourceReplica, Ballot, Id, Ts},
                 _Sender, S=#state{replica_id=LocalId, partition=Partition, synod_state=FollowerState}) ->
 
+    ?LOG_DEBUG("~p: HEARTBEAT_ACCEPT(~b, ~p, ~b)", [Partition, Ballot, Id, Ts]),
     ok = grb_paxos_state:accept_hb(Ballot, Id, Ts, FollowerState),
     ok = grb_dc_connection_manager:send_red_heartbeat_ack(SourceReplica, LocalId,
                                                           Partition, Ballot, Id, Ts),
@@ -251,6 +255,7 @@ handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S=#state{partition=P,
                                                              decision_retry_interval=Int,
                                                              synod_state=SynodState}) ->
 
+    ?LOG_DEBUG("~p: HEARTBEAT_DECIDE(~b, ~p, ~b)", [P, Ballot, Id, Ts]),
     ok = decide_hb_internal(P, Ballot, Id, Ts, SynodState, Int),
     {noreply, S};
 
@@ -258,6 +263,7 @@ handle_command({decision, Ballot, TxId, Decision, CommitVC}, _Sender, S=#state{p
                                                                                decision_retry_interval=Int,
                                                                                synod_state=SynodState}) ->
 
+    ?LOG_DEBUG("~p DECIDE(~b, ~p)", [TxId, Ballot, Decision]),
     ok = decide_internal(Partition, Ballot, TxId, Decision, CommitVC, SynodState, Int),
     {noreply, S};
 
@@ -370,10 +376,12 @@ deliver_updates(Partition, From, SynodState) ->
             From;
 
         {heartbeat, Ts} ->
+            ?LOG_DEBUG("~p DELIVER_HB(~b)", [Partition, Ts]),
             ok = grb_propagation_vnode:handle_red_heartbeat(Partition, Ts),
             deliver_updates(Partition, Ts, SynodState);
 
         {NextFrom, WriteSet, CommitVC} ->
+            ?LOG_DEBUG("~p DELIVER(~p, ~p)", [Partition, NextFrom, WriteSet]),
             ok = grb_main_vnode:handle_red_transaction(Partition, WriteSet, NextFrom, CommitVC),
             deliver_updates(Partition, NextFrom, SynodState)
     end.

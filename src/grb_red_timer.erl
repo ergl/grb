@@ -78,6 +78,7 @@ handle_cast({accept_ack, InBallot, Id, InTimestamp}, S0=#state{replica=LocalId,
                                                                heartbeat_id=Id,
                                                                current_ballot=Ballot0,
                                                                heartbeat_time=Timestamp0}) ->
+    ?LOG_DEBUG("~p TIMER_ACK(~b, ~p, ~b), ~b to go", [Partition, InBallot, Id, InTimestamp, ToAck]),
     %% todo(borja, red): handle bad ballot / timestamp?
     {ok, Ballot} = check_ballot(InBallot, Ballot0),
     {ok, Timestamp} = check_timestamp(InTimestamp, Timestamp0),
@@ -85,6 +86,7 @@ handle_cast({accept_ack, InBallot, Id, InTimestamp}, S0=#state{replica=LocalId,
         N when N > 1 ->
             S0#state{current_ballot=Ballot, heartbeat_time=Timestamp, quorum_ack=ToAck - 1};
         1 ->
+            ?LOG_DEBUG("~p send TIMER_DECISION(~b, ~p, ~b)", [Partition, Ballot, Id, Timestamp]),
             ok = grb_paxos_vnode:broadcast_hb_decision(Partition, LocalId, Ballot, Id, Timestamp),
             rearm_heartbeat_timer(S0)
     end,
@@ -97,6 +99,7 @@ handle_cast(E, S) ->
 handle_info(?red_hb, State=?no_active_timer) ->
     #state{timer=Timer, partition=Partition, quorum_size=QSize, next_timer_id=Id} = State,
     erlang:cancel_timer(Timer),
+    ?LOG_DEBUG("~p starting timer ~p", [Partition, Id]),
     ok = grb_paxos_vnode:prepare_heartbeat(Partition, Id),
     {noreply, State#state{timer=undefined, quorum_ack=QSize,
                           heartbeat_id=Id, next_timer_id=next_heartbeat_id(Id)}};

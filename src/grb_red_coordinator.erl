@@ -77,6 +77,7 @@ handle_cast({commit, Promise, TxId, SnapshotVC, Prepares}, undefined) ->
                              quorums_to_ack=QuorumsToAck}};
 
 handle_cast({already_decided, TxId, Vote, VoteVC}, #certify_state{promise=Promise}) ->
+    ?LOG_DEBUG("~p already decided", [TxId]),
     grb_promise:resolve({Vote, VoteVC}, Promise),
     ok = grb_red_manager:unregister_coordinator(TxId),
     {noreply, undefined};
@@ -87,6 +88,7 @@ handle_cast({accept_ack, FromPartition, Ballot, TxId, Vote, AcceptVC},
     {ok, Ballots} = check_ballot(FromPartition, Ballot, Ballots0),
     Acc = Acc0#{FromPartition => {Vote, AcceptVC}},
     ToAck = maps:get(FromPartition, Quorums0),
+    ?LOG_DEBUG("~p ACCEPT_ACK(~p, ~b), ~b to go", [TxId, FromPartition, Ballot, ToAck - 1]),
     Quorums = case ToAck of
         1 -> maps:remove(FromPartition, Quorums0);
         _ -> Quorums0#{FromPartition => ToAck - 1}
