@@ -7,7 +7,7 @@
 
 -define(leader, leader).
 -define(follower, follower).
--define(heartbeat, heartbeat_entry).
+-define(heartbeat, heartbeat).
 -type status() :: ?leader | ?follower.
 
 %% How many commit times to delete at once
@@ -16,7 +16,10 @@
 %% todo(borja, red): Make config for this
 -define(PRUNE_LIMIT, 50).
 
--type record_id() :: ?heartbeat | {tx, term()}.
+%% We don't care about the structure too much, as long as the client ensures identifiers
+%% are unique (or at least, unique to the point of not reusing them before they call
+%% `prune_decided_before/2`
+-type record_id() :: {?heartbeat, term()} | term().
 -record(record, {
     id :: record_id(),
     read_keys = [] :: [key()],
@@ -69,9 +72,9 @@
          prune_decided_before/2]).
 
 %% heartbeat api
--export([prepare_hb/1,
-         accept_hb/3,
-         decision_hb/2]).
+-export([prepare_hb/2,
+         accept_hb/4,
+         decision_hb/4]).
 
 %% transactional api
 -export([prepare/6,
@@ -123,8 +126,8 @@ get_next_ready(LastDelivered, #state{entries=Entries, index=Idx}) ->
                 true -> false;
                 false ->
                     case Id of
-                        ?heartbeat ->
-                            {heartbeat, CommitTime};
+                        {?heartbeat, _} ->
+                            {?heartbeat, CommitTime};
                         _ ->
                             [[WS, CommitVC]] =
                                 ets:match(Entries, #record{id=Id, writeset='$1', clock='$2', _='_'}),
@@ -179,7 +182,7 @@ prune_decided_before_continue(Entries, Idx, Writes, {Objects, Cont}) ->
 
 -spec clear_pending(record_id(), red_vote(), cache_id(), cache_id()) -> ok.
 clear_pending(_Id, {abort, _}, _Entries, _Writes) -> ok;
-clear_pending(?heartbeat, ok, _Entries, _Writes) -> ok;
+clear_pending({?heartbeat, _}, ok, _Entries, _Writes) -> ok;
 clear_pending(Id, ok, Entries, Writes) ->
     Keys = ets:lookup_element(Entries, Id, #record.write_keys),
     lists:foreach(fun(K) -> ets:delete(Writes, {K, Id}) end, Keys).
@@ -188,74 +191,25 @@ clear_pending(Id, ok, Entries, Writes) ->
 %%% heartbeat api
 %%%===================================================================
 
-%% fixme(borja, red): If we don't remove heartbeats, we might clash when we find two heartbeats in the queue
-%% check if this is a problem
--spec prepare_hb(t()) -> {ballot(), grb_time:ts()}.
-prepare_hb(#state{status=?leader, ballot=Ballot, entries=Entries, index=Idx}) ->
-    Ts = grb_time:timestamp(),
-    true = ets:insert(Entries, #record{id=?heartbeat, red=Ts, vote=ok, state=prepared}),
-    true = ets:insert(Idx, #index_entry{red=Ts, id=?heartbeat, state=prepared, vote=ok}),
-    {Ballot, Ts}.
+-spec prepare_hb({?heartbeat, _}, t()) -> {red_vote(), ballot(), grb_time:ts()}
+                                   | {already_decided, red_vote(), grb_time:ts()}.
+prepare_hb(Id, State) ->
+    prepare(Id, ignore, ignore, ignore, ignore, State).
 
--spec accept_hb(ballot(), grb_time:ts(), t()) -> ok | bad_ballot.
-accept_hb(InBallot, _, #state{ballot=Ballot}) when InBallot =/= Ballot -> bad_ballot;
-accept_hb(Ballot, Ts, #state{status=?follower, ballot=Ballot, entries=Entries, index=Idx}) ->
-    true = ets:insert(Entries, #record{id=?heartbeat, red=Ts, vote=ok, state=prepared}),
-    true = ets:insert(Idx, #index_entry{red=Ts, id=?heartbeat, state=prepared, vote=ok}),
-    ok.
+-spec accept_hb(ballot(), record_id(), grb_time:ts(), t()) -> ok | bad_ballot.
+accept_hb(Ballot, Id, Ts, State) ->
+    accept(Ballot, Id, ignore, ignore, ok, Ts, State).
 
--spec decision_hb_pre(ballot(), grb_time:ts(), t()) -> ok | already_decided | decision_error().
--dialyzer({nowarn_function, decision_hb_pre/3}).
-decision_hb_pre(InBallot, _, #state{ballot=Ballot}) when InBallot > Ballot -> bad_ballot;
 
-decision_hb_pre(_, _, #state{status=?follower, entries=Entries}) ->
-    try
-        Status = ets:lookup_element(Entries, ?heartbeat, #record.state),
-        case Status of
-            prepared ->
-                ok;
-            decided ->
-                already_decided
-        end
-    catch _:_ ->
-        not_prepared
-    end;
-
-decision_hb_pre(_, ClockTime, #state{status=?leader, entries=Entries}) ->
-    try
-        [[Status, RedTs]] = ets:match(Entries,
-                                      #record{id=?heartbeat, state='$1', red='$2', _='_'}),
-        case Status of
-            decided ->
-                already_decided;
-            prepared ->
-                case ClockTime >= RedTs of
-                    true -> ok;
-                    false -> not_ready
-                end
-        end
-    catch _:_ ->
-        not_prepared
-    end.
-
--spec decision_hb(ballot(), t()) -> ok | decision_error().
-decision_hb(Ballot, S=#state{entries=Entries, index=Idx}) ->
-    case decision_hb_pre(Ballot, grb_time:timestamp(), S) of
-        already_decided -> ok;
-        ok ->
-            RedTs = ets:lookup_element(Entries, ?heartbeat, #record.red),
-            true = ets:update_element(Entries, ?heartbeat, {#record.state, decided}),
-            true = ets:update_element(Idx, RedTs, {#index_entry.state, decided}),
-            ok;
-        Other ->
-            Other
-    end.
+-spec decision_hb(ballot(), record_id(), grb_time:ts(), t()) -> ok | decision_error().
+decision_hb(Ballot, Id, Ts, State) ->
+    decision(Ballot, Id, ok, Ts, State).
 
 %%%===================================================================
 %%% transaction api
 %%%===================================================================
 
--spec prepare(TxId :: term(),
+-spec prepare(TxId :: record_id(),
               RS :: #{key() => grb_time:ts()},
               WS :: #{key() => val()},
               SnapshotVC :: vclock(),
@@ -264,13 +218,12 @@ decision_hb(Ballot, S=#state{entries=Entries, index=Idx}) ->
                              | {already_decided, red_vote(), vclock()}.
 
 -dialyzer({no_match, prepare/6}).
-prepare(TxId, RS, WS, SnapshotVC, LastRed, S=#state{status=?leader,
+prepare(Id, RS, WS, SnapshotVC, LastRed, S=#state{status=?leader,
                                                     ballot=Ballot,
                                                     entries=Entries,
                                                     pending_reads=PendingReads,
                                                     writes_cache=PendingWrites}) ->
 
-    Id = {tx, TxId},
     Status =
         try ets:lookup_element(Entries, Id, #record.state)
         catch _:_ -> empty end,
@@ -291,21 +244,35 @@ prepare(TxId, RS, WS, SnapshotVC, LastRed, S=#state{status=?leader,
             {Decision, Ballot, PrepareVC};
 
         empty ->
-            RedTs = grb_time:timestamp(),
-            {Decision, VC0} = check_transaction(RS, WS, SnapshotVC, LastRed, PendingReads, PendingWrites),
-            PrepareVC = grb_vclock:set_time(?RED_REPLICA, RedTs, VC0),
-
+            {Decision, VC0} = check_transaction(Id, RS, WS, SnapshotVC, LastRed, PendingReads, PendingWrites),
+            {RedTs, PrepareVC} = assign_timestamp(VC0),
             ok = insert_prepared(Id, RS, WS, RedTs, PrepareVC, Decision, S),
 
             {Decision, Ballot, PrepareVC}
     end.
 
--spec accept(ballot(), term(), #{}, #{}, red_vote(), vclock(), t()) -> ok | bad_ballot.
+%% todo(borja, red): make idempotent, ignore if the transaction has been prepared/decided
+%% although the leader should make it impossible for us to receive a prepare for a received
+%% transaction (replying with already_prepared), it's better to avoid it.
+%% if it's already prepared, don't do anything.
+-spec accept(ballot(), record_id(), #{}, #{}, red_vote(), vclock(), t()) -> ok | bad_ballot.
 accept(InBallot, _, _, _, _, _, #state{ballot=Ballot}) when InBallot =/= Ballot -> bad_ballot;
-accept(Ballot, TxId, RS, WS, Vote, PrepareVC, S=#state{ballot=Ballot}) ->
-    RedTs = grb_vclock:get_time(?RED_REPLICA, PrepareVC),
-    ok = insert_prepared({tx, TxId}, RS, WS, RedTs, PrepareVC, Vote, S),
+accept(Ballot, Id, RS, WS, Vote, PrepareVC, S=#state{ballot=Ballot}) ->
+    RedTs = get_timestamp(Id, PrepareVC),
+    ok = insert_prepared(Id, RS, WS, RedTs, PrepareVC, Vote, S),
     ok.
+
+assign_timestamp(ignore) ->
+    Time = grb_time:timestamp(),
+    {Time, Time};
+
+assign_timestamp(VC) ->
+    Red = grb_time:timestamp(),
+    {Red, grb_vclock:set_time(?RED_REPLICA, Red, VC)}.
+
+get_timestamp({?heartbeat, _}, RedTs) -> RedTs;
+get_timestamp(_, PrepareVC) -> grb_vclock:get_time(?RED_REPLICA, PrepareVC).
+
 
 -spec insert_prepared(record_id(), #{}, #{}, grb_time:ts(), vclock(), red_vote(), t()) -> ok.
 insert_prepared(Id, RS, WS, RedTs, VC, Decision, #state{index=Idx,
@@ -315,17 +282,7 @@ insert_prepared(Id, RS, WS, RedTs, VC, Decision, #state{index=Idx,
 
     Record = case Decision of
         ok ->
-            %% only add the keys if the transaction is committed, otherwise, don't bother
-            ReadKeys = maps:keys(RS),
-            true = ets:insert(Reads, [{K, Id} || K <- ReadKeys]),
-            %% We can't do the same for reads, because we need to distinguish between prepared
-            %% and decided writes. We can't do update_element or select_repace over bag tables,
-            %% so use a normal ordered_set with a double key of {Key, Identifier}, which should
-            %% be unique
-            WriteKeys = maps:keys(WS),
-            true = ets:insert(Writes, [ {{K, Id}, prepared, RedTs} || K <- WriteKeys]),
-            #record{id=Id, read_keys=ReadKeys, write_keys=WriteKeys, writeset=WS,
-                    red=RedTs, clock=VC, state=prepared, vote=Decision};
+            make_commit_record(Id, RS, WS, RedTs, VC, Decision, Reads, Writes);
         _ ->
             %% don't store read keys, waste of space
             #record{id=Id, writeset=WS,
@@ -334,6 +291,23 @@ insert_prepared(Id, RS, WS, RedTs, VC, Decision, #state{index=Idx,
     true = ets:insert(Entries, Record),
     true = ets:insert(Idx, #index_entry{red=RedTs, id=Id, state=prepared, vote=Decision}),
     ok.
+
+make_commit_record({?heartbeat, _}=Id, _, _, RedTs, _, Decision, _, _) ->
+    #record{id=Id, read_keys=undefined, write_keys=undefined, writeset=undefined,
+            red=RedTs, clock=RedTs, state=prepared, vote=Decision};
+
+make_commit_record(TxId, RS, WS, RedTs, VC, Decision, Reads, Writes) ->
+    %% only add the keys if the transaction is committed, otherwise, don't bother
+    ReadKeys = maps:keys(RS),
+    true = ets:insert(Reads, [{K, TxId} || K <- ReadKeys]),
+    %% We can't do the same for reads, because we need to distinguish between prepared
+    %% and decided writes. We can't do update_element or select_repace over bag tables,
+    %% so use a normal ordered_set with a double key of {Key, Identifier}, which should
+    %% be unique
+    WriteKeys = maps:keys(WS),
+    true = ets:insert(Writes, [ {{K, TxId}, prepared, RedTs} || K <- WriteKeys]),
+    #record{id=TxId, read_keys=ReadKeys, write_keys=WriteKeys, writeset=WS,
+            red=RedTs, clock=VC, state=prepared, vote=Decision}.
 
 -spec decision_pre(ballot(), record_id(), grb_time:ts(), grb_time:ts(), t()) -> ok | already_decided | decision_error().
 decision_pre(InBallot, _, _, _, #state{ballot=Ballot}) when InBallot > Ballot ->
@@ -368,12 +342,12 @@ decision_pre(_, Id, CommitRed, ClockTime, #state{status=?leader, entries=Entries
         not_prepared
     end.
 
--spec decision(ballot(), term(), red_vote(), vclock(), t()) -> ok | decision_error().
+-spec decision(ballot(), record_id(), red_vote(), vclock(), t()) -> ok | decision_error().
 -dialyzer({no_match, decision/5}).
-decision(Ballot, TxId, Vote, CommitVC, S=#state{entries=Entries, index=Idx,
-                                                pending_reads=PrepReads, writes_cache=WriteCache}) ->
-    Id = {tx, TxId},
-    RedTs = grb_vclock:get_time(?RED_REPLICA, CommitVC),
+decision(Ballot, Id, Vote, CommitVC, S=#state{entries=Entries, index=Idx,
+                                              pending_reads=PrepReads, writes_cache=WriteCache}) ->
+
+    RedTs = get_timestamp(Id, CommitVC),
     case decision_pre(Ballot, Id, RedTs, grb_time:timestamp(), S) of
         already_decided -> ok;
         ok ->
@@ -382,18 +356,11 @@ decision(Ballot, TxId, Vote, CommitVC, S=#state{entries=Entries, index=Idx,
                            [{ #record{id=Id, red='$1', vote='$2', _='_'}, [], [{{'$1', '$2'}}] }]),
 
             true = ets:delete(Idx, OldTs),
+            %% if we voted commit during prepare, we need to clean up / move pending data
+            %% if we voted abort, we didn't store anything
             case OldVote of
-                ok ->
-                    %% if we voted commit during prepare, we need to clean up / move pending data
-                    [{RKeys, WKeys}] =
-                        ets:select(Entries,
-                                   [{ #record{id=Id, read_keys='$1', write_keys='$2', _='_'}, [],
-                                       [{{'$1', '$2'}}] }]),
-
-                    move_pending_data(Id, RedTs, Vote, RKeys, WKeys, PrepReads, WriteCache);
-                _ ->
-                    %% if we voted abort, we didn't store anything
-                    ok
+                ok -> move_pending_data(Id, RedTs, Vote, Entries, PrepReads, WriteCache);
+                _ -> ok
             end,
 
             true = ets:update_element(Entries, Id, [{#record.red, RedTs},
@@ -410,13 +377,19 @@ decision(Ballot, TxId, Vote, CommitVC, S=#state{entries=Entries, index=Idx,
 -spec move_pending_data(Id :: record_id(),
                         RedTs :: grb_time:ts(),
                         Vote :: red_vote(),
-                        RKeys :: [key()],
-                        WKeys :: [key()],
+                        Entries :: cache_id(),
                         PendingReads :: cache_id(),
                         WriteCache :: cache_id()) -> ok.
 
--dialyzer({no_unused, move_pending_data/7}).
-move_pending_data(Id, RedTs, Vote, RKeys, WKeys, PendingReads, WriteCache) ->
+-dialyzer({no_unused, move_pending_data/6}).
+%% for a heartbeat, we never stored anything, so there's no need to move any data
+move_pending_data({?heartbeat, _}, _, _, _, _, _) -> ok;
+move_pending_data(Id, RedTs, Vote, Entries, PendingReads, WriteCache) ->
+    [{RKeys, WKeys}] =
+        ets:select(Entries,
+                   [{ #record{id=Id, read_keys='$1', write_keys='$2', _='_'}, [],
+                       [{{'$1', '$2'}}] }]),
+
     %% even if the new vote is abort, we clean up the reads,
     %% since we're moving out of preparedRed
     lists:foreach(fun(ReadKey) ->
@@ -435,14 +408,16 @@ move_pending_data(Id, RedTs, Vote, RKeys, WKeys, PendingReads, WriteCache) ->
             end, WKeys)
     end.
 
--spec check_transaction(RS :: #{key() => grb_time:ts()},
+-spec check_transaction(TxId :: record_id(),
+                        RS :: #{key() => grb_time:ts()},
                         WS :: #{key() => val()},
                         CommitVC :: vclock(),
                         LastRed :: grb_main_vnode:last_red(),
                         PrepReads :: cache_id(),
                         Writes :: cache_id()) -> {red_vote(), vclock()}.
 
-check_transaction(RS, WS, CommitVC, LastRed, PrepReads, Writes) ->
+check_transaction({?heartbeat, _}, _, _, ignore, _, _, _) -> {ok, ignore};
+check_transaction(_, RS, WS, CommitVC, LastRed, PrepReads, Writes) ->
     case check_prepared(RS, WS, PrepReads, Writes) of
         {abort, _}=Abort ->
             {Abort, CommitVC};
@@ -540,16 +515,17 @@ grb_paxos_state_heartbeat_test() ->
     with_states([grb_paxos_state:leader(),
                  grb_paxos_state:follower()], fun([L, F]) ->
 
-        {Ballot, Ts} = grb_paxos_state:prepare_hb(L),
-        ok = grb_paxos_state:accept_hb(Ballot, Ts, F),
+        Id = {?heartbeat, 0},
+        {ok, Ballot, Ts} = grb_paxos_state:prepare_hb(Id, L),
+        ok = grb_paxos_state:accept_hb(Ballot, Id, Ts, F),
 
-        ok = grb_paxos_state:decision_hb(Ballot, L),
-        ok = grb_paxos_state:decision_hb(Ballot, F),
+        ok = grb_paxos_state:decision_hb(Ballot, Id, Ts, L),
+        ok = grb_paxos_state:decision_hb(Ballot, Id, Ts, F),
 
-        {heartbeat, LR} = grb_paxos_state:get_next_ready(0, L),
-        ?assertMatch({heartbeat, LR}, grb_paxos_state:get_next_ready(0, F)),
-        ?assertEqual(false, grb_paxos_state:get_next_ready(LR, L)),
-        ?assertEqual(false, grb_paxos_state:get_next_ready(LR, F))
+        {?heartbeat, Ts} = grb_paxos_state:get_next_ready(0, L),
+        ?assertMatch({?heartbeat, Ts}, grb_paxos_state:get_next_ready(0, F)),
+        ?assertEqual(false, grb_paxos_state:get_next_ready(Ts, L)),
+        ?assertEqual(false, grb_paxos_state:get_next_ready(Ts, F))
     end).
 
 %% todo(borja, test): figure out if we can setup / teardown this
@@ -613,17 +589,18 @@ grb_paxos_state_get_next_ready_test() ->
     with_states(grb_paxos_state:follower(), fun(F) ->
         [T0, V1] = [ 1, VC(5)],
 
-        ok = grb_paxos_state:accept_hb(0, T0, F),
+        ok = grb_paxos_state:accept_hb(0, {?heartbeat, 0}, T0, F),
         ok = grb_paxos_state:accept(0, tx_1, #{}, #{}, ok, V1, F),
 
         ok = grb_paxos_state:decision(0, tx_1, ok, V1, F),
 
         %% false, still have to decide the heartbeat
         ?assertEqual(false, grb_paxos_state:get_next_ready(0, F)),
-        %% now decide the heartbeat, marking tx_1 ready for delivery
-        ok = grb_paxos_state:decision_hb(0, F),
 
-        ?assertEqual({heartbeat, T0}, grb_paxos_state:get_next_ready(0, F)),
+        %% now decide the heartbeat, marking tx_1 ready for delivery
+        ok = grb_paxos_state:decision_hb(0, {?heartbeat, 0}, T0, F),
+
+        ?assertEqual({?heartbeat, T0}, grb_paxos_state:get_next_ready(0, F)),
         ?assertEqual({T(V1), #{}, V1}, grb_paxos_state:get_next_ready(T0, F))
     end),
 
@@ -653,18 +630,14 @@ grb_paxos_state_get_next_ready_test() ->
 
 grb_paxos_state_hb_clash_test() ->
     with_states(grb_paxos_state:leader(), fun(L) ->
-        {B, Ts0} = grb_paxos_state:prepare_hb(L),
-        grb_paxos_state:decision_hb(B, L),
+        {ok, B, Ts0} = grb_paxos_state:prepare_hb({?heartbeat, 0}, L),
+        grb_paxos_state:decision_hb(B, {?heartbeat, 0}, Ts0, L),
 
-        ?assertEqual({heartbeat, Ts0}, grb_paxos_state:get_next_ready(0, L)),
+        ?assertEqual({?heartbeat, Ts0}, grb_paxos_state:get_next_ready(0, L)),
+        ?assertMatch({already_decided, ok, Ts0}, grb_paxos_state:prepare_hb({?heartbeat, 0}, L)),
 
-        timer:sleep(500),
-
-        {_, Ts1} = grb_paxos_state:prepare_hb(L),
-        grb_paxos_state:decision_hb(B, L),
-
-        ?assertEqual({heartbeat, Ts0}, grb_paxos_state:get_next_ready(0, L)),
-        ?assertEqual({heartbeat, Ts1}, grb_paxos_state:get_next_ready(Ts0, L))
+        ?assertEqual({?heartbeat, Ts0}, grb_paxos_state:get_next_ready(0, L)),
+        ?assertEqual(false, grb_paxos_state:get_next_ready(Ts0, L))
     end).
 
 %%%% fixme(borja, red): This shouldn't fail
@@ -672,8 +645,8 @@ grb_paxos_state_hb_clash_test() ->
 %%    VC = fun(I) -> #{?RED_REPLICA => I} end,
 %%
 %%    with_states(grb_paxos_state:follower(), fun(F) ->
-%%        ok = grb_paxos_state:accept(0, tx_1, #{a => 0}, ok, VC(0), F),
-%%        ok = grb_paxos_state:accept(0, tx_2, #{a => 1}, ok, VC(5), F),
+%%        ok = grb_paxos_state:accept(0, tx_1, #{}, #{a => 0}, ok, VC(0), F),
+%%        ok = grb_paxos_state:accept(0, tx_2, #{}, #{a => 1}, ok, VC(5), F),
 %%
 %%        ok = grb_paxos_state:decision(0, tx_1, ok, VC(5), F),
 %%        ok = grb_paxos_state:decision(0, tx_2, ok, VC(5), F),
@@ -754,17 +727,18 @@ grb_paxos_state_prune_decided_before_test() ->
         ?assertEqual({already_decided, ok, CVC1} , grb_paxos_state:prepare(TxId1, RS1, WS1, PVC1, LastRed, L)),
 
         %% let's do a heartbeat now
-        {Ballot, _} = grb_paxos_state:prepare_hb(L),
-        ok = grb_paxos_state:decision_hb(Ballot, L),
-        {heartbeat, LR} = grb_paxos_state:get_next_ready(Expected, L),
-        ?assertEqual(false, grb_paxos_state:get_next_ready(LR, L)),
+        {ok, Ballot, Ts} = grb_paxos_state:prepare_hb({?heartbeat, 0}, L),
+        ok = grb_paxos_state:decision_hb(Ballot, {?heartbeat, 0}, Ts, L),
+
+        ?assertEqual({?heartbeat, Ts}, grb_paxos_state:get_next_ready(Expected, L)),
+        ?assertEqual(false, grb_paxos_state:get_next_ready(Ts, L)),
 
         %% prune, now we should only have the heartbeat
         ok = grb_paxos_state:prune_decided_before(Expected + 1, L),
-        ?assertMatch({heartbeat, LR}, grb_paxos_state:get_next_ready(0, L)),
+        ?assertMatch({?heartbeat, Ts}, grb_paxos_state:get_next_ready(0, L)),
 
         %% but if we prune past that, then the heartbeat should be gone
-        ok = grb_paxos_state:prune_decided_before(LR + 1, L),
+        ok = grb_paxos_state:prune_decided_before(Ts + 1, L),
         ?assertMatch(false, grb_paxos_state:get_next_ready(0, L)),
 
         %% now we can prepare this transaction again
