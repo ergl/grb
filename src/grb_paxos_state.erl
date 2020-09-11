@@ -31,16 +31,10 @@
     vote :: red_vote()
 }).
 
-%% fixme(borja, red): red time clash?
-%% imagine we have (accepted) transactions X0 and X1 with times T0 and T1.
-%% Now we receive a decision for X0 with time T1 (maybe another partition prepared it with T1).
-%% Right now, we will overwrite on top of X1 in the index, thereby losing track of it.
-%% If we receive a decsion for X1 with time T1 again, we will overwrite X0, etc
-%% Possible solution: either make the index time -> list (like we don in other places)
-%% or make the key in the index {time, id}, which keeps the same ordering properties
+%% The compound key disallows commit time clashes
+%% between different transactions
 -record(index_entry, {
-    red :: grb_time:ts(),
-    id :: record_id(),
+    key :: {grb_time:ts(), record_id()},
     state :: prepared | decided,
     vote :: red_vote()
 }).
@@ -95,7 +89,7 @@ follower() -> fresh_state(?follower).
 fresh_state(Status) ->
     #state{status=Status,
            entries=ets:new(state_entries, [set, {keypos, #record.id}]),
-           index=ets:new(state_entries_index, [ordered_set, {keypos, #index_entry.red}]),
+           index=ets:new(state_entries_index, [ordered_set, {keypos, #index_entry.key}]),
            pending_reads=ets:new(state_pending_reads, [bag]),
            writes_cache=ets:new(state_pending_writes, [ordered_set])}.
 
@@ -111,29 +105,27 @@ delete(#state{entries=Entries, index=Index, pending_reads=PendingReads, writes_c
 %%% ready / prune
 %%%===================================================================
 
--spec get_next_ready(grb_time:ts(), t()) -> false | {heartbeat, grb_time:ts()} | {grb_time:ts(), #{}, vclock()}.
+-spec get_next_ready(grb_time:ts(), t()) -> false | {grb_time:ts(), [ ?heartbeat | {#{}, vclock()} ]}.
 -dialyzer({nowarn_function, get_next_ready/2}).
 get_next_ready(LastDelivered, #state{entries=Entries, index=Idx}) ->
     Result = ets:select(Idx,
-                        [{ #index_entry{red='$1', id='$2', state=decided, vote=ok},
+                        [{ #index_entry{key={'$1', '$2'}, state=decided, vote=ok},
                            [{'>', '$1', {const, LastDelivered}}],
                            [{{'$1', '$2'}}] }],
                         1),
     case Result of
         '$end_of_table' -> false;
-        {[{CommitTime, Id}] , _} ->
+        {[{CommitTime, FirstId}] , _} ->
             case prep_committed_between(LastDelivered, CommitTime, Idx) of
                 true -> false;
                 false ->
-                    case Id of
-                        {?heartbeat, _} ->
-                            {?heartbeat, CommitTime};
-                        _ ->
-                            [[WS, CommitVC]] =
-                                ets:match(Entries, #record{id=Id, writeset='$1', clock='$2', _='_'}),
-
-                            {CommitTime, WS, CommitVC}
-                    end
+                    %% get the rest of committed transactions with this commit time
+                    %% since they have the same committed time, they all pass the check above
+                    MoreIds = ets:select(Idx, [{ #index_entry{key={CommitTime, '$1'}, state=decided, vote=ok},
+                                                 [{'=/=', '$1', {const, FirstId}}],
+                                                 ['$1'] }]),
+                    Ready = lists:map(fun(Id) -> data_for_id(Id, Entries) end, [FirstId | MoreIds]),
+                    {CommitTime, Ready}
             end
     end.
 
@@ -141,10 +133,15 @@ get_next_ready(LastDelivered, #state{entries=Entries, index=Idx}) ->
 -dialyzer({no_unused, prep_committed_between/3}).
 prep_committed_between(From, To, Table) ->
     0 =/= ets:select_count(Table,
-                          [{ #index_entry{red='$1', state=prepared, vote=ok, _='_'},
+                          [{ #index_entry{key={'$1', '_'}, state=prepared, vote=ok, _='_'},
                              [{'andalso', {'>', '$1', {const, From}},
                               {'<', '$1', {const, To}}}],
                              [true]  }]).
+
+-spec data_for_id(record_id(), cache_id()) -> ?heartbeat | {#{}, vclock()}.
+data_for_id({?heartbeat, _}, _) -> ?heartbeat;
+data_for_id(Id, Entries) ->
+    hd(ets:select(Entries, [{ #record{id=Id, writeset='$1', clock='$2', _='_'}, [], [{{'$1', '$2'}}] }])).
 
 %% @doc Remove all transactions in decidedRed with a commitVC[red] timestamp lower than the given one
 %%
@@ -158,7 +155,7 @@ prep_committed_between(From, To, Table) ->
 -dialyzer({nowarn_function, prune_decided_before/2}).
 prune_decided_before(MinLastDelivered, #state{entries=Entries, index=Idx, writes_cache=WriteKeys}) ->
     Result = ets:select(Idx,
-                        [{ #index_entry{red='$1', id='$2', state=decided, vote='$3', _='_'},
+                        [{ #index_entry{key={'$1', '$2'}, state=decided, vote='$3', _='_'},
                            [{'<', '$1', {const, MinLastDelivered}}],
                            [{{'$1', '$2', '$3'}}] }],
                         ?PRUNE_LIMIT),
@@ -175,7 +172,7 @@ prune_decided_before_continue(_Entries, _Idx, _Writes, '$end_of_table') -> ok;
 prune_decided_before_continue(Entries, Idx, Writes, {Objects, Cont}) ->
     lists:foreach(fun({Time, Id, Decision}) ->
         ok = clear_pending(Id, Decision, Entries, Writes),
-        true = ets:delete(Idx, Time),
+        true = ets:delete(Idx, {Time, Id}),
         true = ets:delete(Entries, Id)
     end, Objects),
     prune_decided_before_continue(Entries, Idx, Writes, ets:select(Cont)).
@@ -192,7 +189,7 @@ clear_pending(Id, ok, Entries, Writes) ->
 %%%===================================================================
 
 -spec prepare_hb({?heartbeat, _}, t()) -> {red_vote(), ballot(), grb_time:ts()}
-                                   | {already_decided, red_vote(), grb_time:ts()}.
+                                        | {already_decided, red_vote(), grb_time:ts()}.
 prepare_hb(Id, State) ->
     prepare(Id, ignore, ignore, ignore, ignore, State).
 
@@ -289,7 +286,7 @@ insert_prepared(Id, RS, WS, RedTs, VC, Decision, #state{index=Idx,
                     red=RedTs, clock=VC, state=prepared, vote=Decision}
     end,
     true = ets:insert(Entries, Record),
-    true = ets:insert(Idx, #index_entry{red=RedTs, id=Id, state=prepared, vote=Decision}),
+    true = ets:insert(Idx, #index_entry{key={RedTs, Id}, state=prepared, vote=Decision}),
     ok.
 
 make_commit_record({?heartbeat, _}=Id, _, _, RedTs, _, Decision, _, _) ->
@@ -355,7 +352,7 @@ decision(Ballot, Id, Vote, CommitVC, S=#state{entries=Entries, index=Idx,
                 ets:select(Entries,
                            [{ #record{id=Id, red='$1', vote='$2', _='_'}, [], [{{'$1', '$2'}}] }]),
 
-            true = ets:delete(Idx, OldTs),
+            true = ets:delete(Idx, {OldTs, Id}),
             %% if we voted commit during prepare, we need to clean up / move pending data
             %% if we voted abort, we didn't store anything
             case OldVote of
@@ -368,7 +365,7 @@ decision(Ballot, Id, Vote, CommitVC, S=#state{entries=Entries, index=Idx,
                                                     {#record.state, decided},
                                                     {#record.vote, Vote}]),
 
-            true = ets:insert(Idx, #index_entry{red=RedTs, id=Id, state=decided, vote=Vote}),
+            true = ets:insert(Idx, #index_entry{key={RedTs, Id}, state=decided, vote=Vote}),
             ok;
 
         Other -> Other
@@ -522,8 +519,8 @@ grb_paxos_state_heartbeat_test() ->
         ok = grb_paxos_state:decision_hb(Ballot, Id, Ts, L),
         ok = grb_paxos_state:decision_hb(Ballot, Id, Ts, F),
 
-        {?heartbeat, Ts} = grb_paxos_state:get_next_ready(0, L),
-        ?assertMatch({?heartbeat, Ts}, grb_paxos_state:get_next_ready(0, F)),
+        {Ts, [?heartbeat]} = grb_paxos_state:get_next_ready(0, L),
+        ?assertMatch({Ts, [?heartbeat]}, grb_paxos_state:get_next_ready(0, F)),
         ?assertEqual(false, grb_paxos_state:get_next_ready(Ts, L)),
         ?assertEqual(false, grb_paxos_state:get_next_ready(Ts, F))
     end).
@@ -550,7 +547,7 @@ grb_paxos_state_transaction_test() ->
         ?assertEqual({already_decided, ok, CVC} , grb_paxos_state:prepare(TxId, RS, WS, PVC, LastRed, L)),
 
         Expected = grb_vclock:get_time(?RED_REPLICA, CVC),
-        Ready={CommitTime, WS, Clock} = grb_paxos_state:get_next_ready(0, L),
+        Ready={CommitTime, [{WS, Clock}]} = grb_paxos_state:get_next_ready(0, L),
         ?assertEqual(Ready, grb_paxos_state:get_next_ready(0, F)),
         ?assertEqual(Expected, CommitTime),
         ?assertEqual(CVC, Clock),
@@ -580,9 +577,9 @@ grb_paxos_state_get_next_ready_test() ->
         %% now decide tx_0, marking tx_1 ready for delivery
         ok = grb_paxos_state:decision(0, tx_0, ok, V0, F),
 
-        ?assertEqual({T(V0), #{}, V0}, grb_paxos_state:get_next_ready(0, F)),
-        ?assertEqual({T(V1), #{}, V1}, grb_paxos_state:get_next_ready(T(V0), F)),
-        ?assertEqual({T(V2), #{}, V2}, grb_paxos_state:get_next_ready(T(V1), F))
+        ?assertEqual({T(V0), [{#{}, V0}]}, grb_paxos_state:get_next_ready(0, F)),
+        ?assertEqual({T(V1), [{#{}, V1}]}, grb_paxos_state:get_next_ready(T(V0), F)),
+        ?assertEqual({T(V2), [{#{}, V2}]}, grb_paxos_state:get_next_ready(T(V1), F))
     end),
 
     %% simple example of a tx being blocked by a heartbeat
@@ -600,8 +597,8 @@ grb_paxos_state_get_next_ready_test() ->
         %% now decide the heartbeat, marking tx_1 ready for delivery
         ok = grb_paxos_state:decision_hb(0, {?heartbeat, 0}, T0, F),
 
-        ?assertEqual({?heartbeat, T0}, grb_paxos_state:get_next_ready(0, F)),
-        ?assertEqual({T(V1), #{}, V1}, grb_paxos_state:get_next_ready(T0, F))
+        ?assertEqual({T0, [?heartbeat]}, grb_paxos_state:get_next_ready(0, F)),
+        ?assertEqual({T(V1), [{#{}, V1}]}, grb_paxos_state:get_next_ready(T0, F))
     end),
 
     %% more complex with transactions moving places
@@ -616,7 +613,7 @@ grb_paxos_state_get_next_ready_test() ->
         ok = grb_paxos_state:decision(0, tx_1, ok, V1, F),
 
         %% we can skip tx_0, since it was aborted, no need to wait for decision (because decision will be abort)
-        ?assertEqual({T(V1), #{}, V1}, grb_paxos_state:get_next_ready(0, F)),
+        ?assertEqual({T(V1), [{#{}, V1}]}, grb_paxos_state:get_next_ready(0, F)),
 
         %% now we decide tx_2 with a higher time, placing it the last on the queue
         ok = grb_paxos_state:decision(0, tx_2, ok, V4, F),
@@ -624,8 +621,8 @@ grb_paxos_state_get_next_ready_test() ->
         %% and decide tx_3, making it ready for delivery
         ok = grb_paxos_state:decision(0, tx_3, ok, V3, F),
 
-        ?assertEqual({T(V3), #{}, V3}, grb_paxos_state:get_next_ready(T(V1), F)),
-        ?assertEqual({T(V4), #{}, V4}, grb_paxos_state:get_next_ready(T(V3), F))
+        ?assertEqual({T(V3), [{#{}, V3}]}, grb_paxos_state:get_next_ready(T(V1), F)),
+        ?assertEqual({T(V4), [{#{}, V4}]}, grb_paxos_state:get_next_ready(T(V3), F))
     end).
 
 grb_paxos_state_hb_clash_test() ->
@@ -633,27 +630,27 @@ grb_paxos_state_hb_clash_test() ->
         {ok, B, Ts0} = grb_paxos_state:prepare_hb({?heartbeat, 0}, L),
         grb_paxos_state:decision_hb(B, {?heartbeat, 0}, Ts0, L),
 
-        ?assertEqual({?heartbeat, Ts0}, grb_paxos_state:get_next_ready(0, L)),
+        ?assertEqual({Ts0, [?heartbeat]}, grb_paxos_state:get_next_ready(0, L)),
         ?assertMatch({already_decided, ok, Ts0}, grb_paxos_state:prepare_hb({?heartbeat, 0}, L)),
 
-        ?assertEqual({?heartbeat, Ts0}, grb_paxos_state:get_next_ready(0, L)),
+        ?assertEqual({Ts0, [?heartbeat]}, grb_paxos_state:get_next_ready(0, L)),
         ?assertEqual(false, grb_paxos_state:get_next_ready(Ts0, L))
     end).
 
 %%%% fixme(borja, red): This shouldn't fail
-%%grb_paxos_state_tx_clash_test() ->
-%%    VC = fun(I) -> #{?RED_REPLICA => I} end,
-%%
-%%    with_states(grb_paxos_state:follower(), fun(F) ->
-%%        ok = grb_paxos_state:accept(0, tx_1, #{}, #{a => 0}, ok, VC(0), F),
-%%        ok = grb_paxos_state:accept(0, tx_2, #{}, #{a => 1}, ok, VC(5), F),
-%%
-%%        ok = grb_paxos_state:decision(0, tx_1, ok, VC(5), F),
-%%        ok = grb_paxos_state:decision(0, tx_2, ok, VC(5), F),
-%%
-%%        ?assertEqual([ {5, #{a => 0}, VC(5)}, {5, #{a => 1}, VC(5)} ],
-%%                     grb_paxos_state:get_next_ready(0, F) )
-%%    end).
+grb_paxos_state_tx_clash_test() ->
+    VC = fun(I) -> #{?RED_REPLICA => I} end,
+
+    with_states(grb_paxos_state:follower(), fun(F) ->
+        ok = grb_paxos_state:accept(0, tx_1, #{}, #{a => 0}, ok, VC(0), F),
+        ok = grb_paxos_state:accept(0, tx_2, #{}, #{a => 1}, ok, VC(5), F),
+
+        ok = grb_paxos_state:decision(0, tx_1, ok, VC(5), F),
+        ok = grb_paxos_state:decision(0, tx_2, ok, VC(5), F),
+
+        ?assertEqual({5, [ {#{a => 0}, VC(5)},
+                           {#{a => 1}, VC(5)} ]}, grb_paxos_state:get_next_ready(0, F) )
+    end).
 
 grb_paxos_state_check_prepared_test() ->
     PendingReads = ets:new(dummy_reads, [bag]),
@@ -720,7 +717,7 @@ grb_paxos_state_prune_decided_before_test() ->
         ?assertEqual({already_decided, ok, CVC1} , grb_paxos_state:prepare(TxId1, RS1, WS1, PVC1, LastRed, L)),
 
         Expected = grb_vclock:get_time(?RED_REPLICA, CVC1),
-        ?assertEqual({Expected, WS1, CVC1}, grb_paxos_state:get_next_ready(0, L)),
+        ?assertEqual({Expected, [{WS1, CVC1}]}, grb_paxos_state:get_next_ready(0, L)),
         ?assertEqual(false, grb_paxos_state:get_next_ready(Expected, L)),
 
         %% preparing even after delivery should return early
@@ -730,12 +727,12 @@ grb_paxos_state_prune_decided_before_test() ->
         {ok, Ballot, Ts} = grb_paxos_state:prepare_hb({?heartbeat, 0}, L),
         ok = grb_paxos_state:decision_hb(Ballot, {?heartbeat, 0}, Ts, L),
 
-        ?assertEqual({?heartbeat, Ts}, grb_paxos_state:get_next_ready(Expected, L)),
+        ?assertEqual({Ts, [?heartbeat]}, grb_paxos_state:get_next_ready(Expected, L)),
         ?assertEqual(false, grb_paxos_state:get_next_ready(Ts, L)),
 
         %% prune, now we should only have the heartbeat
         ok = grb_paxos_state:prune_decided_before(Expected + 1, L),
-        ?assertMatch({?heartbeat, Ts}, grb_paxos_state:get_next_ready(0, L)),
+        ?assertMatch({Ts, [?heartbeat]}, grb_paxos_state:get_next_ready(0, L)),
 
         %% but if we prune past that, then the heartbeat should be gone
         ok = grb_paxos_state:prune_decided_before(Ts + 1, L),

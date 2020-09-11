@@ -376,15 +376,15 @@ deliver_updates(Partition, From, SynodState) ->
     case grb_paxos_state:get_next_ready(From, SynodState) of
         false ->
             From;
-
-        {heartbeat, Ts} ->
-            ?LOG_DEBUG("~p DELIVER_HB(~b)", [Partition, Ts]),
-            ok = grb_propagation_vnode:handle_red_heartbeat(Partition, Ts),
-            deliver_updates(Partition, Ts, SynodState);
-
-        {NextFrom, WriteSet, CommitVC} ->
-            ?LOG_DEBUG("~p DELIVER(~p, ~p)", [Partition, NextFrom, WriteSet]),
-            ok = grb_main_vnode:handle_red_transaction(Partition, WriteSet, NextFrom, CommitVC),
+        {NextFrom, Entries} ->
+            lists:foreach(fun
+                (heartbeat) ->
+                    ?LOG_DEBUG("~p DELIVER_HB(~b)", [Partition, NextFrom]),
+                    ok = grb_propagation_vnode:handle_red_heartbeat(Partition, NextFrom);
+                ({WriteSet, CommitVC}) ->
+                    ?LOG_DEBUG("~p DELIVER(~p, ~p)", [Partition, NextFrom, WriteSet]),
+                    ok = grb_main_vnode:handle_red_transaction(Partition, WriteSet, NextFrom, CommitVC)
+            end, Entries),
             deliver_updates(Partition, NextFrom, SynodState)
     end.
 
