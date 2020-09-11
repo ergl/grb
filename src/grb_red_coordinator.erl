@@ -42,8 +42,11 @@ already_decided(TxId, Vote, VoteVC) ->
 
 -spec accept_ack(partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
 accept_ack(Partition, Ballot, TxId, Vote, AcceptVC) ->
-    {ok, Coordinator} = grb_red_manager:transaction_coordinator(TxId),
-    gen_server:cast(Coordinator, {accept_ack, Partition, Ballot, TxId, Vote, AcceptVC}).
+    case grb_red_manager:transaction_coordinator(TxId) of
+        error -> ok;
+        {ok, Coordinator} ->
+            gen_server:cast(Coordinator, {accept_ack, Partition, Ballot, TxId, Vote, AcceptVC})
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
@@ -105,6 +108,10 @@ handle_cast({accept_ack, FromPartition, Ballot, TxId, Vote, AcceptVC},
             undefined
     end,
     {noreply, S};
+
+handle_cast({accept_ack, From, Ballot, TxId, Vote, _}, undefined) ->
+    ?LOG_DEBUG("missed ACCEPT_ACK(~b, ~p, ~p) from ~p", [Ballot, TxId, Vote, From]),
+    {noreply, undefined};
 
 handle_cast(E, S) ->
     ?LOG_WARNING("unexpected cast: ~p~n", [E]),
