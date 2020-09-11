@@ -188,3 +188,10 @@ devfulljoin:
 	./bin/join_cluster_script.erl 'grb_local1@127.0.0.1' 'grb_local2@127.0.0.1'
 	./bin/join_cluster_script.erl 'grb_local3@127.0.0.1' 'grb_local4@127.0.0.1'
 	./bin/connect_dcs.erl 'grb_local1@127.0.0.1' 'grb_local3@127.0.0.1'
+
+devreplicas:
+	./bin/join_cluster_script.erl 'grb_local1@127.0.0.1'
+	./bin/join_cluster_script.erl 'grb_local2@127.0.0.1'
+	./bin/join_cluster_script.erl 'grb_local3@127.0.0.1'
+	./bin/join_cluster_script.erl 'grb_local4@127.0.0.1'
+	./bin/connect_dcs.erl 'grb_local1@127.0.0.1' 'grb_local2@127.0.0.1' 'grb_local3@127.0.0.1' 'grb_local4@127.0.0.1'

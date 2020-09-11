@@ -1,5 +1,6 @@
 -module(grb_paxos_state).
 -include("grb.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -317,6 +318,7 @@ decision_pre(_, Id, _, _, #state{status=?follower, entries=Entries}) ->
             prepared ->
                 ok;
             decided ->
+                ?LOG_WARNING("duplicate DECIDE(~p)", [Id]),
                 already_decided
         end
     catch _:_ ->
@@ -328,6 +330,7 @@ decision_pre(_, Id, CommitRed, ClockTime, #state{status=?leader, entries=Entries
         Status = ets:lookup_element(Entries, Id, #record.state),
         case Status of
             decided ->
+                ?LOG_WARNING("duplicate DECIDE(~p)", [Id]),
                 already_decided;
             prepared ->
                 case ClockTime >= CommitRed of
