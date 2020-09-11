@@ -48,7 +48,7 @@ groups() ->
 
         {single_dc_red,
             [sequence, {repeat_until_ok, 100}],
-            [stable_vc_red_test]},
+            [stable_vc_red_test]}, %% fixme(borja, red): remove this test, I don't think we can make it work
 
         {multi_dc,
             [sequence],
@@ -60,7 +60,7 @@ groups() ->
 
         {all_tests,
             [sequence],
-            [ %%{group, single_dc}, todo(borja, red): fix advancing red entry on single_dc
+            [ {group, single_dc},
               {group, single_dc_red},
               {group, multi_dc},
               {group, replication}] }

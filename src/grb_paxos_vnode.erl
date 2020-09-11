@@ -341,6 +341,7 @@ decide_hb_internal(P, Ballot, Id, Ts, SynodState, Time) ->
         not_prepared ->
             ?LOG_ERROR("~p ~p DECIDE_HEARTBEAT(~b) := not_prepared", [P, self(), Ballot]),
             %% todo(borja, red): This might return not_prepared at followers
+            %% todo(borja, red): Buffer DECISION until we receive ACCEPT_ACK from leader
             %% if the coordinator receives a quorum of ACCEPT_ACK before this follower
             %% receives an ACCEPT, it might be that we receive a DECISION before
             %% the decided transaction has been processes. What to do?
@@ -360,6 +361,7 @@ decide_internal(Partition, Ballot, TxId, Decision, CommitVC, State, Time) ->
         not_prepared ->
             ?LOG_ERROR("~p: DECIDE(~b, ~p) := not_prepared", [Partition, Ballot, TxId]),
             %% todo(borja, red): This might return not_prepared at followers
+            %% todo(borja, red): Buffer DECISION until we receive ACCEPT_ACK from leader
             %% if the coordinator receives a quorum of ACCEPT_ACK before this follower
             %% receives an ACCEPT, it might be that we receive a DECISION before
             %% the decided transaction has been processes. What to do?

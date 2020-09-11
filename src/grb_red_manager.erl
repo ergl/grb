@@ -30,7 +30,7 @@
          handle_info/2]).
 
 -define(POOL_NAME, red_coord_pool).
-%% todo(borja, red): revisit
+%% todo(borja, red): revisit red coordinator pool size
 -define(POOL_SIZE, (1 * erlang:system_info(schedulers_online))).
 -define(POOL_OVERFLOW, 5).
 
@@ -55,9 +55,7 @@ pool_spec() ->
             {max_overflow, ?POOL_OVERFLOW},
             {strategy, lifo}],
 
-    %% todo(borja, red): Any args here?
-    WorkerArgs = [],
-    poolboy:child_spec(?POOL_NAME, Args, WorkerArgs).
+    poolboy:child_spec(?POOL_NAME, Args, []).
 
 -spec persist_unique_leader_info() -> ok.
 persist_unique_leader_info() ->

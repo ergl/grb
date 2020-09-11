@@ -3,9 +3,6 @@
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
-%% fixme(borja, red): Look what's happening with red timer, if in doubt, go through the normal protocol
-%% use a unique tx key each time, like {heartbeat, ts()} or a special key that the protocol won't check
-
 %% Start/Util
 -export([start/2]).
 

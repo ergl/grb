@@ -197,7 +197,6 @@ initial_port(clusterdev4) -> 10145;
 initial_port(clusterdev5) -> 10155;
 initial_port(clusterdev6) -> 10165.
 
-%% @doc TODO
 -spec pmap(fun(), list()) -> list().
 pmap(F, L) ->
     Parent = self(),
