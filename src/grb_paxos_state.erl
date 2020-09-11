@@ -640,7 +640,6 @@ grb_paxos_state_hb_clash_test() ->
         ?assertEqual(false, grb_paxos_state:get_next_ready(Ts0, L))
     end).
 
-%%%% fixme(borja, red): This shouldn't fail
 grb_paxos_state_tx_clash_test() ->
     VC = fun(I) -> #{?RED_REPLICA => I} end,
 
