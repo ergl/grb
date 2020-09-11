@@ -232,7 +232,7 @@ handle_command({handle_red_tx, WS, RedTime, VC}, _From, S=#state{partition=Parti
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->
-    ?LOG_WARNING("unhandled_command ~p", [Message]),
+    ?LOG_WARNING("~p unhandled_command ~p", [?MODULE, Message]),
     {noreply, State}.
 
 handle_info(?blue_tick_req, State=#state{partition=P,
@@ -245,7 +245,7 @@ handle_info(?blue_tick_req, State=#state{partition=P,
     {ok, State#state{blue_tick_timer=erlang:send_after(Interval, self(), ?blue_tick_req)}};
 
 handle_info(Msg, State) ->
-    ?LOG_WARNING("unhandled_info ~p", [Msg]),
+    ?LOG_WARNING("~p unhandled_info ~p", [?MODULE, Msg]),
     {ok, State}.
 
 -spec handle_remote_tx_internal(replica_id(), term(), #{}, grb_time:ts(), vclock(), state()) -> ok.

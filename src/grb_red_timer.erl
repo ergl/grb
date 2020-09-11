@@ -91,7 +91,7 @@ handle_cast({accept_ack, InBallot, Id, InTimestamp}, S0=#state{replica=LocalId,
     {noreply, S};
 
 handle_cast(E, S) ->
-    ?LOG_WARNING("unexpected cast: ~p~n", [E]),
+    ?LOG_WARNING("~p unexpected cast: ~p~n", [?MODULE, E]),
     {noreply, S}.
 
 handle_info(?red_hb, State=?no_active_timer) ->
@@ -102,7 +102,7 @@ handle_info(?red_hb, State=?no_active_timer) ->
                           heartbeat_id=Id, next_timer_id=next_heartbeat_id(Id)}};
 
 handle_info(E, S) ->
-    logger:warning("unexpected info: ~p~n", [E]),
+    ?LOG_WARNING("~p unexpected info: ~p~n", [?MODULE, E]),
     {noreply, S}.
 
 -spec next_heartbeat_id({heartbeat, non_neg_integer()}) -> {heartbeat, non_neg_integer()}.

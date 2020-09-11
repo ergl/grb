@@ -146,9 +146,9 @@ handle_cast({unregister_coordinator, TxId}, S=#state{pid_for_tx=Table}) ->
     {noreply, S};
 
 handle_cast(E, S) ->
-    ?LOG_WARNING("unexpected cast: ~p~n", [E]),
+    ?LOG_WARNING("~p unexpected cast: ~p~n", [?MODULE, E]),
     {noreply, S}.
 
 handle_info(E, S) ->
-    logger:warning("unexpected info: ~p~n", [E]),
+    ?LOG_WARNING("~p unexpected info: ~p~n", [?MODULE, E]),
     {noreply, S}.

@@ -215,7 +215,7 @@ handle_cast({set_svc, Parent, ParentSVC}, S=#state{self_partitions=Partitions,
     {noreply, S#state{tree_state=NewLeaf}};
 
 handle_cast(E, S) ->
-    ?LOG_WARNING("unexpected cast: ~p~n", [E]),
+    ?LOG_WARNING("~p unexpected cast: ~p~n", [?MODULE, E]),
     {noreply, S}.
 
 %% Send our local stableVC to our parent periodically
@@ -253,7 +253,7 @@ handle_info(broadcast_clock, S=#state{self_partitions=Partitions,
     {noreply, S#state{tree_state=NewSingle}};
 
 handle_info(E, S) ->
-    ?LOG_WARNING("unexpected info: ~p at state ~p~n", [E, S]),
+    ?LOG_WARNING("~p unexpected info: ~p at state ~p~n", [?MODULE, E, S]),
     {noreply, S}.
 
 terminate(_Reason,

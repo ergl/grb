@@ -262,7 +262,7 @@ handle_command({decision, Ballot, TxId, Decision, CommitVC}, _Sender, S=#state{p
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->
-    ?LOG_WARNING("unhandled_command ~p", [Message]),
+    ?LOG_WARNING("~p unhandled_command ~p", [?MODULE, Message]),
     {noreply, State}.
 
 handle_info({retry_decide_hb, Ballot, Id, Ts}, S=#state{partition=P,
@@ -288,7 +288,7 @@ handle_info(?deliver, S=#state{partition=Partition,
                  deliver_timer=erlang:send_after(Interval, self(), ?deliver)}};
 
 handle_info(Msg, State) ->
-    ?LOG_WARNING("unhandled_info ~p", [Msg]),
+    ?LOG_WARNING("~p unhandled_info ~p", [?MODULE, Msg]),
     {ok, State}.
 
 %%%===================================================================

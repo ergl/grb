@@ -114,11 +114,11 @@ handle_cast({accept_ack, From, Ballot, TxId, Vote, _}, undefined) ->
     {noreply, undefined};
 
 handle_cast(E, S) ->
-    ?LOG_WARNING("unexpected cast: ~p~n", [E]),
+    ?LOG_WARNING("~p unexpected cast: ~p~n", [?MODULE, E]),
     {noreply, S}.
 
 handle_info(Info, State) ->
-    ?LOG_INFO("Unhandled msg ~p", [Info]),
+    ?LOG_WARNING("~p Unhandled msg ~p", [?MODULE, Info]),
     {noreply, State}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

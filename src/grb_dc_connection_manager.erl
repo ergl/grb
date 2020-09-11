@@ -319,9 +319,9 @@ handle_cast({closed, ReplicaId, PoolName}, State=#state{conn_index=Index}) ->
     {noreply, State#state{conn_index=maps:without(Pools, Index)}};
 
 handle_cast(E, S) ->
-    ?LOG_WARNING("unexpected cast: ~p~n", [E]),
+    ?LOG_WARNING("~p unexpected cast: ~p~n", [?MODULE, E]),
     {noreply, S}.
 
 handle_info(E, S) ->
-    logger:warning("unexpected info: ~p~n", [E]),
+    logger:warning("~p unexpected info: ~p~n", [?MODULE, E]),
     {noreply, S}.
