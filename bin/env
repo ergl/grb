@@ -57,6 +57,10 @@ if [ -z "$RED_DELIVER_INTERVAL_MS" ]; then
   export RED_DELIVER_INTERVAL_MS=100
 fi
 
+if [ -z "$RED_PRUNE_INTERVAL" ]; then
+  export RED_PRUNE_INTERVAL=500
+fi
+
 # Node config
 
 if [ -z "$IP" ]; then

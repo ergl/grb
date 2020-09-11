@@ -104,6 +104,10 @@
     {red_heartbeat_interval, ${RED_HB_INTERVAL_MS}},
 
     %% How often do we check for ready transactions/heartbeats in decidedRed
-    {red_delivery_interval, ${RED_DELIVER_INTERVAL_MS}}
+    {red_delivery_interval, ${RED_DELIVER_INTERVAL_MS}},
+
+    %% How often do we prune our local decidedRed?
+    %% Set this value to 0 to disable it
+    {red_prune_interval, ${RED_PRUNE_INTERVAL}}
   ]}
 ].

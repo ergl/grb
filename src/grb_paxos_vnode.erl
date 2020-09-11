@@ -44,6 +44,7 @@
 
 -define(master, grb_paxos_vnode_master).
 -define(deliver, deliver_event).
+-define(prune, prune_event).
 
 -record(state, {
     partition :: partition_id(),
@@ -54,6 +55,9 @@
     deliver_timer = undefined :: reference() | undefined,
     deliver_interval :: non_neg_integer(),
     decision_retry_interval :: non_neg_integer(),
+
+    prune_timer = undefined :: reference() | undefined,
+    prune_interval :: non_neg_integer(),
 
     %% read replica of the last version cache by grb_main_vnode
     op_log_red_replica :: atom(),
@@ -149,10 +153,12 @@ start_vnode(I) ->
 init([Partition]) ->
     {ok, RetryInterval} = application:get_env(grb, red_heartbeat_interval),
     {ok, DeliverInterval} = application:get_env(grb, red_delivery_interval),
+    PruningInterval = application:get_env(grb, red_prune_interval, 0),
     %% don't care about setting bad values, we will overwrite it
     State = #state{partition=Partition,
                    deliver_interval=DeliverInterval,
                    decision_retry_interval=RetryInterval,
+                   prune_interval=PruningInterval,
                    op_log_red_replica=grb_dc_utils:cache_name(Partition, ?OP_LOG_LAST_RED),
                    synod_state=undefined},
     {ok, State}.
@@ -165,22 +171,18 @@ handle_command(is_ready, _Sender, State) ->
 
 handle_command(init_leader, _Sender, S=#state{partition=Partition,
                                               heartbeat_process=undefined,
-                                              deliver_interval=Int,
                                               synod_state=undefined}) ->
 
     ReplicaId = grb_dc_manager:replica_id(),
     {ok, Pid} = grb_red_timer:start(ReplicaId, Partition),
-    {reply, ok, S#state{replica_id=ReplicaId,
-                        heartbeat_process=Pid,
-                        synod_state=grb_paxos_state:leader(),
-                        deliver_timer=erlang:send_after(Int, self(), ?deliver)}};
+    {reply, ok, start_timers(S#state{replica_id=ReplicaId,
+                                     heartbeat_process=Pid,
+                                     synod_state=grb_paxos_state:leader()})};
 
-handle_command(init_follower, _Sender, S=#state{deliver_interval=Int,
-                                                synod_state=undefined}) ->
+handle_command(init_follower, _Sender, S=#state{synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
-    {reply, ok, S#state{replica_id=ReplicaId,
-                        synod_state=grb_paxos_state:follower(),
-                        deliver_timer=erlang:send_after(Int, self(), ?deliver)}};
+    {reply, ok, start_timers(S#state{replica_id=ReplicaId,
+                                     synod_state=grb_paxos_state:follower()})};
 
 %%%===================================================================
 %%% leader protocol messages
@@ -293,6 +295,20 @@ handle_info(?deliver, S=#state{partition=Partition,
     {ok, S#state{last_delivered=deliver_updates(Partition, LastDelivered, SynodState),
                  deliver_timer=erlang:send_after(Interval, self(), ?deliver)}};
 
+handle_info(?prune, S=#state{last_delivered=LastDelivered,
+                             synod_state=SynodState,
+                             prune_timer=Timer,
+                             prune_interval=Interval}) ->
+
+    erlang:cancel_timer(Timer),
+    ?LOG_DEBUG("~p PRUNE_BEFORE(~b)", [S#state.partition, LastDelivered]),
+    %% todo(borja, red): Should compute MinLastDelivered
+    %% To know the safe cut-off point, we should exchange LastDelivered with all replicas and find
+    %% the minimum. Either replicas send a message to the leader, which aggregates the min and returns,
+    %% or we build some tree.
+    ok = grb_paxos_state:prune_decided_before(LastDelivered, SynodState),
+    {ok, S#state{prune_timer=erlang:send_after(Interval, self(), ?prune)}};
+
 handle_info(Msg, State) ->
     ?LOG_WARNING("~p unhandled_info ~p", [?MODULE, Msg]),
     {ok, State}.
@@ -300,6 +316,18 @@ handle_info(Msg, State) ->
 %%%===================================================================
 %%% internal
 %%%===================================================================
+
+-spec start_timers(#state{}) -> #state{}.
+start_timers(S=#state{deliver_interval=Deliver, prune_interval=0}) ->
+    S#state{
+        prune_timer=undefined,
+        deliver_timer=erlang:send_after(Deliver, self(), ?deliver)
+    };
+start_timers(S=#state{deliver_interval=Deliver, prune_interval=Prune}) ->
+    S#state{
+        prune_timer=erlang:send_after(Prune, self(), ?prune),
+        deliver_timer=erlang:send_after(Deliver, self(), ?deliver)
+    }.
 
 -spec reply_accept_ack(red_coord_location(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
 reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC) ->
