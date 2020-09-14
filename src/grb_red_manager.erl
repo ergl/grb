@@ -9,13 +9,15 @@
 -ignore_xref([start_link/0,
               persist_unique_leader_info/0,
               persist_leader_info/0,
-              persist_follower_info/1]).
+              persist_follower_info/1,
+              start_red_coordinators/0]).
 
 -export([persist_unique_leader_info/0,
          persist_leader_info/0,
          persist_follower_info/1,
          leader_of/1,
          quorum_size/0,
+         start_red_coordinators/0,
          register_coordinator/1,
          transaction_coordinator/1,
          unregister_coordinator/2]).
@@ -29,6 +31,8 @@
 -define(LEADERS_TABLE, grb_red_manager_leaders).
 -define(COORD_TABLE, grb_red_manager_coordinators).
 -define(QUORUM_KEY, quorum_size).
+-define(POOL_SIZE, pool_size).
+-define(COORD_KEY, coord_key).
 
 -record(state, {
     pid_for_tx :: cache(term(), red_coordinator()),
@@ -68,11 +72,26 @@ quorum_size() ->
 leader_of(Partition) ->
     ets:lookup_element(?LEADERS_TABLE, Partition, 2).
 
+-spec start_red_coordinators() -> ok.
+start_red_coordinators() ->
+    {ok, PoolSize} = application:get_env(grb, red_coord_pool_size),
+    ok = persistent_term:put({?MODULE, ?POOL_SIZE}, PoolSize),
+    start_red_coordinators(PoolSize).
+
+-spec start_red_coordinators(non_neg_integer()) -> ok.
+start_red_coordinators(0) ->
+    ok;
+start_red_coordinators(N) ->
+    {ok, Pid} = grb_red_coordinator_sup:start_coordinator(N),
+    ok = persistent_term:put({?MODULE, ?COORD_KEY, N}, Pid),
+    start_red_coordinators(N - 1).
+
 -spec register_coordinator(term()) -> red_coordinator().
 register_coordinator(TxId) ->
-    {ok, Pid} = grb_red_coordinator_sup:start_coordinator(),
-    true = ets:insert(?COORD_TABLE, {TxId, Pid}),
-    Pid.
+    PoolSize = persistent_term:get({?MODULE, ?POOL_SIZE}),
+    WorkerPid = persistent_term:get({?MODULE, ?COORD_KEY, rand:uniform(PoolSize)}),
+    true = ets:insert(?COORD_TABLE, {TxId, WorkerPid}),
+    WorkerPid.
 
 -spec transaction_coordinator(term()) -> {ok, red_coordinator()} | error.
 transaction_coordinator(TxId) ->

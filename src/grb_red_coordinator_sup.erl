@@ -3,7 +3,7 @@
 -include("grb.hrl").
 
 -export([start_link/0,
-         start_coordinator/0]).
+         start_coordinator/1]).
 
 %% API
 -export([init/1]).
@@ -13,8 +13,8 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-start_coordinator() ->
-    supervisor:start_child(?MODULE, []).
+start_coordinator(Id) ->
+    supervisor:start_child(?MODULE, [Id]).
 
 init([]) ->
     {ok, {{simple_one_for_one, 5, 10},

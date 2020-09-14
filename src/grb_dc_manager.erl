@@ -225,6 +225,9 @@ start_paxos_unique_leader() ->
     ok = lists:foreach(fun({ok, ok}) -> ok end, Res0),
 
     ok = grb_paxos_vnode:init_leader_state(),
+
+    Res1 = erpc:multicall(LocalNodes, grb_red_manager, start_red_coordinators, []),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res1),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 -endif.
@@ -239,6 +242,9 @@ start_paxos_leader() ->
     ok = lists:foreach(fun({ok, ok}) -> ok end, Res0),
 
     ok = grb_paxos_vnode:init_leader_state(),
+
+    Res1 = erpc:multicall(LocalNodes, grb_red_manager, start_red_coordinators, []),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res1),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
@@ -252,6 +258,9 @@ start_paxos_follower(LeaderReplica) ->
     ok = lists:foreach(fun({ok, ok}) -> ok end, Res0),
 
     ok = grb_paxos_vnode:init_follower_state(),
+
+    Res1 = erpc:multicall(LocalNodes, grb_red_manager, start_red_coordinators, []),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res1),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 

@@ -4,7 +4,7 @@
 -include_lib("kernel/include/logger.hrl").
 
 %% supervision tree
--export([start_link/0]).
+-export([start_link/1]).
 
 -export([commit/5,
          already_decided/3,
@@ -17,10 +17,7 @@
          handle_info/2]).
 
 -type partition_ballots() :: #{partition_id() => ballot()}.
--record(certify_state, {
-    tx_id :: term(),
-    self_pid :: pid(),
-    replica :: replica_id(),
+-record(tx_acc, {
     promise :: grb_promise:t(),
     locations = [] :: [{partition_id(), leader_location()}],
     quorums_to_ack = #{} :: #{partition_id() => pos_integer()},
@@ -28,9 +25,22 @@
     accumulator = #{} :: #{partition_id() => {red_vote(), vclock()}}
 }).
 
--spec start_link() -> {ok, pid()}.
-start_link() ->
-    gen_server:start_link(?MODULE, [], []).
+-record(state, {
+    self_pid :: pid(),
+    replica :: replica_id(),
+    quorum_size :: non_neg_integer(),
+    accumulators = #{} :: #{term() => #tx_acc{}}
+}).
+
+-spec start_link(non_neg_integer()) -> {ok, pid()}.
+start_link(Id) ->
+    Name = {local, generate_coord_name(Id)},
+    gen_server:start_link(Name, ?MODULE, [Id], []).
+
+-spec generate_coord_name(non_neg_integer()) -> atom().
+generate_coord_name(Id) ->
+    BinId = integer_to_binary(Id),
+    grb_dc_utils:safe_bin_to_atom(<<"grb_red_coordinator_", BinId/binary>>).
 
 -spec commit(red_coordinator(), grb_promise:t(), term(), vclock(), [{partition_id(), #{}, #{}}]) -> ok.
 commit(Coordinator, Promise, TxId, SnapshotVC, Prepares) ->
@@ -60,15 +70,20 @@ accept_ack(Partition, Ballot, TxId, Vote, AcceptVC) ->
 
 init(_WorkerArgs) ->
     process_flag(trap_exit, true),
-    {ok, undefined}.
+    LocalId = grb_dc_manager:replica_id(),
+    QuorumSize = grb_red_manager:quorum_size(),
+    {ok, #state{self_pid=self(),
+                replica=LocalId,
+                quorum_size=QuorumSize}}.
 
 handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
-handle_cast({commit, Promise, TxId, SnapshotVC, Prepares}, undefined) ->
-    LocalId = grb_dc_manager:replica_id(),
-    QuorumSize = grb_red_manager:quorum_size(),
+handle_cast({commit, Promise, TxId, SnapshotVC, Prepares}, S=#state{replica=LocalId,
+                                                                    quorum_size=QuorumSize,
+                                                                    accumulators=Acc}) ->
+
     SendFun = fun({Partition, Readset, Writeset}, {LeaderAcc, QuorumAcc}) ->
         Location = send_prepare(LocalId, Partition, TxId, Readset, Writeset, SnapshotVC),
         {
@@ -77,50 +92,34 @@ handle_cast({commit, Promise, TxId, SnapshotVC, Prepares}, undefined) ->
         }
     end,
     {LeaderLocations, QuorumsToAck} = lists:foldl(SendFun, {[], #{}}, Prepares),
-    {noreply, #certify_state{tx_id=TxId,
-                             self_pid=self(),
-                             replica=LocalId,
-                             promise=Promise,
-                             locations=LeaderLocations,
-                             quorums_to_ack=QuorumsToAck}};
+    {noreply, S#state{accumulators=Acc#{TxId => #tx_acc{promise=Promise,
+                                                        locations=LeaderLocations,
+                                                        quorums_to_ack=QuorumsToAck}}}};
 
-handle_cast({already_decided, TxId, Vote, VoteVC}, S=#certify_state{promise=Promise}) ->
-    ?LOG_DEBUG("~p already decided", [TxId]),
-    reply_to_client({Vote, VoteVC}, Promise),
-    ok = grb_red_manager:unregister_coordinator(TxId, S#certify_state.self_pid),
-    {stop, normal, undefined};
-
-handle_cast({accept_ack, FromPartition, Ballot, TxId, Vote, AcceptVC},
-            S0=#certify_state{ballots=Ballots0, quorums_to_ack=Quorums0, accumulator=Acc0}) ->
-
-    {ok, Ballots} = check_ballot(FromPartition, Ballot, Ballots0),
-    Acc = Acc0#{FromPartition => {Vote, AcceptVC}},
-    ToAck = maps:get(FromPartition, Quorums0),
-    ?LOG_DEBUG("~p ACCEPT_ACK(~p, ~b), ~b to go", [TxId, FromPartition, Ballot, ToAck - 1]),
-    Quorums = case ToAck of
-        1 -> maps:remove(FromPartition, Quorums0);
-        _ -> Quorums0#{FromPartition => ToAck - 1}
+handle_cast({already_decided, TxId, Vote, VoteVC}, S0=#state{self_pid=Pid, accumulators=Acc0}) ->
+    S = case maps:take(TxId, Acc0) of
+        error ->
+            ?LOG_DEBUG("missed ALREADY_DECIDED(~p, ~p)", [TxId, Vote]),
+            S0;
+        {#tx_acc{promise=Promise}, Acc} ->
+            ?LOG_DEBUG("~p already decided", [TxId]),
+            reply_to_client({Vote, VoteVC}, Promise),
+            ok = grb_red_manager:unregister_coordinator(TxId, Pid),
+            S0#state{accumulators=Acc}
     end,
-    case map_size(Quorums) of
-        N when N > 0 ->
-            {noreply, S0#certify_state{quorums_to_ack=Quorums, accumulator=Acc, ballots=Ballots}};
-        0 ->
-            Outcome={Decision, CommitVC} = decide_transaction(Acc),
-            reply_to_client(Outcome, S0#certify_state.promise),
+    {noreply, S};
 
-            LocalId = S0#certify_state.replica,
-            lists:foreach(fun({Partition, Location}) ->
-                Ballot = maps:get(Partition, Ballots),
-                send_decision(LocalId, Partition, Location, Ballot, TxId, Decision, CommitVC)
-            end, S0#certify_state.locations),
-
-            ok = grb_red_manager:unregister_coordinator(TxId, S0#certify_state.self_pid),
-            {stop, normal, undefined}
-    end;
-
-handle_cast({accept_ack, From, Ballot, TxId, Vote, _}, undefined) ->
-    ?LOG_DEBUG("missed ACCEPT_ACK(~b, ~p, ~p) from ~p", [Ballot, TxId, Vote, From]),
-    {noreply, undefined};
+handle_cast({accept_ack, From, Ballot, TxId, Vote, AcceptVC}, S0=#state{self_pid=Pid,
+                                                                        replica=LocalId,
+                                                                        accumulators=TxAcc}) ->
+    S = case maps:get(TxId, TxAcc, undefined) of
+        undefined ->
+            ?LOG_DEBUG("missed ACCEPT_ACK(~b, ~p, ~p) from ~p", [Ballot, TxId, Vote, From]),
+            S0;
+        TxState ->
+            S0#state{accumulators=handle_ack(Pid, LocalId, From, Ballot, TxId, Vote, AcceptVC, TxAcc, TxState)}
+    end,
+    {noreply, S};
 
 handle_cast(E, S) ->
     ?LOG_WARNING("~p unexpected cast: ~p~n", [?MODULE, E]),
@@ -172,6 +171,33 @@ send_prepare(FromId, Partition, TxId, RS, WS, VC) ->
                            [RemoteReplica, {coord, FromId, node()}, Partition, TxId, RS, WS, VC])
     end,
     LeaderLoc.
+
+handle_ack(SelfPid, LocalId, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0, TxState) ->
+    #tx_acc{ballots=Ballots0, quorums_to_ack=Quorums0, accumulator=Acc0} = TxState,
+
+    {ok, Ballots} = check_ballot(FromPartition, Ballot, Ballots0),
+    Acc = Acc0#{FromPartition => {Vote, AcceptVC}},
+    ToAck = maps:get(FromPartition, Quorums0),
+    ?LOG_DEBUG("~p ACCEPT_ACK(~p, ~b), ~b to go", [TxId, FromPartition, Ballot, ToAck - 1]),
+    Quorums = case ToAck of
+        1 -> maps:remove(FromPartition, Quorums0);
+        _ -> Quorums0#{FromPartition => ToAck - 1}
+    end,
+    case map_size(Quorums) of
+        N when N > 0 ->
+            TxAcc0#{TxId => TxState#tx_acc{quorums_to_ack=Quorums, accumulator=Acc, ballots=Ballots}};
+        0 ->
+            Outcome={Decision, CommitVC} = decide_transaction(Acc),
+            reply_to_client(Outcome, TxState#tx_acc.promise),
+
+            lists:foreach(fun({Partition, Location}) ->
+                Ballot = maps:get(Partition, Ballots),
+                send_decision(LocalId, Partition, Location, Ballot, TxId, Decision, CommitVC)
+            end, TxState#tx_acc.locations),
+
+            ok = grb_red_manager:unregister_coordinator(TxId, SelfPid),
+            maps:remove(TxId, TxAcc0)
+    end.
 
 -spec decide_transaction(#{partition_id() => {red_vote(), vclock()}}) -> {red_vote(), vclock()}.
 decide_transaction(VoteMap) ->
