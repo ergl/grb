@@ -11,9 +11,6 @@
               persist_leader_info/0,
               persist_follower_info/1]).
 
-%% pool api
--export([pool_spec/0]).
-
 -export([persist_unique_leader_info/0,
          persist_leader_info/0,
          persist_follower_info/1,
@@ -21,18 +18,13 @@
          quorum_size/0,
          register_coordinator/1,
          transaction_coordinator/1,
-         unregister_coordinator/1]).
+         unregister_coordinator/2]).
 
 %% gen_server callbacks
 -export([init/1,
          handle_call/3,
          handle_cast/2,
          handle_info/2]).
-
--define(POOL_NAME, red_coord_pool).
-%% todo(borja, red): revisit red coordinator pool size
--define(POOL_SIZE, (1 * erlang:system_info(schedulers_online))).
--define(POOL_OVERFLOW, 5).
 
 -define(LEADERS_TABLE, grb_red_manager_leaders).
 -define(COORD_TABLE, grb_red_manager_coordinators).
@@ -46,16 +38,6 @@
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
-
--spec pool_spec() -> supervisor:child_spec().
-pool_spec() ->
-    Args = [{name, {local, ?POOL_NAME}},
-            {worker_module, grb_red_coordinator},
-            {size, application:get_env(grb, red_coord_pool_size, ?POOL_SIZE)},
-            {max_overflow, ?POOL_OVERFLOW},
-            {strategy, lifo}],
-
-    poolboy:child_spec(?POOL_NAME, Args, []).
 
 -spec persist_unique_leader_info() -> ok.
 persist_unique_leader_info() ->
@@ -88,7 +70,7 @@ leader_of(Partition) ->
 
 -spec register_coordinator(term()) -> red_coordinator().
 register_coordinator(TxId) ->
-    Pid = poolboy:checkout(?POOL_NAME, true, infinity),
+    {ok, Pid} = grb_red_coordinator_sup:start_coordinator(),
     true = ets:insert(?COORD_TABLE, {TxId, Pid}),
     Pid.
 
@@ -99,11 +81,9 @@ transaction_coordinator(TxId) ->
         _ -> error
     end.
 
--spec unregister_coordinator(term()) -> ok.
-unregister_coordinator(TxId) ->
-    {ok, Pid} = transaction_coordinator(TxId),
-    ok = poolboy:checkin(?POOL_NAME, Pid),
-    true = ets:delete(?COORD_TABLE, TxId),
+-spec unregister_coordinator(term(), pid()) -> ok.
+unregister_coordinator(TxId, Pid) ->
+    true = ets:delete_object(?COORD_TABLE, {TxId, Pid}),
     ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

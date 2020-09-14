@@ -1,11 +1,10 @@
 -module(grb_red_coordinator).
 -behavior(gen_server).
--behavior(poolboy_worker).
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 %% supervision tree
--export([start_link/1]).
+-export([start_link/0]).
 
 -export([commit/5,
          already_decided/3,
@@ -19,6 +18,8 @@
 
 -type partition_ballots() :: #{partition_id() => ballot()}.
 -record(certify_state, {
+    tx_id :: term(),
+    self_pid :: pid(),
     replica :: replica_id(),
     promise :: grb_promise:t(),
     locations = [] :: [{partition_id(), leader_location()}],
@@ -27,9 +28,9 @@
     accumulator = #{} :: #{partition_id() => {red_vote(), vclock()}}
 }).
 
--spec start_link(proplists:proplist()) -> {ok, pid()}.
-start_link(Args) ->
-    gen_server:start_link(?MODULE, Args, []).
+-spec start_link() -> {ok, pid()}.
+start_link() ->
+    gen_server:start_link(?MODULE, [], []).
 
 -spec commit(red_coordinator(), grb_promise:t(), term(), vclock(), [{partition_id(), #{}, #{}}]) -> ok.
 commit(Coordinator, Promise, TxId, SnapshotVC, Prepares) ->
@@ -76,16 +77,18 @@ handle_cast({commit, Promise, TxId, SnapshotVC, Prepares}, undefined) ->
         }
     end,
     {LeaderLocations, QuorumsToAck} = lists:foldl(SendFun, {[], #{}}, Prepares),
-    {noreply, #certify_state{replica=LocalId,
+    {noreply, #certify_state{tx_id=TxId,
+                             self_pid=self(),
+                             replica=LocalId,
                              promise=Promise,
                              locations=LeaderLocations,
                              quorums_to_ack=QuorumsToAck}};
 
-handle_cast({already_decided, TxId, Vote, VoteVC}, #certify_state{promise=Promise}) ->
+handle_cast({already_decided, TxId, Vote, VoteVC}, S=#certify_state{promise=Promise}) ->
     ?LOG_DEBUG("~p already decided", [TxId]),
     reply_to_client({Vote, VoteVC}, Promise),
-    ok = grb_red_manager:unregister_coordinator(TxId),
-    {noreply, undefined};
+    ok = grb_red_manager:unregister_coordinator(TxId, S#certify_state.self_pid),
+    {stop, normal, undefined};
 
 handle_cast({accept_ack, FromPartition, Ballot, TxId, Vote, AcceptVC},
             S0=#certify_state{ballots=Ballots0, quorums_to_ack=Quorums0, accumulator=Acc0}) ->
@@ -98,9 +101,9 @@ handle_cast({accept_ack, FromPartition, Ballot, TxId, Vote, AcceptVC},
         1 -> maps:remove(FromPartition, Quorums0);
         _ -> Quorums0#{FromPartition => ToAck - 1}
     end,
-    S = case map_size(Quorums) of
+    case map_size(Quorums) of
         N when N > 0 ->
-            S0#certify_state{quorums_to_ack=Quorums, accumulator=Acc, ballots=Ballots};
+            {noreply, S0#certify_state{quorums_to_ack=Quorums, accumulator=Acc, ballots=Ballots}};
         0 ->
             Outcome={Decision, CommitVC} = decide_transaction(Acc),
             reply_to_client(Outcome, S0#certify_state.promise),
@@ -111,10 +114,9 @@ handle_cast({accept_ack, FromPartition, Ballot, TxId, Vote, AcceptVC},
                 send_decision(LocalId, Partition, Location, Ballot, TxId, Decision, CommitVC)
             end, S0#certify_state.locations),
 
-            ok = grb_red_manager:unregister_coordinator(TxId),
-            undefined
-    end,
-    {noreply, S};
+            ok = grb_red_manager:unregister_coordinator(TxId, S0#certify_state.self_pid),
+            {stop, normal, undefined}
+    end;
 
 handle_cast({accept_ack, From, Ballot, TxId, Vote, _}, undefined) ->
     ?LOG_DEBUG("missed ACCEPT_ACK(~b, ~p, ~p) from ~p", [Ballot, TxId, Vote, From]),

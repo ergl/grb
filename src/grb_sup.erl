@@ -50,7 +50,7 @@ add_red_processes(ChildSpecs) -> ChildSpecs.
 -else.
 add_red_processes(ChildSpecs) ->
     RedCoordManager = ?CHILD(grb_red_manager, worker, []),
-    RedCoordPool = grb_red_manager:pool_spec(),
+    RedCoordSup = ?CHILD(grb_red_coordinator_sup, supervisor, []),
     PaxosVnode = ?VNODE(grb_paxos_vnode_master, grb_paxos_vnode),
-    [RedCoordManager, RedCoordPool, PaxosVnode | ChildSpecs].
+    [RedCoordManager, RedCoordSup, PaxosVnode | ChildSpecs].
 -endif.
