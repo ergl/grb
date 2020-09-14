@@ -11,6 +11,10 @@
 -define(heartbeat, heartbeat).
 -type status() :: ?leader | ?follower.
 
+-define(abort_conflict, {abort, conflict}).
+-define(abort_stale_dec, {abort, stale_decided}).
+-define(abort_stale_comm, {abort, stale_committed}).
+
 %% How many commit times to delete at once
 %% If this is too low, we could spend quite a bit of time deleting
 %% If the value is too high, we could hurt performance from copying too much
@@ -435,13 +439,13 @@ check_prepared(RS, WS, PendingReads, PendingWrites) ->
         0 =/= ets:select_count(PendingWrites, [{ {{Key, '_'}, prepared, '_'}, [], [true] }])
     end, maps:keys(RS)),
     case RWConflict of
-        true -> {abort, conflict};
+        true -> ?abort_conflict;
         false ->
             WRConflict = lists:any(fun(Key) ->
                 true =:= ets:member(PendingReads, Key)
             end, maps:keys(WS)),
             case WRConflict of
-                true -> {abort, conflict};
+                true -> ?abort_conflict;
                 false -> ok
             end
     end.
@@ -453,12 +457,12 @@ check_committed(RS, CommitVC, PendingWrites, LastRed) ->
         FinalVC = maps:fold(fun(Key, Version, AccVC) ->
             case stale_decided(Key, Version, PendingWrites) of
                 true ->
-                    throw({{abort, stale_decided}, CommitVC});
+                    throw({?abort_stale_dec, CommitVC});
                 false ->
                     Res = stale_committed(Key, Version, AllReplicas, AccVC, LastRed),
                     case Res of
                         false ->
-                            throw({{abort, stale_committed}, CommitVC});
+                            throw({?abort_stale_comm, CommitVC});
 
                         PrepareVC ->
                             PrepareVC
@@ -661,16 +665,16 @@ grb_paxos_state_check_prepared_test() ->
     ?assertEqual(ok, check_prepared(#{}, #{}, PendingReads, PendingWrites)),
 
     true = ets:insert(PendingReads, [{a, ignore}, {b, ignore}, {c, ignore}]),
-    ?assertMatch({abort, conflict}, check_prepared(#{}, #{a => <<>>}, PendingReads, PendingWrites)),
+    ?assertMatch(?abort_conflict, check_prepared(#{}, #{a => <<>>}, PendingReads, PendingWrites)),
     ?assertMatch(ok, check_prepared(#{}, #{d => <<"hey">>}, PendingReads, PendingWrites)),
 
     %% The first aborts over a read-write conflict, while the second one doesn't, because `b` is decided
     true = ets:insert(PendingWrites, [{{a, tx_1}, prepared, 0}, {{b, tx_2}, decided, 0}]),
-    ?assertMatch({abort, conflict}, check_prepared(#{a => 0}, #{}, PendingReads, PendingWrites)),
+    ?assertMatch(?abort_conflict, check_prepared(#{a => 0}, #{}, PendingReads, PendingWrites)),
     ?assertMatch(ok, check_prepared(#{b => 0}, #{}, PendingReads, PendingWrites)),
 
     %% aborts due to write-read conflict
-    ?assertMatch({abort, conflict}, check_prepared(#{a => 0, b => 0}, #{a => <<>>}, PendingReads, PendingWrites)),
+    ?assertMatch(?abort_conflict, check_prepared(#{a => 0, b => 0}, #{a => <<>>}, PendingReads, PendingWrites)),
 
     true = ets:delete(PendingReads),
     true = ets:delete(PendingWrites).
@@ -693,11 +697,11 @@ grb_paxos_state_check_committed_test() ->
     ?assertEqual({ok, #{}}, check_committed(#{b => 5}, #{}, PendingWrites, LastRed)),
 
     %% this will abort, since tx_3 will be delivered with a higher red timestamp
-    ?assertEqual({{abort, stale_decided}, #{}}, check_committed(#{c => 8}, #{}, PendingWrites, LastRed)),
+    ?assertEqual({?abort_stale_dec, #{}}, check_committed(#{c => 8}, #{}, PendingWrites, LastRed)),
 
     %% none of these are affected by the above, since they don't share any keys
     ets:insert(LastRed, #last_red_record{key=0, red=10, length=1, clocks=[#{?RED_REPLICA => 10}]}),
-    ?assertEqual({{abort, stale_committed}, #{}}, check_committed(#{0 => 9}, #{}, PendingWrites, LastRed)),
+    ?assertEqual({?abort_stale_comm, #{}}, check_committed(#{0 => 9}, #{}, PendingWrites, LastRed)),
     ?assertMatch({ok, #{?RED_REPLICA := 10}}, check_committed(#{0 => 11}, #{}, PendingWrites, LastRed)),
 
     true = ets:delete(LastRed),
