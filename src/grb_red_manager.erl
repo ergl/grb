@@ -51,7 +51,7 @@ start_link() ->
 pool_spec() ->
     Args = [{name, {local, ?POOL_NAME}},
             {worker_module, grb_red_coordinator},
-            {size, application:get_env(grb, red_pool_size, ?POOL_SIZE)},
+            {size, application:get_env(grb, red_coord_pool_size, ?POOL_SIZE)},
             {max_overflow, ?POOL_OVERFLOW},
             {strategy, lifo}],
 

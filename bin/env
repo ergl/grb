@@ -63,6 +63,10 @@ fi
 
 # Node config
 
+if [ -z "$RED_COORD_POOL_SIZE" ]; then
+  export RED_COORD_POOL_SIZE=500
+fi
+
 if [ -z "$IP" ]; then
   export IP="127.0.0.1"
 fi
