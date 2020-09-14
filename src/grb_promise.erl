@@ -10,6 +10,8 @@
 -export([new/2,
          resolve/2]).
 
+-export_type([t/0]).
+
 -spec new(pid(), term()) -> t().
 new(From, Context) ->
     #promise{reply_to=From, context=Context}.

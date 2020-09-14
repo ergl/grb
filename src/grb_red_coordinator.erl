@@ -83,7 +83,7 @@ handle_cast({commit, Promise, TxId, SnapshotVC, Prepares}, undefined) ->
 
 handle_cast({already_decided, TxId, Vote, VoteVC}, #certify_state{promise=Promise}) ->
     ?LOG_DEBUG("~p already decided", [TxId]),
-    grb_promise:resolve({Vote, VoteVC}, Promise),
+    reply_to_client({Vote, VoteVC}, Promise),
     ok = grb_red_manager:unregister_coordinator(TxId),
     {noreply, undefined};
 
@@ -103,7 +103,7 @@ handle_cast({accept_ack, FromPartition, Ballot, TxId, Vote, AcceptVC},
             S0#certify_state{quorums_to_ack=Quorums, accumulator=Acc, ballots=Ballots};
         0 ->
             Outcome={Decision, CommitVC} = decide_transaction(Acc),
-            grb_promise:resolve(Outcome, S0#certify_state.promise),
+            reply_to_client(Outcome, S0#certify_state.promise),
 
             LocalId = S0#certify_state.replica,
             lists:foreach(fun({Partition, Location}) ->
@@ -204,3 +204,10 @@ remote_broadcast(Node, FromReplica, Partition, Ballot, TxId, Decision, CommitVC)
 reduce_vote(_, _, {{abort, _}, _}=Err) -> Err;
 reduce_vote({abort, _}=Err, VC, _) -> {Err, VC};
 reduce_vote(ok, CommitVC, {ok, AccCommitVC}) -> {ok, grb_vclock:max(CommitVC, AccCommitVC)}.
+
+-spec reply_to_client({red_vote(), vclock()}, grb_promise:t()) -> ok.
+reply_to_client({ok, CommitVC}, Promise) ->
+    grb_promise:resolve({ok, CommitVC}, Promise);
+
+reply_to_client({{abort, _}=Abort, _}, Promise) ->
+    grb_promise:resolve(Abort, Promise).
