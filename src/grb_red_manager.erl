@@ -88,8 +88,8 @@ leader_of(Partition) ->
 
 -spec register_coordinator(term()) -> red_coordinator().
 register_coordinator(TxId) ->
-    Pid = poolboy:checkout(?POOL_NAME),
-    gen_server:cast(?MODULE, {register_coordinator, Pid, TxId}),
+    Pid = poolboy:checkout(?POOL_NAME, true, infinity),
+    true = ets:insert(?COORD_TABLE, {TxId, Pid}),
     Pid.
 
 -spec transaction_coordinator(term()) -> {ok, red_coordinator()} | error.
@@ -103,7 +103,8 @@ transaction_coordinator(TxId) ->
 unregister_coordinator(TxId) ->
     {ok, Pid} = transaction_coordinator(TxId),
     ok = poolboy:checkin(?POOL_NAME, Pid),
-    gen_server:cast(?MODULE, {unregister_coordinator, TxId}).
+    true = ets:delete(?COORD_TABLE, TxId),
+    ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
@@ -111,7 +112,8 @@ unregister_coordinator(TxId) ->
 
 init([]) ->
     LeaderTable = ets:new(?LEADERS_TABLE, [set, protected, named_table, {read_concurrency, true}]),
-    CoordTable = ets:new(?COORD_TABLE, [set, protected, named_table, {read_concurrency, true}]),
+    CoordTable = ets:new(?COORD_TABLE, [set, public, named_table,
+                                        {read_concurrency, true}, {write_concurrency, true}]),
     {ok, #state{pid_for_tx=CoordTable, partition_leaders=LeaderTable}}.
 
 handle_call(set_leader, _From, S=#state{partition_leaders=Table}) ->
@@ -134,14 +136,6 @@ handle_call({set_follower, Leader}, _From, S=#state{partition_leaders=Table}) ->
 handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
-
-handle_cast({register_coordinator, Pid, TxId}, S=#state{pid_for_tx=Table}) ->
-    true = ets:insert(Table, {TxId, Pid}),
-    {noreply, S};
-
-handle_cast({unregister_coordinator, TxId}, S=#state{pid_for_tx=Table}) ->
-    true = ets:delete(Table, TxId),
-    {noreply, S};
 
 handle_cast(E, S) ->
     ?LOG_WARNING("~p unexpected cast: ~p~n", [?MODULE, E]),
