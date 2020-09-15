@@ -56,7 +56,7 @@ handle_accept_ack(Partition, Ballot, Id, Ts) ->
 
 init([ReplicaId, Partition]) ->
     {ok, Interval} = application:get_env(grb, red_heartbeat_interval),
-    QuorumSize = length(grb_dc_manager:all_replicas()),
+    QuorumSize = grb_red_manager:quorum_size(),
     State = #state{partition=Partition,
                    replica=ReplicaId,
                    quorum_size=QuorumSize,
