@@ -62,7 +62,13 @@
     %% read replica of the last version cache by grb_main_vnode
     op_log_red_replica :: atom(),
     synod_state = undefined :: grb_paxos_state:t() | undefined,
-    heartbeat_process = undefined :: pid() | undefined
+    heartbeat_process = undefined :: pid() | undefined,
+
+    %% a buffer of outstanding decision messages
+    %% If we receive a DECIDE message from the coordinator before we receive
+    %% an ACCEPT from the leader, we should buffer the DECIDE here, and apply it
+    %% right after we receive an ACCEPT with a matching ballot and transaction id
+    decision_buffer = #{} :: #{{term(), ballot()} => {red_vote(), vclock()} | grb_time:ts()}
 }).
 
 -spec init_leader_state() -> ok.
@@ -234,20 +240,55 @@ handle_command({prepare, TxId, RS, WS, SnapshotVC},
 %%% follower protocol messages
 %%%===================================================================
 
-handle_command({accept, Ballot, TxId, RS, WS, Vote, PrepareVC}, Coordinator, S=#state{synod_state=FollowerState0}) ->
-    ?LOG_DEBUG("~p ACCEPT(~p, ~b), reply to coordinator ~p", [TxId, S#state.partition, Ballot, Coordinator]),
-    {ok, FollowerState} = grb_paxos_state:accept(Ballot, TxId, RS, WS, Vote, PrepareVC, FollowerState0),
-    reply_accept_ack(Coordinator, S#state.replica_id, S#state.partition, Ballot, TxId, Vote, PrepareVC),
-    {noreply, S#state{synod_state=FollowerState}};
+handle_command({accept, Ballot, TxId, RS, WS, Vote, PrepareVC}, Coordinator, S0=#state{replica_id=LocalId,
+                                                                                       partition=Partition,
+                                                                                       synod_state=FollowerState0,
+                                                                                       decision_buffer=DecisionBuffer0}) ->
 
-handle_command({accept_hb, SourceReplica, Ballot, Id, Ts},
-                _Sender, S=#state{replica_id=LocalId, partition=Partition, synod_state=FollowerState0}) ->
+    ?LOG_DEBUG("~p: ACCEPT(~b, ~p, ~p), reply to coordinator ~p", [Partition, Ballot, TxId, Vote, Coordinator]),
+    {ok, FollowerState} = grb_paxos_state:accept(Ballot, TxId, RS, WS, Vote, PrepareVC, FollowerState0),
+    S1 = S0#state{synod_state=FollowerState},
+    S = case maps:take({TxId, Ballot}, DecisionBuffer0) of
+        error ->
+            reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
+            S1;
+
+        {{Decision, CommitVC}, DecisionBuffer} ->
+            %% fixme(borja, red): Buffered decision might never be delivered
+            %% Since the decision message was merely buffered, heartbeats with a higher commit timestamp
+            %% can be delivered (no committed tx in preparedRed or decidedRed with a lower timestamp), making
+            %% the process advance past this commit timestamp. This will cause the transaction to be ignored
+
+            %% if the coordinator already sent us a decision, there's no need to cast an ACCEPT_ACK message
+            %% because the coordinator does no longer care
+            ?LOG_DEBUG("~p: buffered DECIDE(~b, ~p, ~p)", [Partition, Ballot, TxId, Decision]),
+            {ok, S2} = decide_internal(Ballot, TxId, Decision, CommitVC, S1#state{decision_buffer=DecisionBuffer}),
+            S2
+    end,
+    {noreply, S};
+
+handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{replica_id=LocalId,
+                                                                              partition=Partition,
+                                                                              synod_state=FollowerState0,
+                                                                              decision_buffer=DecisionBuffer0}) ->
 
     ?LOG_DEBUG("~p: HEARTBEAT_ACCEPT(~b, ~p, ~b)", [Partition, Ballot, Id, Ts]),
     {ok, FollowerState} = grb_paxos_state:accept_hb(Ballot, Id, Ts, FollowerState0),
-    ok = grb_dc_connection_manager:send_red_heartbeat_ack(SourceReplica, LocalId,
-                                                          Partition, Ballot, Id, Ts),
-    {noreply, S#state{synod_state=FollowerState}};
+    S1 = S0#state{synod_state=FollowerState},
+    S = case maps:take({Id, Ballot}, DecisionBuffer0) of
+        error ->
+            ok = grb_dc_connection_manager:send_red_heartbeat_ack(SourceReplica, LocalId,
+                                                                  Partition, Ballot, Id, Ts),
+            S1;
+
+        {FinalTs, DecisionBuffer} ->
+            %% if the coordinator already sent us a decision, there's no need to cast an ACCEPT_ACK message
+            %% because the coordinator does no longer care
+            ?LOG_DEBUG("~p: buffered DECIDE_HB(~b, ~p)", [Partition, Ballot, Id]),
+            {ok, S2} = decide_hb_internal(Ballot, Id, FinalTs, S1#state{decision_buffer=DecisionBuffer}),
+            S2
+    end,
+    {noreply, S};
 
 %%%===================================================================
 %%% leader / follower protocol messages
@@ -346,7 +387,10 @@ reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decisi
 %% this is here due to grb_paxos_state:decision_hb/4, that dialyzer doesn't like
 %% because it passes an integer as a clock
 -dialyzer({nowarn_function, decide_hb_internal/4}).
-decide_hb_internal(Ballot, Id, Ts, S=#state{synod_state=SynodState0, decision_retry_interval=Time}) ->
+decide_hb_internal(Ballot, Id, Ts, S=#state{synod_state=SynodState0,
+                                            decision_buffer=Buffer,
+                                            decision_retry_interval=Time}) ->
+
     case grb_paxos_state:decision_hb(Ballot, Id, Ts, SynodState0) of
         {ok, SynodState} ->
             {ok, S#state{synod_state=SynodState}};
@@ -361,18 +405,16 @@ decide_hb_internal(Ballot, Id, Ts, S=#state{synod_state=SynodState0, decision_re
             {ok, S};
 
         not_prepared ->
-            ?LOG_ERROR("~p ~p DECIDE_HEARTBEAT(~b) := not_prepared", [S#state.partition, self(), Ballot]),
-            %% todo(borja, red): This might return not_prepared at followers
-            %% todo(borja, red): Buffer DECISION until we receive ACCEPT_ACK from leader
-            %% if the coordinator receives a quorum of ACCEPT_ACK before this follower
-            %% receives an ACCEPT, it might be that we receive a DECISION before
-            %% the decided transaction has been processes. What to do?
-            %% if we set the quorum size to all replicas, this won't happen
-            error
+            ?LOG_DEBUG("~p: DECIDE_HEARTBEAT(~b, ~p) := not_prepared, buffering", [S#state.partition, Ballot, Id]),
+            %% buffer the decision until we receive a matching ACCEPT from the leader
+            {ok, S#state{decision_buffer=Buffer#{{Id, Ballot} => Ts}}}
     end.
 
 -spec decide_internal(ballot(), term(), red_vote(), vclock(), #state{}) -> {ok, #state{}} | error.
-decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_state=SynodState0, decision_retry_interval=Time}) ->
+decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_state=SynodState0,
+                                                           decision_buffer=Buffer,
+                                                           decision_retry_interval=Time}) ->
+
     case grb_paxos_state:decision(Ballot, TxId, Decision, CommitVC, SynodState0) of
         {ok, SynodState} ->
             {ok, S#state{synod_state=SynodState}};
@@ -387,14 +429,9 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_state=SynodStat
             {ok, S};
 
         not_prepared ->
-            ?LOG_ERROR("~p: DECIDE(~b, ~p) := not_prepared", [S#state.partition, Ballot, TxId]),
-            %% todo(borja, red): This might return not_prepared at followers
-            %% todo(borja, red): Buffer DECISION until we receive ACCEPT_ACK from leader
-            %% if the coordinator receives a quorum of ACCEPT_ACK before this follower
-            %% receives an ACCEPT, it might be that we receive a DECISION before
-            %% the decided transaction has been processes. What to do?
-            %% if we set the quorum size to all replicas, this won't happen
-            error
+            ?LOG_DEBUG("~p: DECIDE(~b, ~p) := not_prepared, buffering", [S#state.partition, Ballot, TxId]),
+            %% buffer the decision until we receive a matching ACCEPT from the leader
+            {ok, S#state{decision_buffer=Buffer#{{TxId, Ballot} => {Decision, CommitVC}}}}
     end.
 
 -spec deliver_updates(partition_id(), grb_time:ts(), grb_paxos_state:t()) -> grb_time:ts().
