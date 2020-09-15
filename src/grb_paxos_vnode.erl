@@ -190,9 +190,9 @@ handle_command(init_follower, _Sender, S=#state{synod_state=undefined}) ->
 
 handle_command({prepare_hb, Id}, _Sender, S=#state{replica_id=LocalId,
                                                    partition=Partition,
-                                                   synod_state=LeaderState}) ->
+                                                   synod_state=LeaderState0}) ->
 
-    Result = grb_paxos_state:prepare_hb(Id, LeaderState),
+    {Result, LeaderState} = grb_paxos_state:prepare_hb(Id, LeaderState0),
     case Result of
         {ok, Ballot, Timestamp} ->
             ?LOG_DEBUG("~p: HEARTBEAT_PREPARE(~b, ~p, ~b)", [Partition, Ballot, Id, Timestamp]),
@@ -207,15 +207,15 @@ handle_command({prepare_hb, Id}, _Sender, S=#state{replica_id=LocalId,
             %% todo(borja, red): This shouldn't happen, but should let red_timer know
             erlang:error(heartbeat_already_decided)
     end,
-    {noreply, S};
+    {noreply, S#state{synod_state=LeaderState}};
 
 handle_command({prepare, TxId, RS, WS, SnapshotVC},
                Coordinator, S=#state{replica_id=LocalId,
                                      partition=Partition,
-                                     synod_state=LeaderState,
+                                     synod_state=LeaderState0,
                                      op_log_red_replica=LastRed}) ->
 
-    Result = grb_paxos_state:prepare(TxId, RS, WS, SnapshotVC, LastRed, LeaderState),
+    {Result, LeaderState} = grb_paxos_state:prepare(TxId, RS, WS, SnapshotVC, LastRed, LeaderState0),
     ?LOG_DEBUG("~p: ~p prepared as ~p, reply to coordinator ~p", [Partition, TxId, Result, Coordinator]),
     case Result of
         {already_decided, Decision, CommitVC} ->
@@ -228,63 +228,52 @@ handle_command({prepare, TxId, RS, WS, SnapshotVC},
                                                           TxId, RS, WS, Prepare)
             end, grb_dc_connection_manager:connected_replicas())
     end,
-    {noreply, S};
+    {noreply, S#state{synod_state=LeaderState}};
 
 %%%===================================================================
 %%% follower protocol messages
 %%%===================================================================
 
-handle_command({accept, Ballot, TxId, RS, WS, Vote, PrepareVC}, Coordinator, S) ->
+handle_command({accept, Ballot, TxId, RS, WS, Vote, PrepareVC}, Coordinator, S=#state{synod_state=FollowerState0}) ->
     ?LOG_DEBUG("~p ACCEPT(~p, ~b), reply to coordinator ~p", [TxId, S#state.partition, Ballot, Coordinator]),
-    ok = grb_paxos_state:accept(Ballot, TxId, RS, WS, Vote, PrepareVC, S#state.synod_state),
+    {ok, FollowerState} = grb_paxos_state:accept(Ballot, TxId, RS, WS, Vote, PrepareVC, FollowerState0),
     reply_accept_ack(Coordinator, S#state.replica_id, S#state.partition, Ballot, TxId, Vote, PrepareVC),
-    {noreply, S};
+    {noreply, S#state{synod_state=FollowerState}};
 
 handle_command({accept_hb, SourceReplica, Ballot, Id, Ts},
-                _Sender, S=#state{replica_id=LocalId, partition=Partition, synod_state=FollowerState}) ->
+                _Sender, S=#state{replica_id=LocalId, partition=Partition, synod_state=FollowerState0}) ->
 
     ?LOG_DEBUG("~p: HEARTBEAT_ACCEPT(~b, ~p, ~b)", [Partition, Ballot, Id, Ts]),
-    ok = grb_paxos_state:accept_hb(Ballot, Id, Ts, FollowerState),
+    {ok, FollowerState} = grb_paxos_state:accept_hb(Ballot, Id, Ts, FollowerState0),
     ok = grb_dc_connection_manager:send_red_heartbeat_ack(SourceReplica, LocalId,
                                                           Partition, Ballot, Id, Ts),
-    {noreply, S};
+    {noreply, S#state{synod_state=FollowerState}};
 
 %%%===================================================================
 %%% leader / follower protocol messages
 %%%===================================================================
 
-handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S=#state{partition=P,
-                                                             decision_retry_interval=Int,
-                                                             synod_state=SynodState}) ->
+handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S0=#state{partition=P}) ->
 
     ?LOG_DEBUG("~p: HEARTBEAT_DECIDE(~b, ~p, ~b)", [P, Ballot, Id, Ts]),
-    ok = decide_hb_internal(P, Ballot, Id, Ts, SynodState, Int),
+    {ok, S} = decide_hb_internal(Ballot, Id, Ts, S0),
     {noreply, S};
 
-handle_command({decision, Ballot, TxId, Decision, CommitVC}, _Sender, S=#state{partition=Partition,
-                                                                               decision_retry_interval=Int,
-                                                                               synod_state=SynodState}) ->
+handle_command({decision, Ballot, TxId, Decision, CommitVC}, _Sender, S0=#state{partition=P}) ->
 
-    ?LOG_DEBUG("~p DECIDE(~b, ~p)", [TxId, Ballot, Decision]),
-    ok = decide_internal(Partition, Ballot, TxId, Decision, CommitVC, SynodState, Int),
+    ?LOG_DEBUG("~p DECIDE(~b, ~p, ~p)", [P, Ballot, TxId, Decision]),
+    {ok, S} = decide_internal(Ballot, TxId, Decision, CommitVC, S0),
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("~p unhandled_command ~p", [?MODULE, Message]),
     {noreply, State}.
 
-handle_info({retry_decide_hb, Ballot, Id, Ts}, S=#state{partition=P,
-                                                       decision_retry_interval=Int,
-                                                       synod_state=SynodState}) ->
+handle_info({retry_decide_hb, Ballot, Id, Ts}, S0) ->
+    decide_hb_internal(Ballot, Id, Ts, S0);
 
-    ok = decide_hb_internal(P, Ballot, Id, Ts, SynodState, Int),
-    {ok, S};
-
-handle_info({retry_decision, Ballot, TxId, Decision, CommitVC},
-            S=#state{partition=Partition, decision_retry_interval=Int, synod_state=SynodState}) ->
-
-    ok = decide_internal(Partition, Ballot, TxId, Decision, CommitVC, SynodState, Int),
-    {ok, S};
+handle_info({retry_decision, Ballot, TxId, Decision, CommitVC}, S0) ->
+    decide_internal(Ballot, TxId, Decision, CommitVC, S0);
 
 handle_info(?deliver, S=#state{partition=Partition,
                                last_delivered=LastDelivered,
@@ -306,8 +295,8 @@ handle_info(?prune, S=#state{last_delivered=LastDelivered,
     %% To know the safe cut-off point, we should exchange LastDelivered with all replicas and find
     %% the minimum. Either replicas send a message to the leader, which aggregates the min and returns,
     %% or we build some tree.
-    ok = grb_paxos_state:prune_decided_before(LastDelivered, SynodState),
-    {ok, S#state{prune_timer=erlang:send_after(Interval, self(), ?prune)}};
+    {ok, S#state{synod_state=grb_paxos_state:prune_decided_before(LastDelivered, SynodState),
+                 prune_timer=erlang:send_after(Interval, self(), ?prune)}};
 
 handle_info(Msg, State) ->
     ?LOG_WARNING("~p unhandled_info ~p", [?MODULE, Msg]),
@@ -353,22 +342,26 @@ reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decisi
             grb_dc_connection_manager:send_red_decided(OtherReplica, Node, Partition, TxId, Decision, CommitVC)
     end.
 
--spec decide_hb_internal(partition_id(), ballot(), term(), grb_time:ts(), grb_paxos_state:t(), non_neg_integer()) -> ok | error.
+-spec decide_hb_internal(ballot(), term(), grb_time:ts(), #state{}) -> {ok, #state{}} | error.
 %% this is here due to grb_paxos_state:decision_hb/4, that dialyzer doesn't like
-%% (it thinks it will never return not_ready because that is returned right after
-%% an ets:select with a record)
--dialyzer({no_match, decide_hb_internal/6}).
-decide_hb_internal(P, Ballot, Id, Ts, SynodState, Time) ->
-    case grb_paxos_state:decision_hb(Ballot, Id, Ts, SynodState) of
-        ok -> ok;
+%% because it passes an integer as a clock
+-dialyzer({nowarn_function, decide_hb_internal/4}).
+decide_hb_internal(Ballot, Id, Ts, S=#state{synod_state=SynodState0, decision_retry_interval=Time}) ->
+    case grb_paxos_state:decision_hb(Ballot, Id, Ts, SynodState0) of
+        {ok, SynodState} ->
+            {ok, S#state{synod_state=SynodState}};
+
         not_ready ->
             erlang:send_after(Time, self(), {retry_decide_hb, Ballot, Id, Ts}),
-            ok;
+            {ok, S};
+
         bad_ballot ->
-            ?LOG_ERROR("Bad heartbeat ballot ~b", [Ballot]),
-            ok;
+            %% todo(borja, red): should this initiate a leader recovery, or ignore?
+            ?LOG_ERROR("~p: bad heartbeat ballot ~b", [S#state.partition, Ballot]),
+            {ok, S};
+
         not_prepared ->
-            ?LOG_ERROR("~p ~p DECIDE_HEARTBEAT(~b) := not_prepared", [P, self(), Ballot]),
+            ?LOG_ERROR("~p ~p DECIDE_HEARTBEAT(~b) := not_prepared", [S#state.partition, self(), Ballot]),
             %% todo(borja, red): This might return not_prepared at followers
             %% todo(borja, red): Buffer DECISION until we receive ACCEPT_ACK from leader
             %% if the coordinator receives a quorum of ACCEPT_ACK before this follower
@@ -378,18 +371,23 @@ decide_hb_internal(P, Ballot, Id, Ts, SynodState, Time) ->
             error
     end.
 
--spec decide_internal(partition_id(), ballot(), term(), red_vote(), vclock(), grb_paxos_state:t(), non_neg_integer()) -> ok | error.
-decide_internal(Partition, Ballot, TxId, Decision, CommitVC, State, Time) ->
-    case grb_paxos_state:decision(Ballot, TxId, Decision, CommitVC, State) of
-        ok -> ok;
+-spec decide_internal(ballot(), term(), red_vote(), vclock(), #state{}) -> {ok, #state{}} | error.
+decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_state=SynodState0, decision_retry_interval=Time}) ->
+    case grb_paxos_state:decision(Ballot, TxId, Decision, CommitVC, SynodState0) of
+        {ok, SynodState} ->
+            {ok, S#state{synod_state=SynodState}};
+
         not_ready ->
             erlang:send_after(Time, self(), {retry_decision, Ballot, TxId, Decision, CommitVC}),
-            ok;
+            {ok, S};
+
         bad_ballot ->
-            ?LOG_ERROR("~p: bad ballot ~b for ~p", [Partition, Ballot, TxId]),
-            ok;
+            %% todo(borja, red): should this initiate a leader recovery, or ignore?
+            ?LOG_ERROR("~p: bad ballot ~b for ~p", [S#state.partition, Ballot, TxId]),
+            {ok, S};
+
         not_prepared ->
-            ?LOG_ERROR("~p: DECIDE(~b, ~p) := not_prepared", [Partition, Ballot, TxId]),
+            ?LOG_ERROR("~p: DECIDE(~b, ~p) := not_prepared", [S#state.partition, Ballot, TxId]),
             %% todo(borja, red): This might return not_prepared at followers
             %% todo(borja, red): Buffer DECISION until we receive ACCEPT_ACK from leader
             %% if the coordinator receives a quorum of ACCEPT_ACK before this follower
