@@ -15,6 +15,12 @@
 -define(abort_stale_dec, {abort, stale_decided}).
 -define(abort_stale_comm, {abort, stale_committed}).
 
+%% How many commit times to delete at once
+%% If this is too low, we could spend quite a bit of time deleting
+%% If the value is too high, we could hurt performance from copying too much
+%% todo(borja, red): Make config for this
+-define(PRUNE_LIMIT, 50).
+
 %% We don't care about the structure too much, as long as the client ensures identifiers
 %% are unique (or at least, unique to the point of not reusing them before they call
 %% `prune_decided_before/2`
@@ -166,32 +172,33 @@ data_for_id(Id, EntryMap) ->
 %%      transaction with the same transaction identifier.
 %%
 -spec prune_decided_before(grb_time:ts(), t()) -> t().
+-dialyzer({nowarn_function, prune_decided_before/2}).
 prune_decided_before(MinLastDelivered, State=#state{index=Idx}) ->
-    prune_decided_before_continue(ets:first(Idx), MinLastDelivered, State).
+    Result = ets:select(Idx,
+                        [{ #index_entry{key={'$1', '$2'}, state=decided, vote='$3', _='_'},
+                           [{'<', '$1', {const, MinLastDelivered}}],
+                           [{{'$1', '$2', '$3'}}] }],
+                        ?PRUNE_LIMIT),
 
--spec prune_decided_before_continue(Key :: {grb_time:t(), record_id()} | '$end_of_table',
-                                    MinLastDelivered :: grb_time:ts(),
-                                    t()) -> t().
+    prune_decided_before_continue(State, Result).
 
+-spec prune_decided_before_continue(State :: t(),
+                                    Match :: ( {[{grb_time:ts(), record_id()}], ets:continuation()}
+                                               | '$end_of_table') ) -> t().
 
-prune_decided_before_continue('$end_of_table', _, S) -> S;
-prune_decided_before_continue(Key={Time, Id}, MinLastDelivered, S=#state{index=Idx,
-                                                                         entries=EntryMap0,
-                                                                         writes_cache=Writes}) ->
-
-    State = ets:lookup_element(Idx, Key, #index_entry.state),
-    if
-        Time < MinLastDelivered andalso State =:= decided ->
-            {#tx_data{write_keys=WrittenKeys, vote=Decision}, EntryMap} = maps:take(Id, EntryMap0),
-            ok = clear_pending(Id, Decision, WrittenKeys, Writes),
-            true = ets:delete(Idx, Key),
-            prune_decided_before_continue(ets:next(Idx, Key), MinLastDelivered, S#state{entries=EntryMap});
-
-        true ->
-            S
-    end.
+-dialyzer({no_unused, prune_decided_before_continue/2}).
+prune_decided_before_continue(S, '$end_of_table') -> S;
+prune_decided_before_continue(S=#state{index=Idx, entries=EntryMap0, writes_cache=Writes}, {Objects, Cont}) ->
+    EntryMap = lists:foldl(fun({Time, Id, Decision}, AccMap) ->
+        {#tx_data{write_keys=WrittenKeys}, NewAcc} = maps:take(Id, AccMap),
+        ok = clear_pending(Id, Decision, WrittenKeys, Writes),
+        true = ets:delete(Idx, {Time, Id}),
+        NewAcc
+    end, EntryMap0, Objects),
+    prune_decided_before_continue(S#state{entries=EntryMap}, ets:select(Cont)).
 
 -spec clear_pending(record_id(), red_vote(), [key()] | undefined, cache_id()) -> ok.
+-dialyzer({no_unused, clear_pending/4}).
 clear_pending(_Id, {abort, _}, _WrittenKeys, _Writes) -> ok;
 clear_pending({?heartbeat, _}, ok, _WrittenKeys, _Writes) -> ok;
 clear_pending(Id, ok, Keys, Writes) ->
