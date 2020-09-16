@@ -107,16 +107,27 @@ delete(#state{index=Index, pending_reads=PendingReads, writes_cache=Writes}) ->
 -spec get_next_ready(grb_time:ts(), t()) -> false | {grb_time:ts(), [ ?heartbeat | {#{}, vclock()} ]}.
 -dialyzer({nowarn_function, get_next_ready/2}).
 get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx}) ->
-    Result = ets:select(Idx,
-                        [{ #index_entry{key={'$1', '$2'}, state=decided, vote=ok},
-                           [{'>', '$1', {const, LastDelivered}}],
-                           [{{'$1', '$2'}}] }],
-                        1),
-    case Result of
-        '$end_of_table' -> false;
-        {[{CommitTime, FirstId}] , _} ->
+    extract_next_ready(ets:next(Idx, {LastDelivered, ''}), LastDelivered, EntryMap, Idx).
+
+-spec extract_next_ready(Key :: {grb_time:ts(), record_id()} | '$end_of_table',
+                         LastDelivered :: grb_time:ts(),
+                         EntryMap :: #{record_id() => tx_data()},
+                         Idx :: cache_id()) -> false | {grb_time:ts(), [ ?heartbeat | {#{}, vclock()} ]}.
+
+-dialyzer({nowarn_function, extract_next_ready/4}).
+extract_next_ready('$end_of_table', _LastDelivered, _EntryMap, _Idx) ->
+    false;
+extract_next_ready({LastDelivered, _}=Seen, LastDelivered, EntryMap, Idx) ->
+    extract_next_ready(ets:next(Idx, Seen), LastDelivered, EntryMap, Idx);
+extract_next_ready(Key={CommitTime, FirstId}, LastDelivered, EntryMap, Idx) ->
+    [{State, Decision}] = ets:select(Idx, [{ #index_entry{key=Key, state='$1', vote='$2'},
+                                             [],
+                                             [{{'$1', '$2'}}] }]),
+    if
+        State =:= decided andalso Decision =:= ok ->
             case prep_committed_between(LastDelivered, CommitTime, Idx) of
-                true -> false;
+                true ->
+                    false;
                 false ->
                     %% get the rest of committed transactions with this commit time
                     %% since they have the same committed time, they all pass the check above
@@ -125,7 +136,9 @@ get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx}) ->
                                                  ['$1'] }]),
                     Ready = lists:map(fun(Id) -> data_for_id(Id, EntryMap) end, [FirstId | MoreIds]),
                     {CommitTime, Ready}
-            end
+            end;
+        true ->
+            extract_next_ready(ets:next(Idx, Key), LastDelivered, EntryMap, Idx)
     end.
 
 -spec prep_committed_between(grb_time:ts(), grb_time:ts(), cache_id()) -> boolean().
