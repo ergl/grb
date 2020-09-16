@@ -116,8 +116,6 @@ decide_blue(Partition, TxId, VC) ->
 commit_red(Promise, _, VC, _) -> grb_promise:resolve({ok, VC}, Promise).
 -else.
 commit_red(Promise, TxId, SnapshotVC, Prepares) ->
-    %% fixme(borja, red): add uniform barrier here
-    %% how to pick a partition? => add default partition for this (or random)
     Coordinator = grb_red_manager:register_coordinator(TxId),
     grb_red_coordinator:commit(Coordinator, Promise, TxId, SnapshotVC, Prepares).
 -endif.

@@ -6,10 +6,14 @@
 -define(ALL_REPLICAS, all_replicas).
 -define(REMOTE_REPLICAS, remote_replicas).
 
+-define(PARTITION, partition_key).
+-define(PARTITION_LEN, partition_length).
+
 %% Node API
 -export([replica_id/0,
          all_replicas/0,
-         remote_replicas/0]).
+         remote_replicas/0,
+         random_local_partition/0]).
 
 %% Remote API
 -export([create_replica_groups/1,
@@ -52,6 +56,11 @@ replica_id() ->
 -spec all_replicas() -> [replica_id()].
 all_replicas() ->
     persistent_term:get({?MODULE, ?ALL_REPLICAS}, [replica_id()]).
+
+-spec random_local_partition() -> partition_id().
+random_local_partition() ->
+    N = rand:uniform(persistent_term:get({?MODULE, ?PARTITION_LEN})),
+    persistent_term:get({?MODULE, ?PARTITION, N}).
 
 -spec remote_replicas() -> [replica_id()].
 remote_replicas() ->
@@ -268,7 +277,14 @@ start_paxos_follower(LeaderReplica) ->
 persist_self_replica_info() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     ReplicaId = riak_core_ring:cluster_name(Ring),
+    MyPartitions = riak_core_ring:my_indices(Ring),
+
     ok = persistent_term:put({?MODULE, ?MY_REPLICA}, ReplicaId),
+    ok = persistent_term:put({?MODULE, ?PARTITION_LEN}, length(MyPartitions)),
+    lists:foldl(fun(P, N) ->
+        persistent_term:put({?MODULE, ?PARTITION, N}, P),
+        N + 1
+    end, 1, MyPartitions),
     ok.
 
 -spec persist_replica_info() -> ok.

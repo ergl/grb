@@ -33,7 +33,8 @@
          merge_remote_uniform_vc/2,
          handle_clock_update/4,
          handle_clock_heartbeat_update/4,
-         register_uniform_barrier/3]).
+         register_uniform_barrier/3,
+         register_red_uniform_barrier/4]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -272,6 +273,12 @@ register_uniform_barrier(Promise, Partition, Timestamp) ->
                                    {uniform_barrier, Promise, Timestamp},
                                    ?master).
 
+-spec register_red_uniform_barrier(partition_id(), grb_time:ts(), red_coordinator(), term()) -> ok.
+register_red_uniform_barrier(Partition, Timestamp, Pid, TxId) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {red_uniform_barrier, Pid, TxId, Timestamp},
+                                   ?master).
+
 %%%===================================================================
 %%% api riak_core callbacks
 %%%===================================================================
@@ -378,6 +385,9 @@ handle_command({append_blue, KnownTime, TxId, WS, CommitVC}, _Sender, S=#state{s
 
 handle_command({uniform_barrier, Promise, Timestamp}, _Sender, S=#state{pending_barriers=Barriers}) ->
     {noreply, S#state{pending_barriers=insert_uniform_barrier(Promise, Timestamp, Barriers)}};
+
+handle_command({red_uniform_barrier, Pid, TxId, Timestamp}, _Sender, S=#state{pending_barriers=Barriers}) ->
+    {noreply, S#state{pending_barriers=insert_red_uniform_barrier(Pid, TxId, Timestamp, Barriers)}};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("~p unhandled_command ~p", [?MODULE, Message]),
@@ -564,6 +574,13 @@ insert_uniform_barrier(Promise, Timestamp, Barriers) ->
         false -> orddict:store(Timestamp, [Promise], Barriers)
     end.
 
+-spec insert_red_uniform_barrier(red_coordinator(), term(), grb_time:ts(), uniform_barriers()) -> uniform_barriers().
+insert_red_uniform_barrier(Pid, TxId, Timestamp, Barriers) ->
+    case orddict:is_key(Timestamp, Barriers) of
+        true -> orddict:append(Timestamp, {red, Pid, TxId}, Barriers);
+        false -> orddict:store(Timestamp, [{red, Pid, TxId}], Barriers)
+    end.
+
 -spec lift_pending_uniform_barriers(replica_id(), vclock(), uniform_barriers()) -> uniform_barriers().
 lift_pending_uniform_barriers(_, _, []) -> [];
 lift_pending_uniform_barriers(ReplicaId, UniformVC, PendingBarriers) ->
@@ -573,8 +590,11 @@ lift_pending_uniform_barriers(ReplicaId, UniformVC, PendingBarriers) ->
 -spec lift_pending_uniform_barriers(grb_time:ts(), uniform_barriers()) -> uniform_barriers().
 lift_pending_uniform_barriers(_, []) -> [];
 
-lift_pending_uniform_barriers(Cutoff, [{Ts, Promises} | Rest]) when Ts =< Cutoff ->
-    lists:foreach(fun(P) -> grb_promise:resolve(ok, P) end, Promises),
+lift_pending_uniform_barriers(Cutoff, [{Ts, DataList} | Rest]) when Ts =< Cutoff ->
+    lists:foreach(fun
+        ({red, Pid, TxId}) -> grb_red_coordinator:commit_send(Pid, TxId);
+        (Promise) -> grb_promise:resolve(ok, Promise)
+    end, DataList),
     lift_pending_uniform_barriers(Cutoff, Rest);
 
 lift_pending_uniform_barriers(Cutoff, [{Ts, _} | _]=Remaining) when Ts > Cutoff ->

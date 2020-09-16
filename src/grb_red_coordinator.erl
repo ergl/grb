@@ -7,6 +7,7 @@
 -export([start_link/1]).
 
 -export([commit/5,
+         commit_send/2,
          already_decided/3,
          accept_ack/5]).
 
@@ -19,6 +20,9 @@
 -type partition_ballots() :: #{partition_id() => ballot()}.
 -record(tx_acc, {
     promise :: grb_promise:t(),
+    %% used to hold the data while we wait for the uniform barrier to lift
+    prepares = undefined :: [{partition_id(), #{}, #{}}] | undefined,
+    snapshot_vc = undefined :: vclock() | undefined,
     locations = [] :: [{partition_id(), leader_location()}],
     quorums_to_ack = #{} :: #{partition_id() => pos_integer()},
     ballots = #{} :: partition_ballots(),
@@ -44,7 +48,11 @@ generate_coord_name(Id) ->
 
 -spec commit(red_coordinator(), grb_promise:t(), term(), vclock(), [{partition_id(), #{}, #{}}]) -> ok.
 commit(Coordinator, Promise, TxId, SnapshotVC, Prepares) ->
-    gen_server:cast(Coordinator, {commit, Promise, TxId, SnapshotVC, Prepares}).
+    gen_server:cast(Coordinator, {commit_init, Promise, TxId, SnapshotVC, Prepares}).
+
+-spec commit_send(red_coordinator(), term()) -> ok.
+commit_send(Coordinator, TxId) ->
+    gen_server:cast(Coordinator, {commit_send, TxId}).
 
 -spec already_decided(term(), red_vote(), vclock()) -> ok.
 already_decided(TxId, Vote, VoteVC) ->
@@ -80,21 +88,23 @@ handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
-handle_cast({commit, Promise, TxId, SnapshotVC, Prepares}, S=#state{replica=LocalId,
-                                                                    quorum_size=QuorumSize,
-                                                                    accumulators=Acc}) ->
-
-    SendFun = fun({Partition, Readset, Writeset}, {LeaderAcc, QuorumAcc}) ->
-        Location = send_prepare(LocalId, Partition, TxId, Readset, Writeset, SnapshotVC),
-        {
-            [{Partition, Location} | LeaderAcc],
-            QuorumAcc#{Partition => QuorumSize }
-        }
+handle_cast({commit_init, Promise, TxId, SnapshotVC, Prepares}, S0=#state{self_pid=Pid, replica=LocalId}) ->
+    Partition = grb_dc_manager:random_local_partition(),
+    Timestamp = grb_vclock:get_time(LocalId, SnapshotVC),
+    UniformTimestamp = grb_vclock:get_time(LocalId, grb_propagation_vnode:uniform_vc(Partition)),
+    S = case Timestamp =< UniformTimestamp of
+        true ->
+            ?LOG_DEBUG("no need to register barrier for ~w", [TxId]),
+            init_tx_and_send(Promise, TxId, SnapshotVC, Prepares, S0);
+        false ->
+            ?LOG_DEBUG("registering barrier for ~w", [TxId]),
+            grb_propagation_vnode:register_red_uniform_barrier(Partition, Timestamp, Pid, TxId),
+            init_tx(Promise, TxId, SnapshotVC, Prepares, S0)
     end,
-    {LeaderLocations, QuorumsToAck} = lists:foldl(SendFun, {[], #{}}, Prepares),
-    {noreply, S#state{accumulators=Acc#{TxId => #tx_acc{promise=Promise,
-                                                        locations=LeaderLocations,
-                                                        quorums_to_ack=QuorumsToAck}}}};
+    {noreply, S};
+
+handle_cast({commit_send, TxId}, S) ->
+    {noreply, send_tx_prepares(TxId, S)};
 
 handle_cast({already_decided, TxId, Vote, VoteVC}, S0=#state{self_pid=Pid, accumulators=Acc0}) ->
     S = case maps:take(TxId, Acc0) of
@@ -132,6 +142,43 @@ handle_info(Info, State) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+init_tx(Promise, TxId, SnapshotVC, Prepares, S=#state{accumulators=Acc}) ->
+    S#state{accumulators=Acc#{TxId => #tx_acc{promise=Promise,
+                                              prepares=Prepares,
+                                              snapshot_vc=SnapshotVC}}}.
+
+init_tx_and_send(Promise, TxId, SnapshotVC, Prepares, S=#state{replica=LocalId,
+                                                               quorum_size=QuorumSize,
+                                                               accumulators=Acc}) ->
+
+    SendFun = fun({Partition, Readset, Writeset}, {LeaderAcc, QuorumAcc}) ->
+        Location = send_prepare(LocalId, Partition, TxId, Readset, Writeset, SnapshotVC),
+        {
+            [{Partition, Location} | LeaderAcc],
+            QuorumAcc#{Partition => QuorumSize }
+        }
+    end,
+    {LeaderLocations, QuorumsToAck} = lists:foldl(SendFun, {[], #{}}, Prepares),
+    S#state{accumulators=Acc#{TxId => #tx_acc{promise=Promise,
+                                              locations=LeaderLocations,
+                                              quorums_to_ack=QuorumsToAck}}}.
+
+send_tx_prepares(TxId, S=#state{replica=LocalId,
+                                quorum_size=QuorumSize,
+                                accumulators=Acc}) ->
+
+    TxData = #tx_acc{prepares=Prepares, snapshot_vc=SnapshotVC} = maps:get(TxId, Acc),
+    SendFun = fun({Partition, Readset, Writeset}, {LeaderAcc, QuorumAcc}) ->
+        Location = send_prepare(LocalId, Partition, TxId, Readset, Writeset, SnapshotVC),
+        {
+            [{Partition, Location} | LeaderAcc],
+            QuorumAcc#{Partition => QuorumSize }
+        }
+    end,
+    {LeaderLocations, QuorumsToAck} = lists:foldl(SendFun, {[], #{}}, Prepares),
+    S#state{accumulators=Acc#{TxId => TxData#tx_acc{prepares=undefined, snapshot_vc=undefined,
+                                                    locations=LeaderLocations, quorums_to_ack=QuorumsToAck}}}.
 
 -spec check_ballot(partition_id(), ballot(), partition_ballots()) -> {ok, partition_ballots()} | error.
 check_ballot(Partition, Ballot, Ballots) ->

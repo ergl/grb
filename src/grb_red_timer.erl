@@ -28,7 +28,7 @@
 
     %% Active timer accumulator
     quorum_ack :: pos_integer(),
-    current_ballot= undefined :: ballot() | undefined,
+    current_ballot = undefined :: ballot() | undefined,
     heartbeat_id = undefined :: {heartbeat, non_neg_integer()} | undefined,
     heartbeat_time = undefined :: grb_time:ts() | undefined,
 
@@ -75,6 +75,7 @@ handle_cast({accept_ack, InBallot, Id, InTimestamp}, S0=#state{replica=LocalId,
                                                                heartbeat_id=Id,
                                                                current_ballot=Ballot0,
                                                                heartbeat_time=Timestamp0}) ->
+
     ?LOG_DEBUG("~p TIMER_ACK(~b, ~p, ~b), ~b to go", [Partition, InBallot, Id, InTimestamp, ToAck]),
     %% todo(borja, red): handle bad ballot / timestamp?
     {ok, Ballot} = check_ballot(InBallot, Ballot0),
@@ -87,6 +88,10 @@ handle_cast({accept_ack, InBallot, Id, InTimestamp}, S0=#state{replica=LocalId,
             ok = grb_paxos_vnode:broadcast_hb_decision(Partition, LocalId, Ballot, Id, Timestamp),
             rearm_heartbeat_timer(S0)
     end,
+    {noreply, S};
+
+handle_cast({accept_ack, _, _, _}, S) ->
+    %% ignore any ACCEPT_ACK from past heartbeats
     {noreply, S};
 
 handle_cast(E, S) ->
