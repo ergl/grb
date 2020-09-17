@@ -27,8 +27,6 @@
          handle_cast/2,
          handle_info/2]).
 
--ignore_xref([start_link/2]).
-
 -record(state, {
     %% Name of this read replica
     self :: atom(),
@@ -210,6 +208,7 @@ perform_op_wait(Promise, Key, SnapshotVC, Val, S=#state{partition=Partition,
     end.
 
 -spec check_known_vc(partition_id(), replica_id(), vclock()) -> ready | not_ready.
+-ifdef(BLUE_KNOWN_VC).
 check_known_vc(Partition, ReplicaId, VC) ->
     ClientTime = grb_vclock:get_time(ReplicaId, VC),
     LocalTime = grb_propagation_vnode:known_time(Partition, ReplicaId),
@@ -220,6 +219,22 @@ check_known_vc(Partition, ReplicaId, VC) ->
             %% todo(borja, stat): log miss
             not_ready
     end.
+-else.
+check_known_vc(Partition, ReplicaId, VC) ->
+    ClientBlue = grb_vclock:get_time(ReplicaId, VC),
+    ClientRed = grb_vclock:get_time(?RED_REPLICA, VC),
+    LocalBlue = grb_propagation_vnode:known_time(Partition, ReplicaId),
+    LocalRed = grb_propagation_vnode:known_time(Partition, ?RED_REPLICA),
+    BlueCheck = LocalBlue >= ClientBlue,
+    RedCheck = LocalRed >= ClientRed,
+    case (BlueCheck andalso RedCheck) of
+        true ->
+            ready;
+        false ->
+            %% todo(borja, stat): log miss
+            not_ready
+    end.
+-endif.
 
 -spec perform_op_continue(grb_promise:t(), key(), vclock(), val(), #state{}) -> ok.
 perform_op_continue(Promise, Key, VC, Val, State=#state{default_bottom_value=BottomVal,
@@ -236,9 +251,10 @@ perform_op_continue(Promise, Key, VC, Val, State=#state{default_bottom_value=Bot
             %% todo(borja, red): Update redTS with dependence vectors
             case grb_version_log:get_first_lower(VC, Log) of
                 undefined -> grb_promise:resolve({ok, BaseVal, BottomRedTs}, Promise);
-                {_, LastVal, _LastVC} ->
+                {_, LastVal, LastVC} ->
+                    RedTs = grb_vclock:get_time(?RED_REPLICA, LastVC),
                     ReturnVal = case Val of <<>> -> LastVal; _ -> Val end,
-                    grb_promise:resolve({ok, ReturnVal, BottomRedTs}, Promise)
+                    grb_promise:resolve({ok, ReturnVal, RedTs}, Promise)
             end
     end.
 

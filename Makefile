@@ -22,18 +22,23 @@ check_binaries:
 	$(REBAR) as debug_bin compile
 
 xref:
-	$(REBAR) xref skip_deps=true
-	$(REBAR) as basic_replication xref skip_deps=true
+	- $(REBAR) xref skip_deps=true
+	- $(REBAR) as basic_replication xref skip_deps=true
+	- $(REBAR) as uniform_blue xref skip_deps=true
 
 dialyzer:
-	$(REBAR) dialyzer
-	$(REBAR) as basic_replication dialyzer
+	- $(REBAR) dialyzer
+	- $(REBAR) as basic_replication dialyzer
+	- $(REBAR) as uniform_blue dialyzer
 
 debug:
 	$(REBAR) as debug_log compile
 
 cure:
 	$(REBAR) as basic_replication compile
+
+uniform:
+	$(REBAR) as uniform_blue compile
 
 clean:
 	$(REBAR) clean --all
@@ -46,6 +51,9 @@ debugrel:
 
 curerel:
 	$(REBAR) as basic_replication release -n grb
+
+unirel:
+	$(REBAR) as uniform_blue release -n grb
 
 debugrel-clean:
 	rm -rf _build/debug_log/rel
@@ -71,12 +79,19 @@ attach:
 test:
 	${REBAR} eunit skip_deps=true
 	${REBAR} as basic_replication eunit skip_deps=true
+	${REBAR} as uniform_blue eunit skip_deps=true
 
 ct:
 	$(REBAR) ct
 
+full_ct: ct
+	$(REBAR) as basic_replication ct
+	$(REBAR) as uniform_blue ct
+
 ct_clean:
 	rm -rf $(BASEDIR)/_build/test/logs
+	rm -rf $(BASEDIR)/_build/basic_replication+test/logs
+	rm -rf $(BASEDIR)/_build/uniform_blue+test/logs
 
 dev1-rel:
 	$(REBAR) as $(DEV_PROFILE) release -n grb_local1
@@ -173,3 +188,10 @@ devfulljoin:
 	./bin/join_cluster_script.erl 'grb_local1@127.0.0.1' 'grb_local2@127.0.0.1'
 	./bin/join_cluster_script.erl 'grb_local3@127.0.0.1' 'grb_local4@127.0.0.1'
 	./bin/connect_dcs.erl 'grb_local1@127.0.0.1' 'grb_local3@127.0.0.1'
+
+devreplicas:
+	./bin/join_cluster_script.erl 'grb_local1@127.0.0.1'
+	./bin/join_cluster_script.erl 'grb_local2@127.0.0.1'
+	./bin/join_cluster_script.erl 'grb_local3@127.0.0.1'
+	./bin/join_cluster_script.erl 'grb_local4@127.0.0.1'
+	./bin/connect_dcs.erl 'grb_local1@127.0.0.1' 'grb_local2@127.0.0.1' 'grb_local3@127.0.0.1' 'grb_local4@127.0.0.1'

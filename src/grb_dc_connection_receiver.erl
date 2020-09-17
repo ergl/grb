@@ -53,11 +53,11 @@ init({Ref, Transport, _Opts}) ->
     gen_server:enter_loop(?MODULE, [], State).
 
 handle_call(E, From, S) ->
-    ?LOG_WARNING("server got unexpected call with msg ~w from ~w", [E, From]),
+    ?LOG_WARNING("~p got unexpected call with msg ~w from ~w", [?MODULE, E, From]),
     {reply, ok, S}.
 
 handle_cast(E, S) ->
-    ?LOG_WARNING("server got unexpected cast with msg ~w", [E]),
+    ?LOG_WARNING("~p got unexpected cast with msg ~w", [?MODULE, E]),
     {noreply, S}.
 
 terminate(_Reason, #state{socket=Socket, transport=Transport}) ->
@@ -75,7 +75,7 @@ handle_info(
     {noreply, State};
 
 handle_info({tcp, Socket, Data}, State = #state{transport=Transport}) ->
-    ?LOG_WARNING("received unknown data ~p", [Data]),
+    ?LOG_WARNING("~p received unknown data ~p", [?MODULE, Data]),
     Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
@@ -95,7 +95,10 @@ handle_info(E, S) ->
     ?LOG_WARNING("replication server received unexpected info with msg ~w", [E]),
     {noreply, S}.
 
--spec handle_request(partition_id(), replica_id(), replica_message()) -> ok.
+%% We would have to add type information to every {_, replica_message} pair so that
+%% dialyzer doesn't complain about the second argument being different types
+-dialyzer({nowarn_function, handle_request/3}).
+-spec handle_request(partition_id(), replica_id() | red_coord_location() | node(), replica_message()) -> ok.
 handle_request(Partition, SourceReplica, #blue_heartbeat{timestamp=Ts}) ->
     grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, Ts);
 
@@ -106,4 +109,39 @@ handle_request(Partition, SourceReplica, #update_clocks{known_vc=KnownVC, stable
     grb_propagation_vnode:handle_clock_update(Partition, SourceReplica, KnownVC, StableVC);
 
 handle_request(Partition, SourceReplica, #update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}) ->
-    grb_propagation_vnode:handle_clock_heartbeat_update(Partition, SourceReplica, KnownVC, StableVC).
+    grb_propagation_vnode:handle_clock_heartbeat_update(Partition, SourceReplica, KnownVC, StableVC);
+
+handle_request(Partition, Coordinator, #red_prepare{tx_id=TxId, readset=RS, writeset=WS, snapshot_vc=VC}) ->
+    grb_paxos_vnode:prepare({Partition, node()}, TxId, RS, WS, VC, Coordinator);
+
+handle_request(Partition, Coordinator, #red_accept{ballot=Ballot, tx_id=TxId, readset=RS,
+                                                   writeset=WS, decision=Vote, prepare_vc=VC}) ->
+
+    grb_paxos_vnode:accept(Partition, Ballot, TxId, RS, WS, Vote, VC, Coordinator);
+
+handle_request(Partition, Node, #red_accept_ack{ballot=Ballot, tx_id=TxId,
+                                                  decision=Vote, prepare_vc=PrepareVC}) ->
+    MyNode = node(),
+    case Node of
+        MyNode -> grb_red_coordinator:accept_ack(Partition, Ballot, TxId, Vote, PrepareVC);
+        _ -> erpc:call(Node, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC])
+    end;
+
+handle_request(Partition, _SourceReplica, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->
+    grb_paxos_vnode:decide(Partition, Ballot, TxId, Decision, CommitVC);
+
+handle_request(_Partition, Node, #red_already_decided{tx_id=TxId, decision=Vote, commit_vc=CommitVC}) ->
+    MyNode = node(),
+    case Node of
+        MyNode -> grb_red_coordinator:already_decided(TxId, Vote, CommitVC);
+        _ -> erpc:call(Node, grb_red_coordinator, already_decided, [TxId, Vote, CommitVC])
+    end;
+
+handle_request(Partition, SourceReplica, #red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
+    grb_paxos_vnode:accept_heartbeat(Partition, SourceReplica, B, Id, Ts);
+
+handle_request(Partition, _SourceReplica, #red_heartbeat_ack{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
+    grb_red_timer:handle_accept_ack(Partition, B, Id, Ts);
+
+handle_request(Partition, _SourceReplica, #red_heartbeat_decide{ballot=Ballot, heartbeat_id=Id, timestamp=Ts}) ->
+    grb_paxos_vnode:decide_heartbeat(Partition, Ballot, Id, Ts).

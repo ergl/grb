@@ -19,6 +19,8 @@
 
 -type replica_id() :: {atom(), erlang:timestamp()}.
 -type vclock() :: grb_vclock:vc(replica_id() | atom()).
+%% the entry for red transactions in the clock
+-define(RED_REPLICA, red).
 
 %% Opaque types
 -type key() :: term().
@@ -27,6 +29,7 @@
 
 %% Different ETS tables
 -define(OP_LOG_TABLE, op_log_table).
+-define(OP_LOG_LAST_RED, op_log_last_red_table).
 -define(PARTITION_CLOCK_TABLE, partition_clock_table).
 -define(CLOG(Replica, Partition), {commit_log, Replica, Partition}).
 
@@ -46,6 +49,25 @@
 
 -type inter_dc_conn() :: atom().
 
+-type red_coordinator() :: pid().
+-type red_vote() :: ok | {abort, atom()}.
+
+-type ballot() :: non_neg_integer().
+
+-type red_coord_location() :: {coord, replica_id(), node()}.
+
+%% The location of a red leader
+-type leader_location() :: {local, index_node()}
+                         | {remote, replica_id()}
+                         | {proxy, node(), replica_id()}.
+
+-record(last_red_record, {
+    key :: key(),
+    red :: grb_time:ts(),
+    length :: non_neg_integer(),
+    clocks :: [vclock()]
+}).
+
 -export_type([partition_id/0,
               index_node/0,
               cache_id/0,
@@ -58,4 +80,9 @@
               key/0,
               val/0,
               replica_descriptor/0,
-              inter_dc_conn/0]).
+              inter_dc_conn/0,
+              red_coordinator/0,
+              red_vote/0,
+              ballot/0,
+              leader_location/0,
+              red_coord_location/0]).

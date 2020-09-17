@@ -15,10 +15,12 @@
 -export([known_vc/1,
          known_time/2,
          stable_vc/1,
+         stable_red/1,
          update_stable_vc_sync/2,
          append_blue_commit/5,
          append_remote_blue_commit/6,
          handle_blue_heartbeat/3,
+         handle_red_heartbeat/2,
          handle_self_blue_heartbeat/2]).
 
 -ifdef(BASIC_REPLICATION).
@@ -31,7 +33,8 @@
          merge_remote_uniform_vc/2,
          handle_clock_update/4,
          handle_clock_heartbeat_update/4,
-         register_uniform_barrier/3]).
+         register_uniform_barrier/3,
+         register_red_uniform_barrier/4]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -61,9 +64,9 @@
 -define(prune_req, prune_event).
 -define(replication_req, replication_event).
 -define(uniform_req, uniform_replication_event).
--define(clock_send_req, clock_send_event).
 
 -define(known_key(Replica), {known_vc, Replica}).
+-define(stable_red_key, stable_vc_red).
 -define(stable_key, stable_vc).
 -define(uniform_key, uniform_vc).
 
@@ -92,10 +95,6 @@
     uniform_interval :: non_neg_integer(),
     uniform_timer = undefined :: reference() | undefined,
 
-    %% send our knownVC / stableVC to remote replicas
-    uniform_clock_send_interval :: non_neg_integer(),
-    uniform_clock_send_timer = undefined :: reference() | undefined,
-
     %% prune committedBlue
     prune_interval :: non_neg_integer(),
     prune_timer = undefined :: reference() | undefined,
@@ -113,12 +112,7 @@
 -ifdef(BASIC_REPLICATION).
 -define(timers_unset, #state{replication_timer=undefined}).
 -else.
--ifdef(DELAY_CLOCKS).
--define(timers_unset, #state{replication_timer=undefined, uniform_clock_send_timer=undefined,
-                             uniform_timer=undefined, prune_timer=undefined}).
--else.
 -define(timers_unset, #state{replication_timer=undefined, uniform_timer=undefined, prune_timer=undefined}).
--endif.
 -endif.
 
 -type state() :: #state{}.
@@ -147,8 +141,16 @@ get_commit_log(Replica, Partition) ->
 %%%===================================================================
 
 -spec known_vc(partition_id()) -> vclock().
+-ifdef(BLUE_KNOWN_VC).
 known_vc(Partition) ->
     known_vc_internal(grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
+-else.
+known_vc(Partition) ->
+    Table = grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE),
+    grb_vclock:set_time(?RED_REPLICA,
+                        known_time_internal(?RED_REPLICA, Table),
+                        known_vc_internal(Table)).
+-endif.
 
 -spec known_vc_internal(clock_cache()) -> vclock().
 known_vc_internal(ClockTable) ->
@@ -157,11 +159,11 @@ known_vc_internal(ClockTable) ->
         grb_vclock:set_time(Replica, Ts, Acc)
     end, grb_vclock:new(), grb_dc_manager:all_replicas()).
 
--spec known_time(partition_id(), (replica_id() | red)) -> grb_time:ts().
+-spec known_time(partition_id(), (replica_id() | ?RED_REPLICA)) -> grb_time:ts().
 known_time(Partition, ReplicaId) ->
     known_time_internal(ReplicaId, grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
 
--spec known_time_internal((replica_id() | red), clock_cache()) -> grb_time:ts().
+-spec known_time_internal((replica_id() | ?RED_REPLICA), clock_cache()) -> grb_time:ts().
 known_time_internal(ReplicaId, ClockTable) ->
     try
         ets:lookup_element(ClockTable, ?known_key(ReplicaId), 2)
@@ -173,10 +175,14 @@ known_time_internal(ReplicaId, ClockTable) ->
 stable_vc(Partition) ->
     ets:lookup_element(grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?stable_key, 2).
 
+-spec stable_red(partition_id()) -> grb_time:ts().
+stable_red(Partition) ->
+    ets:lookup_element(grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?stable_red_key, 2).
+
 -spec update_stable_vc_sync(partition_id(), vclock()) -> ok.
 update_stable_vc_sync(Partition, SVC) ->
     riak_core_vnode_master:sync_command({Partition, node()},
-                                        {update_stable_vc_sync, SVC},
+                                        {recompute_stable_vc, SVC},
                                         ?master,
                                         infinity).
 
@@ -197,18 +203,14 @@ append_remote_blue_commit(ReplicaId, Partition, CommitTime, TxId, WS, CommitVC) 
 %%%===================================================================
 
 -ifdef(BASIC_REPLICATION).
--spec update_stable_vc(partition_id(), vclock()) -> ok.
-update_stable_vc(Partition, SVC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {update_stable_vc, SVC},
-                                   ?master).
-
 %% @doc Update the stableVC at all replicas but the current one, return result
 -spec merge_remote_stable_vc(partition_id(), vclock()) -> vclock().
 merge_remote_stable_vc(Partition, VC) ->
     S0 = stable_vc(Partition),
     S1 = grb_vclock:max_at_keys(grb_dc_manager:remote_replicas(), S0, VC),
-    update_stable_vc(Partition, S1),
+    riak_core_vnode_master:command({Partition, node()},
+                                   {cure_update_svc, S1},
+                                   ?master),
     S1.
 
 -endif.
@@ -239,6 +241,10 @@ merge_remote_uniform_vc(Partition, VC) ->
 handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
     update_known_vc(ReplicaId, Ts, grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
 
+-spec handle_red_heartbeat(partition_id(), grb_time:ts()) -> ok.
+handle_red_heartbeat(Partition, Ts) ->
+    update_known_vc(?RED_REPLICA, Ts, grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
+
 %% @doc Like handle_blue_heartbeat/3, but for our own replica, and sync
 -spec handle_self_blue_heartbeat(partition_id(), grb_time:ts()) -> ok.
 handle_self_blue_heartbeat(Partition, Ts) ->
@@ -267,6 +273,12 @@ register_uniform_barrier(Promise, Partition, Timestamp) ->
                                    {uniform_barrier, Promise, Timestamp},
                                    ?master).
 
+-spec register_red_uniform_barrier(partition_id(), grb_time:ts(), red_coordinator(), term()) -> ok.
+register_red_uniform_barrier(Partition, Timestamp, Pid, TxId) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {red_uniform_barrier, Pid, TxId, Timestamp},
+                                   ?master).
+
 %%%===================================================================
 %%% api riak_core callbacks
 %%%===================================================================
@@ -278,12 +290,13 @@ init([Partition]) ->
     {ok, ReplInt} = application:get_env(grb, basic_replication_interval),
     {ok, PruneInterval} = application:get_env(grb, prune_committed_blue_interval),
     {ok, UniformInterval} = application:get_env(grb, uniform_replication_interval),
-    {ok, SendClockInterval} = application:get_env(grb, remote_clock_broadcast_interval),
 
     ClockTable = grb_dc_utils:new_cache(Partition, ?PARTITION_CLOCK_TABLE,
                                         [ordered_set, public, named_table, {read_concurrency, true}]),
     true = ets:insert(ClockTable, [{?uniform_key, grb_vclock:new()},
-                                   {?stable_key, grb_vclock:new()}]),
+                                   {?stable_key, grb_vclock:new()},
+                                   {?stable_red_key, 0},
+                                   {?known_key(?RED_REPLICA), 0}]),
 
     {ok, #state{partition=Partition,
                 local_replica=undefined, % ok to do this, we'll overwrite it after join
@@ -291,7 +304,6 @@ init([Partition]) ->
                 prune_interval=PruneInterval,
                 replication_interval=ReplInt,
                 uniform_interval=UniformInterval,
-                uniform_clock_send_interval=SendClockInterval,
                 clock_cache=ClockTable}}.
 
 handle_command(ping, _Sender, State) ->
@@ -339,11 +351,16 @@ handle_command(start_propagate_timer, _From, State) ->
 handle_command(stop_propagate_timer, _From, State) ->
     {reply, ok, stop_propagation_timers(State)};
 
-handle_command({update_stable_vc, SVC}, _Sender, State) ->
-    {noreply, update_stable_vc_internal(SVC, State)};
+handle_command({cure_update_svc, StableVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
+    OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
+    %% Safe to update everywhere, caller has already ensured to not update the current replica
+    NewSVC = grb_vclock:max(OldSVC, StableVC),
+    true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
+    {noreply, S};
 
-handle_command({update_stable_vc_sync, SVC}, _Sender, State) ->
-    {reply, ok, update_stable_vc_internal(SVC, State)};
+handle_command({recompute_stable_vc, SVC}, _Sender, State=#state{clock_cache=ClockTable}) ->
+    NewStableVC = recompute_stable_vc(SVC, ClockTable),
+    {reply, ok, recompute_local_uniform_vc(NewStableVC, State)};
 
 handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
     OldSVC = ets:lookup_element(ClockTable, ?uniform_key, 2),
@@ -369,8 +386,11 @@ handle_command({append_blue, KnownTime, TxId, WS, CommitVC}, _Sender, S=#state{s
 handle_command({uniform_barrier, Promise, Timestamp}, _Sender, S=#state{pending_barriers=Barriers}) ->
     {noreply, S#state{pending_barriers=insert_uniform_barrier(Promise, Timestamp, Barriers)}};
 
+handle_command({red_uniform_barrier, Pid, TxId, Timestamp}, _Sender, S=#state{pending_barriers=Barriers}) ->
+    {noreply, S#state{pending_barriers=insert_red_uniform_barrier(Pid, TxId, Timestamp, Barriers)}};
+
 handle_command(Message, _Sender, State) ->
-    ?LOG_WARNING("unhandled_command ~p", [Message]),
+    ?LOG_WARNING("~p unhandled_command ~p", [?MODULE, Message]),
     {noreply, State}.
 
 handle_info(?replication_req, State=#state{replication_timer=Timer,
@@ -390,20 +410,6 @@ handle_info(?uniform_req, State=#state{partition=P,
     {ok, State#state{global_known_matrix=GlobalMatrix,
                      uniform_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
 
-handle_info(?clock_send_req, State=#state{partition=P,
-                                          local_replica=LocalId,
-                                          clock_cache=ClockCache,
-                                          uniform_clock_send_timer=Timer,
-                                          uniform_clock_send_interval=Interval}) ->
-    erlang:cancel_timer(Timer),
-    ?LOG_DEBUG("broadcast clocks"),
-    KnownVC = known_vc_internal(ClockCache),
-    StableVC = ets:lookup_element(ClockCache, ?stable_key, 2),
-    lists:foreach(fun(Target) ->
-        ok = grb_dc_connection_manager:send_clocks(Target, LocalId, P, KnownVC, StableVC)
-    end, grb_dc_connection_manager:connected_replicas()),
-    {ok, State#state{uniform_clock_send_timer=erlang:send_after(Interval, self(), ?clock_send_req)}};
-
 handle_info(?prune_req, S0=#state{prune_timer=Timer,
                                   prune_interval=Interval}) ->
 
@@ -412,7 +418,7 @@ handle_info(?prune_req, S0=#state{prune_timer=Timer,
     {ok, State#state{prune_timer=erlang:send_after(Interval, self(), ?prune_req)}};
 
 handle_info(Msg, State) ->
-    ?LOG_WARNING("unhandled_info ~p", [Msg]),
+    ?LOG_WARNING("~p unhandled_info ~p", [?MODULE, Msg]),
     {ok, State}.
 
 %%%===================================================================
@@ -479,30 +485,6 @@ stop_propagation_timers_internal(State) ->
     }.
 
 -else.
--ifdef(DELAY_CLOCKS).
-
-start_propagation_timers_internal(State) ->
-    State#state{
-        prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
-        uniform_timer=erlang:send_after(State#state.uniform_interval, self(), ?uniform_req),
-        replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req),
-        uniform_clock_send_timer=erlang:send_after(State#state.uniform_clock_send_interval, self(), ?clock_send_req)
-    }.
-
-
-stop_propagation_timers_internal(State) ->
-    erlang:cancel_timer(State#state.prune_timer),
-    erlang:cancel_timer(State#state.uniform_timer),
-    erlang:cancel_timer(State#state.replication_timer),
-    erlang:cancel_timer(State#state.uniform_clock_send_timer),
-    State#state{
-        prune_timer=undefined,
-        uniform_timer=undefined,
-        replication_timer=undefined,
-        uniform_clock_send_timer=undefined
-    }.
-
--else.
 
 start_propagation_timers_internal(State) ->
     State#state{
@@ -521,7 +503,6 @@ stop_propagation_timers_internal(State) ->
         replication_timer=undefined
     }.
 
--endif.
 -endif.
 
 -spec prune_commit_logs(state()) -> state().
@@ -543,29 +524,43 @@ prune_remote_commit_logs(RemoteReplicas, Logs, Matrix) ->
         ok = grb_remote_commit_log:remove_leq(MinTs, Log)
     end, maps:to_list(Logs)).
 
--spec update_stable_vc_internal(vclock(), state()) -> state().
--ifdef(BASIC_REPLICATION).
-
-update_stable_vc_internal(VC, S=#state{clock_cache=ClockTable}) ->
+-spec recompute_stable_vc(vclock(), clock_cache()) -> vclock().
+-ifdef(BLUE_KNOWN_VC).
+recompute_stable_vc(NewStableVC, ClockTable) ->
     OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     %% Safe to update everywhere, caller has already ensured to not update the current replica
-    NewSVC = grb_vclock:max(OldSVC, VC),
+    NewSVC = grb_vclock:max_at_keys(grb_dc_manager:all_replicas(), OldSVC, NewStableVC),
     true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
-    S.
+    NewSVC.
+-else.
+recompute_stable_vc(NewStableVC, ClockTable) ->
+    %% Update stableVC
+    %% Safe to update everywhere, caller has already ensured to not update the current replica
+    OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
+    NewSVC = grb_vclock:max_at_keys(grb_dc_manager:all_replicas(), OldSVC, NewStableVC),
+    true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
+
+    %% Update stableVC[red]
+    NewRedTs = grb_vclock:get_time(?RED_REPLICA, NewStableVC),
+    ets:select_replace(ClockTable,
+                       [{ {?stable_red_key, '$1'}, [{'<', '$1', NewRedTs}], [{const, {?stable_red_key, NewRedTs}}] }]),
+    NewSVC.
+-endif.
+
+-spec recompute_local_uniform_vc(vclock(), state()) -> state().
+-ifdef(BASIC_REPLICATION).
+
+recompute_local_uniform_vc(_, State) -> State.
 
 -else.
 
-update_stable_vc_internal(VC, S=#state{local_replica=LocalId,
-                                       clock_cache=ClockTable,
-                                       stable_matrix=StableMatrix0,
-                                       fault_tolerant_groups=Groups,
-                                       pending_barriers=PendingBarriers0}) ->
+recompute_local_uniform_vc(StableVC, S=#state{local_replica=LocalId,
+                                        clock_cache=ClockTable,
+                                        stable_matrix=StableMatrix0,
+                                        fault_tolerant_groups=Groups,
+                                        pending_barriers=PendingBarriers0}) ->
 
-    OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
-    %% Safe to update everywhere, caller has already ensured to not update the current replica
-    NewSVC = grb_vclock:max(OldSVC, VC),
-    true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
-    StableMatrix = StableMatrix0#{LocalId => NewSVC},
+    StableMatrix = StableMatrix0#{LocalId => StableVC},
     UniformVC = update_uniform_vc(StableMatrix, ClockTable, Groups),
     PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
     S#state{stable_matrix=StableMatrix, pending_barriers=PendingBarriers}.
@@ -579,6 +574,13 @@ insert_uniform_barrier(Promise, Timestamp, Barriers) ->
         false -> orddict:store(Timestamp, [Promise], Barriers)
     end.
 
+-spec insert_red_uniform_barrier(red_coordinator(), term(), grb_time:ts(), uniform_barriers()) -> uniform_barriers().
+insert_red_uniform_barrier(Pid, TxId, Timestamp, Barriers) ->
+    case orddict:is_key(Timestamp, Barriers) of
+        true -> orddict:append(Timestamp, {red, Pid, TxId}, Barriers);
+        false -> orddict:store(Timestamp, [{red, Pid, TxId}], Barriers)
+    end.
+
 -spec lift_pending_uniform_barriers(replica_id(), vclock(), uniform_barriers()) -> uniform_barriers().
 lift_pending_uniform_barriers(_, _, []) -> [];
 lift_pending_uniform_barriers(ReplicaId, UniformVC, PendingBarriers) ->
@@ -588,8 +590,11 @@ lift_pending_uniform_barriers(ReplicaId, UniformVC, PendingBarriers) ->
 -spec lift_pending_uniform_barriers(grb_time:ts(), uniform_barriers()) -> uniform_barriers().
 lift_pending_uniform_barriers(_, []) -> [];
 
-lift_pending_uniform_barriers(Cutoff, [{Ts, Promises} | Rest]) when Ts =< Cutoff ->
-    lists:foreach(fun(P) -> grb_promise:resolve(ok, P) end, Promises),
+lift_pending_uniform_barriers(Cutoff, [{Ts, DataList} | Rest]) when Ts =< Cutoff ->
+    lists:foreach(fun
+        ({red, Pid, TxId}) -> grb_red_coordinator:commit_send(Pid, TxId);
+        (Promise) -> grb_promise:resolve(ok, Promise)
+    end, DataList),
     lift_pending_uniform_barriers(Cutoff, Rest);
 
 lift_pending_uniform_barriers(Cutoff, [{Ts, _} | _]=Remaining) when Ts > Cutoff ->
@@ -641,48 +646,6 @@ replicate_internal(S=#state{self_log=LocalLog0,
 
 -else.
 
--ifdef(DELAY_CLOCKS).
-%% Difference here: don't send the clocks during heartbeats, only during transactions
-%% There's another timer sending the clocks from time to time
-%% todo(borja): Instead of a secondary timer, add a config that says: every X times we replicate,
-%% send a clock heartbeat
-
-replicate_internal(S=#state{self_log=LocalLog,
-                            partition=Partition,
-                            local_replica=LocalId,
-                            clock_cache=ClockTable,
-                            global_known_matrix=Matrix0}) ->
-
-    KnownVC = known_vc_internal(ClockTable),
-    LocalTime = grb_vclock:get_time(LocalId, KnownVC),
-
-    Matrix = lists:foldl(fun(Target, AccMatrix) ->
-        ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
-        ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
-        case ToSend of
-            [] ->
-                HBRes = grb_dc_connection_manager:send_heartbeat(Target, LocalId, Partition, LocalTime),
-                ?LOG_DEBUG("send heartbeat to ~p: ~p~n", [Target, HBRes]),
-                ok;
-            Transactions ->
-                StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
-                %% can't merge with other messages here, send one before
-                %% we could piggy-back on top of the first tx, but w/ever
-                ClockRes = grb_dc_connection_manager:send_clocks(Target, LocalId, Partition, KnownVC, StableVC),
-                ?LOG_DEBUG("send clocks to ~p: ~p~n", [Target, ClockRes]),
-                lists:foreach(fun(Tx) ->
-                    TxRes = grb_dc_connection_manager:send_tx(Target, LocalId, Partition, Tx),
-                    ?LOG_DEBUG("send transaction ~p to ~p: ~p~n", [Tx, Target, TxRes]),
-                    ok
-                end, Transactions)
-        end,
-        AccMatrix#{{Target, LocalId} => LocalTime}
-    end, Matrix0, grb_dc_connection_manager:connected_replicas()),
-
-    S#state{global_known_matrix=Matrix}.
-
--else.
-
 replicate_internal(S=#state{self_log=LocalLog,
                             partition=Partition,
                             local_replica=LocalId,
@@ -718,7 +681,6 @@ replicate_internal(S=#state{self_log=LocalLog,
 
     S#state{global_known_matrix=Matrix}.
 
--endif.
 -endif.
 
 -spec uniform_replicate_internal(state()) -> global_known_matrix().
@@ -783,7 +745,7 @@ ureplicate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, ClockTable,
     ureplicate_to(TargetReplica, Rest, Partition, Logs, ClockTable, NewMatrix).
 
 %% @doc Set knownVC[ReplicaId] <-max- Time
--spec update_known_vc(replica_id(), grb_time:ts(), clock_cache()) -> ok.
+-spec update_known_vc((replica_id() | ?RED_REPLICA), grb_time:ts(), clock_cache()) -> ok.
 update_known_vc(ReplicaId, Time, ClockTable) ->
     KeyName = ?known_key(ReplicaId),
     %% select_replace over a single key is atomic, so no-one should interleave with us

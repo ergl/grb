@@ -57,11 +57,11 @@ init({Ref, Transport, _Opts}) ->
     gen_server:enter_loop(?MODULE, [], State).
 
 handle_call(E, From, S) ->
-    ?LOG_WARNING("server got unexpected call with msg ~w from ~w", [E, From]),
+    ?LOG_WARNING("~p server got unexpected call with msg ~w from ~w", [?MODULE, E, From]),
     {reply, ok, S}.
 
 handle_cast(E, S) ->
-    ?LOG_WARNING("server got unexpected cast with msg ~w", [E]),
+    ?LOG_WARNING("~p server got unexpected cast with msg ~w", [?MODULE, E]),
     {noreply, S}.
 
 terminate(_Reason, #state{socket=Socket, transport=Transport}) ->
@@ -78,7 +78,7 @@ handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
             Promise = grb_promise:new(self(), {MessageId, Module, Type}),
             ok = grb_tcp_handler:process(Promise, Type, Msg);
         _ ->
-            ?LOG_WARNING("received unknown data ~p", [Data])
+            ?LOG_WARNING("~p received unknown data ~p", [?MODULE, Data])
     end,
     Transport:setopts(Socket, [{active, once}]),
     {noreply, State};

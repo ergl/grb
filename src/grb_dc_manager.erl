@@ -6,10 +6,14 @@
 -define(ALL_REPLICAS, all_replicas).
 -define(REMOTE_REPLICAS, remote_replicas).
 
+-define(PARTITION, partition_key).
+-define(PARTITION_LEN, partition_length).
+
 %% Node API
 -export([replica_id/0,
          all_replicas/0,
-         remote_replicas/0]).
+         remote_replicas/0,
+         random_local_partition/0]).
 
 %% Remote API
 -export([create_replica_groups/1,
@@ -23,7 +27,10 @@
          replica_descriptor/0,
          connect_to_replicas/1,
          stop_background_processes/0,
-         stop_propagation_processes/0]).
+         stop_propagation_processes/0,
+         start_paxos_unique_leader/0,
+         start_paxos_leader/0,
+         start_paxos_follower/1]).
 
 %% All functions here are called through erpc
 -ignore_xref([create_replica_groups/1,
@@ -37,7 +44,10 @@
               replica_descriptor/0,
               connect_to_replicas/1,
               stop_background_processes/0,
-              stop_propagation_processes/0]).
+              stop_propagation_processes/0,
+              start_paxos_unique_leader/0,
+              start_paxos_leader/0,
+              start_paxos_follower/1]).
 
 -spec replica_id() -> replica_id().
 replica_id() ->
@@ -47,6 +57,11 @@ replica_id() ->
 all_replicas() ->
     persistent_term:get({?MODULE, ?ALL_REPLICAS}, [replica_id()]).
 
+-spec random_local_partition() -> partition_id().
+random_local_partition() ->
+    N = rand:uniform(persistent_term:get({?MODULE, ?PARTITION_LEN})),
+    persistent_term:get({?MODULE, ?PARTITION, N}).
+
 -spec remote_replicas() -> [replica_id()].
 remote_replicas() ->
     persistent_term:get({?MODULE, ?REMOTE_REPLICAS}, []).
@@ -54,7 +69,8 @@ remote_replicas() ->
 -spec create_replica_groups([node()]) -> {ok, [replica_id()]} | {error, term()}.
 create_replica_groups([SingleNode]) ->
     ?LOG_INFO("Single-replica ~p, disabling blue append~n", [SingleNode]),
-    ok =  erpc:call(SingleNode, ?MODULE, single_replica_processes, []),
+    ok = erpc:call(SingleNode, ?MODULE, single_replica_processes, []),
+    ok = erpc:call(SingleNode, ?MODULE, start_paxos_unique_leader, []),
     {ok, [replica_id()]};
 
 create_replica_groups(Nodes) ->
@@ -96,11 +112,28 @@ create_replica_groups(Nodes) ->
                             ?LOG_ERROR("start_propagation_processes failed with ~p, aborting~n", [Reason]),
                             {error, Reason};
                         ok ->
+                            ok = start_red_processes(Nodes),
                             Ids = [Id || #replica_descriptor{replica_id=Id} <- Descriptors],
                             {ok, Ids}
                     end
             end
     end.
+
+-spec start_red_processes([node()]) -> ok.
+-ifdef(BLUE_KNOWN_VC).
+start_red_processes(_) -> ok.
+-else.
+start_red_processes(Nodes) ->
+    [Leader | Followers] =  lists:sort(Nodes),
+    LeaderId = erpc:call(Leader, ?MODULE, replica_id, []),
+
+    Res = erpc:multicall(Followers, ?MODULE, start_paxos_follower, [LeaderId]),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res),
+
+    ok = erpc:call(Leader, ?MODULE, start_paxos_leader, []),
+    ?LOG_INFO("started red processes, leader cluster: ~p", [LeaderId]),
+    ok.
+-endif.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% External API
@@ -189,11 +222,69 @@ start_propagation_processes() ->
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
+-spec start_paxos_unique_leader() -> ok.
+-ifdef(BLUE_KNOWN_VC).
+start_paxos_unique_leader() -> ok.
+-else.
+start_paxos_unique_leader() ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    LocalNodes = riak_core_ring:all_members(Ring),
+
+    Res0 = erpc:multicall(LocalNodes, grb_red_manager, persist_unique_leader_info, []),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res0),
+
+    ok = grb_paxos_vnode:init_leader_state(),
+
+    Res1 = erpc:multicall(LocalNodes, grb_red_manager, start_red_coordinators, []),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res1),
+    ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
+    ok.
+-endif.
+
+-spec start_paxos_leader() -> ok.
+start_paxos_leader() ->
+    %% Persist replica info at every node in the cluster
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    LocalNodes = riak_core_ring:all_members(Ring),
+
+    Res0 = erpc:multicall(LocalNodes, grb_red_manager, persist_leader_info, []),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res0),
+
+    ok = grb_paxos_vnode:init_leader_state(),
+
+    Res1 = erpc:multicall(LocalNodes, grb_red_manager, start_red_coordinators, []),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res1),
+    ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
+    ok.
+
+-spec start_paxos_follower(replica_id()) -> ok.
+start_paxos_follower(LeaderReplica) ->
+    %% Persist replica info at every node in the cluster
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    LocalNodes = riak_core_ring:all_members(Ring),
+
+    Res0 = erpc:multicall(LocalNodes, grb_red_manager, persist_follower_info, [LeaderReplica]),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res0),
+
+    ok = grb_paxos_vnode:init_follower_state(),
+
+    Res1 = erpc:multicall(LocalNodes, grb_red_manager, start_red_coordinators, []),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res1),
+    ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
+    ok.
+
 -spec persist_self_replica_info() -> ok.
 persist_self_replica_info() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     ReplicaId = riak_core_ring:cluster_name(Ring),
+    MyPartitions = riak_core_ring:my_indices(Ring),
+
     ok = persistent_term:put({?MODULE, ?MY_REPLICA}, ReplicaId),
+    ok = persistent_term:put({?MODULE, ?PARTITION_LEN}, length(MyPartitions)),
+    lists:foldl(fun(P, N) ->
+        persistent_term:put({?MODULE, ?PARTITION, N}, P),
+        N + 1
+    end, 1, MyPartitions),
     ok.
 
 -spec persist_replica_info() -> ok.

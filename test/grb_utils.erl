@@ -136,6 +136,11 @@ start_node(Name, Config) ->
             ok = erpc:call(Node, application, set_env, [grb, op_prepare_wait_ms, 5]),
             ok = erpc:call(Node, application, set_env, [grb, prune_committed_blue_interval, 50]),
 
+            ok = erpc:call(Node, application, set_env, [grb, red_heartbeat_interval, 5]),
+            ok = erpc:call(Node, application, set_env, [grb, red_delivery_interval, 10]),
+            ok = erpc:call(Node, application, set_env, [grb, red_prune_interval, 20]),
+            ok = erpc:call(Node, application, set_env, [grb, red_coord_pool_size, 500]),
+
             {ok, _} = erpc:call(Node, grb, start, []),
             ct:pal("Node ~p started", [Node]),
 
@@ -195,7 +200,6 @@ initial_port(clusterdev4) -> 10145;
 initial_port(clusterdev5) -> 10155;
 initial_port(clusterdev6) -> 10165.
 
-%% @doc TODO
 -spec pmap(fun(), list()) -> list().
 pmap(F, L) ->
     Parent = self(),

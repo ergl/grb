@@ -32,7 +32,11 @@ process(Promise, 'PrepareBlueNode', Args) ->
 process(_Promise, 'DecideBlueNode', Args) ->
     #{transaction_id := TxId, partitions := Ps, commit_vc := CVC} = Args,
     _ = [grb:decide_blue(P, TxId, CVC) || P <- Ps],
-    ok.
+    ok;
+
+process(Promise, 'CommitRed', Args) ->
+    #{transaction_id := TxId, snapshot_vc := VC, prepares := Prepares} = Args,
+    grb:commit_red(Promise, TxId, VC, Prepares).
 
 -ifdef(TEST).
 %% @doc Useful for testing

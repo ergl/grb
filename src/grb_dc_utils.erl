@@ -5,6 +5,7 @@
 -export([cluster_info/0,
          inter_dc_ip_port/0,
          my_partitions/0,
+         get_index_nodes/0,
          key_location/1,
          bcast_vnode_sync/2,
          bcast_vnode_sync/3,
@@ -14,7 +15,8 @@
 %% Managing ETS tables
 -export([new_cache/2,
          new_cache/3,
-         cache_name/2]).
+         cache_name/2,
+         safe_bin_to_atom/1]).
 
 %% For external script
 -export([is_ring_owner/0,
@@ -26,7 +28,8 @@
               key_location/1,
               inter_dc_ip_port/0,
               pending_ring_changes/0,
-              ready_ring_members/0]).
+              ready_ring_members/0,
+              get_index_nodes/0]).
 
 -define(BUCKET, <<"grb">>).
 
@@ -117,6 +120,7 @@ get_index_nodes() ->
 new_cache(Partition, Name) ->
     new_cache(Partition, Name, [set, protected, named_table, {read_concurrency, true}]).
 
+-spec new_cache(partition_id(), atom(), [term()]) -> cache_id().
 new_cache(Partition, Name, Options) ->
     CacheName = cache_name(Partition, Name),
     case ets:info(CacheName) of
