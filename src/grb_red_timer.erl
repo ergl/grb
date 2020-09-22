@@ -62,7 +62,7 @@ init([ReplicaId, Partition]) ->
                    quorum_size=QuorumSize,
                    quorum_ack=QuorumSize,
                    interval=Interval,
-                   timer=erlang:send_after(Interval, self(), ?red_hb)},
+                   timer=start_heartbeat_timer(Interval)},
     {ok, State}.
 
 handle_call(E, _From, S) ->
@@ -109,6 +109,10 @@ handle_info(?red_hb, State=?no_active_timer) ->
 handle_info(E, S) ->
     ?LOG_WARNING("~p unexpected info: ~p~n", [?MODULE, E]),
     {noreply, S}.
+
+-spec start_heartbeat_timer(non_neg_integer()) -> undefined | reference().
+start_heartbeat_timer(0) -> undefined;
+start_heartbeat_timer(Interval) -> erlang:send_after(Interval, self(), ?red_hb).
 
 -spec next_heartbeat_id({heartbeat, non_neg_integer()}) -> {heartbeat, non_neg_integer()}.
 next_heartbeat_id({heartbeat, N}) -> {heartbeat, N + 1}.
