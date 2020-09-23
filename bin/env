@@ -64,7 +64,7 @@ fi
 # Pool config
 
 if [ -z "$INTER_DC_SENDER_POOL_SIZE" ]; then
-  export INTER_DC_SENDER_POOL_SIZE=16
+  export INTER_DC_SENDER_POOL_SIZE=256
 fi
 
 if [ -z "$RED_COORD_POOL_SIZE" ]; then
