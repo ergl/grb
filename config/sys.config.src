@@ -70,6 +70,9 @@
     %% automatic ticks from time time.
     {self_blue_heartbeat_interval, ${SELF_HB_INTERVAL_MS}},
 
+    %% Shackle pool size for inter dc sender
+    {inter_dc_pool_size, ${INTER_DC_SENDER_POOL_SIZE}},
+
     %% How often do we replicate _our_ transactions to other replicas?
     {basic_replication_interval, ${REPLICATION_INTERVAL_MS}},
 
@@ -83,7 +86,6 @@
     %% This avoids innecessary duplication of transactions in the wire and ensures
     %% that we will only replicate transactions in the case of replica failure.
     {uniform_replication_interval, ${UNIFORM_REPLICATION_INTERVAL_MS}},
-
 
     %% How often should we propagate our knownVC to local partitions?
     %%

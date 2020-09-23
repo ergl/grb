@@ -5,7 +5,8 @@
 -include_lib("kernel/include/logger.hrl").
 
 %% Constructors
--export([start_connection/4,
+-export([start_connection/3,
+         start_connection/4,
          close/1]).
 
 %% Blue Transactions
@@ -35,6 +36,14 @@
          terminate/1]).
 
 -record(state, { connected_dc :: replica_id(), conn :: inter_dc_conn() }).
+
+-spec start_connection(ReplicaID :: replica_id(),
+                       IP :: inet:ip_addres(),
+                       Port :: inet:port_number()) -> {ok, inter_dc_conn()} | {error, term()}.
+
+start_connection(ReplicaID, IP, Port) ->
+    {ok, PoolSize} = application:get_env(grb, inter_dc_pool_size),
+    start_connection(ReplicaID, IP, Port, PoolSize).
 
 -spec start_connection(ReplicaID :: replica_id(),
                        IP :: inet:ip_address(),

@@ -73,7 +73,7 @@ connect_to(#replica_descriptor{replica_id=ReplicaID, remote_addresses=RemoteNode
                 true ->
                     maps:get(Entry, EntryMap);
                 false ->
-                    case grb_dc_connection_sender:start_connection(ReplicaID, RemoteIP, RemotePort, 16) of
+                    case grb_dc_connection_sender:start_connection(ReplicaID, RemoteIP, RemotePort) of
                         {ok, Pool} ->
                             Pool;
                         Err ->

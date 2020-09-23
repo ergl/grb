@@ -61,11 +61,17 @@ if [ -z "$RED_PRUNE_INTERVAL" ]; then
   export RED_PRUNE_INTERVAL=20
 fi
 
-# Node config
+# Pool config
+
+if [ -z "$INTER_DC_SENDER_POOL_SIZE" ]; then
+  export INTER_DC_SENDER_POOL_SIZE=16
+fi
 
 if [ -z "$RED_COORD_POOL_SIZE" ]; then
   export RED_COORD_POOL_SIZE=500
 fi
+
+# Node config
 
 if [ -z "$IP" ]; then
   export IP="127.0.0.1"
