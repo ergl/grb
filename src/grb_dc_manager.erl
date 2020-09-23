@@ -237,6 +237,9 @@ start_paxos_unique_leader() ->
 
     Res1 = erpc:multicall(LocalNodes, grb_red_manager, start_red_coordinators, []),
     ok = lists:foreach(fun({ok, ok}) -> ok end, Res1),
+
+    Res2 = erpc:multicall(LocalNodes, grb_red_timer, start_timer, []),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res2),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 -endif.
@@ -254,6 +257,9 @@ start_paxos_leader() ->
 
     Res1 = erpc:multicall(LocalNodes, grb_red_manager, start_red_coordinators, []),
     ok = lists:foreach(fun({ok, ok}) -> ok end, Res1),
+
+    Res2 = erpc:multicall(LocalNodes, grb_red_timer, start_timer, []),
+    ok = lists:foreach(fun({ok, ok}) -> ok end, Res2),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 

@@ -62,7 +62,6 @@
     %% read replica of the last version cache by grb_main_vnode
     op_log_red_replica :: atom(),
     synod_state = undefined :: grb_paxos_state:t() | undefined,
-    heartbeat_process = undefined :: pid() | undefined,
 
     %% a buffer of outstanding decision messages
     %% If we receive a DECIDE message from the coordinator before we receive
@@ -175,14 +174,9 @@ handle_command(ping, _Sender, State) ->
 handle_command(is_ready, _Sender, State) ->
     {reply, true, State};
 
-handle_command(init_leader, _Sender, S=#state{partition=Partition,
-                                              heartbeat_process=undefined,
-                                              synod_state=undefined}) ->
-
+handle_command(init_leader, _Sender, S=#state{synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
-    {ok, Pid} = grb_red_timer:start(ReplicaId, Partition),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
-                                     heartbeat_process=Pid,
                                      synod_state=grb_paxos_state:leader()})};
 
 handle_command(init_follower, _Sender, S=#state{synod_state=undefined}) ->

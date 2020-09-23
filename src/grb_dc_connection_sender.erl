@@ -6,7 +6,6 @@
 
 %% Constructors
 -export([start_connection/3,
-         start_connection/4,
          close/1]).
 
 %% Blue Transactions
@@ -41,6 +40,8 @@
                        IP :: inet:ip_addres(),
                        Port :: inet:port_number()) -> {ok, inter_dc_conn()} | {error, term()}.
 
+%% I don't get why dialyzer fails here
+-dialyzer({no_return, start_connection/3}).
 start_connection(ReplicaID, IP, Port) ->
     {ok, PoolSize} = application:get_env(grb, inter_dc_pool_size),
     start_connection(ReplicaID, IP, Port, PoolSize).

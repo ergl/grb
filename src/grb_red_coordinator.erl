@@ -173,7 +173,7 @@ send_tx_prepares(TxId, S=#state{replica=LocalId,
         Location = send_prepare(LocalId, Partition, TxId, Readset, Writeset, SnapshotVC),
         {
             [{Partition, Location} | LeaderAcc],
-            QuorumAcc#{Partition => QuorumSize }
+            QuorumAcc#{Partition => QuorumSize}
         }
     end,
     {LeaderLocations, QuorumsToAck} = lists:foldl(SendFun, {[], #{}}, Prepares),
