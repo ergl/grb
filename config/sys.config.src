@@ -49,6 +49,9 @@
     %% The port to send/recv inter-dc communication (default is 8989)
     {inter_dc_port, ${INTER_DC_PORT}},
 
+    %% The port to send/recv red inter-dc communication (default is 8990)
+    {inter_dc_red_port, ${INTER_DC_RED_PORT}},
+
     %% Auto-start book-keeping processes in the background
     %% These processes should start after the ring for a cluster
     %% is fully connected. If the node is not going to be joined

@@ -126,6 +126,7 @@ start_node(Name, Config) ->
             ok = erpc:call(Node, application, set_env, [grb, tcp_port, Port + 1]),
             ok = erpc:call(Node, application, set_env, [grb, tcp_id_len_bits, 16]),
             ok = erpc:call(Node, application, set_env, [grb, inter_dc_port, Port + 2]),
+            ok = erpc:call(Node, application, set_env, [grb, inter_dc_red_port, Port + 3]),
             ok = erpc:call(Node, application, set_env, [grb, auto_start_background_processes, false]),
             ok = erpc:call(Node, application, set_env, [grb, version_log_size, 25]),
             ok = erpc:call(Node, application, set_env, [grb, self_blue_heartbeat_interval, 5]),

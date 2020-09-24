@@ -71,12 +71,12 @@ connect_to(#replica_descriptor{replica_id=ReplicaID, remote_addresses=RemoteNode
     %% and get those from the remote addresses
     try
         Result = lists:foldl(fun(Partition, {EntryMap, PartitionMap}) ->
-            Entry={RemoteIP, RemotePort} = maps:get(Partition, RemoteNodes),
+            Entry={RemoteIP, RemotePorts} = maps:get(Partition, RemoteNodes),
             ConnPools = case maps:is_key(Entry, EntryMap) of
                 true ->
                     maps:get(Entry, EntryMap);
                 false ->
-                    case start_inter_dc_connections(ReplicaID, RemoteIP, RemotePort) of
+                    case start_inter_dc_connections(ReplicaID, RemoteIP, RemotePorts) of
                         {ok, Pools} ->
                             Pools;
                         Err ->
@@ -104,12 +104,12 @@ start_inter_dc_connections(ReplicaId, RemoteIP, RemotePort) ->
 -else.
 -spec start_inter_dc_connections(ReplicaId :: replica_id(),
                                  RemoteIP :: inet:ip_addres(),
-                                 RemotePort :: inet:port_number()) -> {ok, {inter_dc_conn(), inter_dc_red_conn()}}
-                                                                    | {error, term()}.
-start_inter_dc_connections(ReplicaId, RemoteIP, RemotePort) ->
-    case grb_dc_connection_sender:start_connection(ReplicaId, RemoteIP, RemotePort) of
+                                 RemotePorts :: {inet:port_number(), inet:port_number()}) -> {ok, {inter_dc_conn(), inter_dc_red_conn()}}
+                                                                                           | {error, term()}.
+start_inter_dc_connections(ReplicaId, RemoteIP, {BluePort, RedPort}) ->
+    case grb_dc_connection_sender:start_connection(ReplicaId, RemoteIP, BluePort) of
         {ok, BluePool} ->
-            case grb_dc_connection_sender:start_red_connection(ReplicaId, RemoteIP, RemotePort) of
+            case grb_dc_connection_sender:start_red_connection(ReplicaId, RemoteIP, RedPort) of
                 {ok, RedPool} ->
                     {ok, {BluePool, RedPool}};
                 RedErr ->

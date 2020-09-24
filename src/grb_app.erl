@@ -19,17 +19,7 @@ start(_StartType, _StartArgs) ->
             ok = enable_debug_logs(),
             ok = grb_tcp_server:start_server(),
             ok = grb_dc_connection_receiver:start_server(),
-
-            %% this is only when we know there won't be more nodes or replicas joining
-            case application:get_env(grb, auto_start_background_processes) of
-                {ok, true} ->
-                    ?LOG_INFO("Starting background processes"),
-                    ok = grb_dc_manager:start_background_processes(),
-                    ok = grb_local_broadcast:start_as_singleton(),
-                    ok = grb_dc_manager:single_replica_processes();
-                _ ->
-                    ok
-            end,
+            ok = grb_red_receiver:start_server(),
             {ok, Pid}
     end.
 
