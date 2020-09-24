@@ -48,6 +48,7 @@
                              {packet, 4}]).
 
 -type inter_dc_conn() :: atom().
+-type inter_dc_red_conn() :: atom().
 
 -type red_coordinator() :: pid().
 -type red_vote() :: ok | {abort, atom()}.
@@ -81,6 +82,7 @@
               val/0,
               replica_descriptor/0,
               inter_dc_conn/0,
+              inter_dc_red_conn/0,
               red_coordinator/0,
               red_vote/0,
               ballot/0,

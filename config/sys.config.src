@@ -70,7 +70,7 @@
     %% automatic ticks from time time.
     {self_blue_heartbeat_interval, ${SELF_HB_INTERVAL_MS}},
 
-    %% Shackle pool size for inter dc sender
+    %% Shackle pool size for (blue) inter dc sender
     {inter_dc_pool_size, ${INTER_DC_SENDER_POOL_SIZE}},
 
     %% How often do we replicate _our_ transactions to other replicas?
@@ -101,6 +101,9 @@
 
     %% How often to prune the logs of all replicas
     {prune_committed_blue_interval, ${COMMITTED_BLUE_PRUNE_INTERVAL_MS}},
+
+    %% Shackle pool size for (red) inter dc sender
+    {inter_dc_red_pool_size, ${RED_SENDER_POOL_SIZE}},
 
     %% Pool size for the red transaction coordinator
     {red_coord_pool_size, ${RED_COORD_POOL_SIZE}},

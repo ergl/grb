@@ -6,6 +6,7 @@
 
 %% Constructors
 -export([start_connection/3,
+         start_red_connection/3,
          close/1]).
 
 %% Blue Transactions
@@ -34,7 +35,8 @@
          handle_timeout/2,
          terminate/1]).
 
--record(state, { connected_dc :: replica_id(), conn :: inter_dc_conn() }).
+-type conn_kind() :: {blue, inter_dc_conn()} | {red, inter_dc_red_conn()}.
+-record(state, { connected_dc :: replica_id(), conn :: conn_kind() }).
 
 -spec start_connection(ReplicaID :: replica_id(),
                        IP :: inet:ip_addres(),
@@ -61,7 +63,39 @@ start_connection(ReplicaID, IP, Port, PoolSize) ->
                                   {port, Port},
                                   {reconnect, false},
                                   {socket_options, ?INTER_DC_SOCK_OPTS},
-                                  {init_options, [ReplicaID, PoolName]}],
+                                  {init_options, [blue, ReplicaID, PoolName]}],
+                                 [{pool_size, PoolSize}]),
+    case PoolRes of
+        ok -> {ok, PoolName};
+        {error, pool_already_started} -> {ok, PoolName};
+        {error, Res} -> {error, Res}
+    end.
+
+-spec start_red_connection(ReplicaID :: replica_id(),
+                           IP :: inet:ip_addres(),
+                           Port :: inet:port_number()) -> {ok, inter_dc_red_conn()} | {error, term()}.
+
+-dialyzer({no_return, start_red_connection/3}).
+start_red_connection(ReplicaID, IP, Port) ->
+    {ok, PoolSize} = application:get_env(grb, inter_dc_red_pool_size),
+    start_red_connection(ReplicaID, IP, Port, PoolSize).
+
+-spec start_red_connection(ReplicaID :: replica_id(),
+                           IP :: inet:ip_address(),
+                           Port :: inet:port_number(),
+                           PoolSize :: non_neg_integer()) -> {ok, inter_dc_red_conn()} | {error, term()}.
+
+%% I don't get why dialyzer fails here
+-dialyzer({no_return, start_red_connection/4}).
+start_red_connection(ReplicaID, IP, Port, PoolSize) ->
+    PoolName = red_pool_name(IP, Port),
+    PoolRes = shackle_pool:start(PoolName,
+                                 grb_dc_connection_sender,
+                                 [{address, IP},
+                                  {port, Port},
+                                  {reconnect, false},
+                                  {socket_options, ?INTER_DC_SOCK_OPTS},
+                                  {init_options, [red, ReplicaID, PoolName]}],
                                  [{pool_size, PoolSize}]),
     case PoolRes of
         ok -> {ok, PoolName};
@@ -85,11 +119,11 @@ send_clocks(Pool, FromReplica, Partition, KnownVC, StableVC) ->
 send_clocks_heartbeat(Pool, FromReplica, Partition, KnownVC, StableVC) ->
     shackle:call(Pool, {clocks_heartbeat, FromReplica, Partition, KnownVC, StableVC}).
 
--spec send_red_prepare(inter_dc_conn(), red_coord_location(), partition_id(), term(), #{}, #{}, vclock()) -> ok.
+-spec send_red_prepare(inter_dc_red_conn(), red_coord_location(), partition_id(), term(), #{}, #{}, vclock()) -> ok.
 send_red_prepare(Pool, Coordinator, Partition, TxId, RS, WS, VC) ->
     shackle:call(Pool, {red_prepare, Coordinator, Partition, TxId, RS, WS, VC}).
 
--spec send_red_accept(Pool :: inter_dc_conn(),
+-spec send_red_accept(Pool :: inter_dc_red_conn(),
                       Coord :: red_coord_location(),
                       Partition :: partition_id(),
                       TxId :: term(),
@@ -100,31 +134,31 @@ send_red_prepare(Pool, Coordinator, Partition, TxId, RS, WS, VC) ->
 send_red_accept(Pool, Coord, Partition, TxId, RS, WS, Prepare) ->
     shackle:call(Pool, {red_accept, Coord, Partition, TxId, RS, WS, Prepare}).
 
--spec send_red_accept_ack(inter_dc_conn(), node(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+-spec send_red_accept_ack(inter_dc_red_conn(), node(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
 send_red_accept_ack(Pool, ToNode, Partition, Ballot, TxId, Vote, PrepareVC) ->
     shackle:call(Pool, {red_accept_ack, ToNode, Partition, Ballot, TxId, Vote, PrepareVC}).
 
--spec send_red_decided(inter_dc_conn(), node(), partition_id(), term(), red_vote(), vclock()) -> ok.
+-spec send_red_decided(inter_dc_red_conn(), node(), partition_id(), term(), red_vote(), vclock()) -> ok.
 send_red_decided(Pool, ToNode, Partition, TxId, Decision, CommitVC) ->
     shackle:call(Pool, {red_decided, ToNode, Partition, TxId, Decision, CommitVC}).
 
--spec send_red_decision(inter_dc_conn(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+-spec send_red_decision(inter_dc_red_conn(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
 send_red_decision(Pool, FromReplica, Partition, Ballot, TxId, Decision, CommitVC) ->
     shackle:call(Pool, {red_decision, FromReplica, Partition, Ballot, TxId, Decision, CommitVC}).
 
--spec send_red_heartbeat(inter_dc_conn(), replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok.
+-spec send_red_heartbeat(inter_dc_red_conn(), replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok.
 send_red_heartbeat(Pool, FromReplica, Partition, Ballot, Id, Time) ->
     shackle:call(Pool, {red_hb, FromReplica, Partition, Ballot, Id, Time}).
 
--spec send_red_heartbeat_ack(inter_dc_conn(), replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok.
+-spec send_red_heartbeat_ack(inter_dc_red_conn(), replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok.
 send_red_heartbeat_ack(Pool, FromReplica, Partition, Ballot, Id, Time) ->
     shackle:call(Pool, {red_hb_ack, FromReplica, Partition, Ballot, Id, Time}).
 
--spec send_red_decide_heartbeat(inter_dc_conn(), replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok.
+-spec send_red_decide_heartbeat(inter_dc_red_conn(), replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok.
 send_red_decide_heartbeat(Pool, FromReplica, Partition, Ballot, Id, Time) ->
     shackle:call(Pool, {red_hb_decide, FromReplica, Partition, Ballot, Id, Time}).
 
--spec close(inter_dc_conn()) -> ok.
+-spec close(inter_dc_conn() | inter_dc_red_conn()) -> ok.
 close(PoolName) ->
     _ = shackle_pool:stop(PoolName),
     ok.
@@ -133,8 +167,8 @@ close(PoolName) ->
 %% shackle callbacks
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-init([ReplicaId, PoolName]) ->
-    {ok, #state{connected_dc=ReplicaId, conn=PoolName}}.
+init([Kind, ReplicaId, PoolName]) ->
+    {ok, #state{connected_dc=ReplicaId, conn={Kind, PoolName}}}.
 
 setup(_Socket, State) ->
     {ok, State}.
@@ -227,7 +261,7 @@ handle_timeout(RequestId, State) ->
     {ok, {RequestId, {error, timeout}}, State}.
 
 %% Called if shackle_server receives tcp_closed or tcp_error
-terminate(#state{conn=PoolName, connected_dc=ReplicaId}) ->
+terminate(#state{conn={_, PoolName}, connected_dc=ReplicaId}) ->
     grb_dc_connection_manager:connection_closed(ReplicaId, PoolName),
     ok.
 
@@ -238,6 +272,15 @@ terminate(#state{conn=PoolName, connected_dc=ReplicaId}) ->
 -spec pool_name(inet:ip_address(), inet:port_number()) -> inter_dc_conn().
 pool_name(IP, Port) ->
     Str = "inter_dc_sender_" ++ inet:ntoa(IP) ++ ":" ++ integer_to_list(Port),
+    try
+        list_to_existing_atom(Str)
+    catch _:_  ->
+        list_to_atom(Str)
+    end.
+
+-spec red_pool_name(inet:ip_address(), inet:port_number()) -> inter_dc_red_conn().
+red_pool_name(IP, Port) ->
+    Str = "inter_dc_red_sender_" ++ inet:ntoa(IP) ++ ":" ++ integer_to_list(Port),
     try
         list_to_existing_atom(Str)
     catch _:_  ->

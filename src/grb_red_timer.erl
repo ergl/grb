@@ -8,7 +8,8 @@
 
 %% erpc
 -export([start_timer/0]).
--ignore_xref([start_timer/0]).
+-ignore_xref([start_link/0,
+              start_timer/0]).
 
 %% Protocol
 -export([handle_accept_ack/4]).
