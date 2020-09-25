@@ -116,7 +116,7 @@ handle_request(Partition, Node, #red_accept_ack{ballot=Ballot, tx_id=TxId,
     MyNode = node(),
     case Node of
         MyNode -> grb_red_coordinator:accept_ack(Partition, Ballot, TxId, Vote, PrepareVC);
-        _ -> erpc:call(Node, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC])
+        _ -> erpc:cast(Node, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC])
     end;
 
 handle_request(Partition, _SourceReplica, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->
@@ -126,7 +126,7 @@ handle_request(_Partition, Node, #red_already_decided{tx_id=TxId, decision=Vote,
     MyNode = node(),
     case Node of
         MyNode -> grb_red_coordinator:already_decided(TxId, Vote, CommitVC);
-        _ -> erpc:call(Node, grb_red_coordinator, already_decided, [TxId, Vote, CommitVC])
+        _ -> erpc:cast(Node, grb_red_coordinator, already_decided, [TxId, Vote, CommitVC])
     end;
 
 handle_request(Partition, SourceReplica, #red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->

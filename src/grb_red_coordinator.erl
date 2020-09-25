@@ -218,7 +218,7 @@ send_prepare(FromId, Partition, TxId, RS, WS, VC) ->
                                                                                      writeset=WS,
                                                                                      snapshot_vc=VC}),
 
-            ok = erpc:call(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
+            ok = erpc:cast(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
     end,
     LeaderLoc.
 
@@ -276,7 +276,7 @@ local_broadcast(FromReplica, Partition, Ballot, TxId, Decision, CommitVC) ->
 
 -spec remote_broadcast(node(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
 remote_broadcast(Node, FromReplica, Partition, Ballot, TxId, Decision, CommitVC) ->
-    erpc:call(Node, grb_paxos_vnode, broadcast_decision, [FromReplica, Partition, Ballot, TxId, Decision, CommitVC]).
+    erpc:cast(Node, grb_paxos_vnode, broadcast_decision, [FromReplica, Partition, Ballot, TxId, Decision, CommitVC]).
 
 -spec reduce_vote(red_vote(), vclock(), {red_vote(), vclock()}) -> {red_vote(), vclock()}.
 reduce_vote(_, _, {{abort, _}, _}=Err) -> Err;

@@ -360,7 +360,7 @@ reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vot
         {MyReplica, MyNode} ->
             grb_red_coordinator:accept_ack(Partition, Ballot, TxId, Vote, PrepareVC);
         {MyReplica, OtherNode} ->
-            erpc:call(OtherNode, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC]);
+            erpc:cast(OtherNode, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC]);
         {OtherReplica, _} ->
             grb_dc_connection_manager:send_red_accept_ack(OtherReplica, Node, Partition, Ballot, TxId, Vote, PrepareVC)
     end.
@@ -372,7 +372,7 @@ reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decisi
         {MyReplica, MyNode} ->
             grb_red_coordinator:already_decided(TxId, Decision, CommitVC);
         {MyReplica, OtherNode} ->
-            erpc:call(OtherNode, grb_red_coordinator, already_decided, [TxId, Decision, CommitVC]);
+            erpc:cast(OtherNode, grb_red_coordinator, already_decided, [TxId, Decision, CommitVC]);
         {OtherReplica, _} ->
             grb_dc_connection_manager:send_red_decided(OtherReplica, Node, Partition, TxId, Decision, CommitVC)
     end.
