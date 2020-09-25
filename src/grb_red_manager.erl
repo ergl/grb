@@ -28,16 +28,13 @@
          handle_cast/2,
          handle_info/2]).
 
--define(LEADERS_TABLE, grb_red_manager_leaders).
 -define(COORD_TABLE, grb_red_manager_coordinators).
 -define(QUORUM_KEY, quorum_size).
 -define(POOL_SIZE, pool_size).
 -define(COORD_KEY, coord_key).
+-define(LEADER_KEY, leader_key).
 
--record(state, {
-    pid_for_tx :: cache(term(), red_coordinator()),
-    partition_leaders :: cache(partition_id(), leader_location())
-}).
+-record(state, { pid_for_tx :: cache(term(), red_coordinator()) }).
 
 -spec start_link() -> {ok, pid()} | ignore | {error, term()}.
 start_link() ->
@@ -45,19 +42,26 @@ start_link() ->
 
 -spec persist_unique_leader_info() -> ok.
 persist_unique_leader_info() ->
-    %% todo(borja, red): remove, redundant with calc_quorum_size/0
-    ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, 1),
-    ok = gen_server:call(?MODULE, set_leader).
+    persist_leader_info().
 
 -spec persist_leader_info() -> ok.
 persist_leader_info() ->
     ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, calc_quorum_size()),
-    ok = gen_server:call(?MODULE, set_leader).
+    lists:foreach(fun({P, _}=IndexNode) ->
+        persistent_term:put({?MODULE, ?LEADER_KEY, P}, {local, IndexNode})
+    end, grb_dc_utils:get_index_nodes()).
 
 -spec persist_follower_info(replica_id()) -> ok.
 persist_follower_info(LeaderReplica) ->
     ok = persistent_term:put({?MODULE, ?QUORUM_KEY}, calc_quorum_size()),
-    ok = gen_server:call(?MODULE, {set_follower, LeaderReplica}).
+    SelfNode = node(),
+    lists:foreach(fun({Partition, Node}) ->
+        Value = case Node of
+            SelfNode -> {remote, LeaderReplica};
+            _ -> {proxy, Node, LeaderReplica}
+        end,
+        ok = persistent_term:put({?MODULE, ?LEADER_KEY, Partition}, Value)
+    end, grb_dc_utils:get_index_nodes()).
 
 -spec calc_quorum_size() -> non_neg_integer().
 calc_quorum_size() ->
@@ -70,7 +74,7 @@ quorum_size() ->
 
 -spec leader_of(partition_id()) -> leader_location().
 leader_of(Partition) ->
-    ets:lookup_element(?LEADERS_TABLE, Partition, 2).
+    persistent_term:get({?MODULE, ?LEADER_KEY, Partition}).
 
 -spec start_red_coordinators() -> ok.
 start_red_coordinators() ->
@@ -110,27 +114,9 @@ unregister_coordinator(TxId, Pid) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 init([]) ->
-    LeaderTable = ets:new(?LEADERS_TABLE, [set, protected, named_table, {read_concurrency, true}]),
     CoordTable = ets:new(?COORD_TABLE, [set, public, named_table,
                                         {read_concurrency, true}, {write_concurrency, true}]),
-    {ok, #state{pid_for_tx=CoordTable, partition_leaders=LeaderTable}}.
-
-handle_call(set_leader, _From, S=#state{partition_leaders=Table}) ->
-    Objects = [{P, {local, IndexNode}}
-                || {P, _}=IndexNode <- grb_dc_utils:get_index_nodes()],
-    true = ets:insert(Table, Objects),
-    {reply, ok, S};
-
-handle_call({set_follower, Leader}, _From, S=#state{partition_leaders=Table}) ->
-    SelfNode = node(),
-    Objects = lists:map(fun({Partition, Node}) ->
-        case Node of
-            SelfNode -> {Partition, {remote, Leader}};
-            _ -> {Partition, {proxy, Node, Leader}}
-        end
-    end, grb_dc_utils:get_index_nodes()),
-    true = ets:insert(Table, Objects),
-    {reply, ok, S};
+    {ok, #state{pid_for_tx=CoordTable}}.
 
 handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
