@@ -33,6 +33,7 @@
 -record(state, {
     self_pid :: pid(),
     replica :: replica_id(),
+    self_location :: red_coord_location(),
     quorum_size :: non_neg_integer(),
     accumulators = #{} :: #{term() => #tx_acc{}}
 }).
@@ -80,9 +81,11 @@ accept_ack(Partition, Ballot, TxId, Vote, AcceptVC) ->
 init(_WorkerArgs) ->
     process_flag(trap_exit, true),
     LocalId = grb_dc_manager:replica_id(),
+    CoordId = {coord, LocalId, node()},
     QuorumSize = grb_red_manager:quorum_size(),
     {ok, #state{self_pid=self(),
                 replica=LocalId,
+                self_location=CoordId,
                 quorum_size=QuorumSize}}.
 
 handle_call(E, _From, S) ->
@@ -149,12 +152,12 @@ init_tx(Promise, TxId, SnapshotVC, Prepares, S=#state{accumulators=Acc}) ->
                                               prepares=Prepares,
                                               snapshot_vc=SnapshotVC}}}.
 
-init_tx_and_send(Promise, TxId, SnapshotVC, Prepares, S=#state{replica=LocalId,
+init_tx_and_send(Promise, TxId, SnapshotVC, Prepares, S=#state{self_location=SelfCoord,
                                                                quorum_size=QuorumSize,
                                                                accumulators=Acc}) ->
 
     SendFun = fun({Partition, Readset, Writeset}, {LeaderAcc, QuorumAcc}) ->
-        Location = send_prepare(LocalId, Partition, TxId, Readset, Writeset, SnapshotVC),
+        Location = send_prepare(SelfCoord, Partition, TxId, Readset, Writeset, SnapshotVC),
         {
             [{Partition, Location} | LeaderAcc],
             QuorumAcc#{Partition => QuorumSize }
@@ -165,13 +168,13 @@ init_tx_and_send(Promise, TxId, SnapshotVC, Prepares, S=#state{replica=LocalId,
                                               locations=LeaderLocations,
                                               quorums_to_ack=QuorumsToAck}}}.
 
-send_tx_prepares(TxId, S=#state{replica=LocalId,
+send_tx_prepares(TxId, S=#state{self_location=SelfCoord,
                                 quorum_size=QuorumSize,
                                 accumulators=Acc}) ->
 
     TxData = #tx_acc{prepares=Prepares, snapshot_vc=SnapshotVC} = maps:get(TxId, Acc),
     SendFun = fun({Partition, Readset, Writeset}, {LeaderAcc, QuorumAcc}) ->
-        Location = send_prepare(LocalId, Partition, TxId, Readset, Writeset, SnapshotVC),
+        Location = send_prepare(SelfCoord, Partition, TxId, Readset, Writeset, SnapshotVC),
         {
             [{Partition, Location} | LeaderAcc],
             QuorumAcc#{Partition => QuorumSize}
@@ -198,25 +201,24 @@ check_ballot(Partition, Ballot, Ballots) ->
 %%   own it, so we won't have an active connection to any node that owns P0).
 %%   In that case, we will need to go through a proxy located at the local cluster
 %%   node that owns P0.
--spec send_prepare(replica_id(), partition_id(), term(), #{}, #{}, vclock()) -> leader_location().
-send_prepare(FromId, Partition, TxId, RS, WS, VC) ->
+-spec send_prepare(red_coord_location(), partition_id(), term(), #{}, #{}, vclock()) -> leader_location().
+send_prepare(Coordinator, Partition, TxId, RS, WS, VC) ->
     LeaderLoc = grb_red_manager:leader_of(Partition),
     case LeaderLoc of
         {local, IndexNode} ->
             %% leader is in the local cluster, go through vnode directly
-            ok = grb_paxos_vnode:prepare(IndexNode, TxId, RS, WS, VC, {coord, FromId, node()});
+            ok = grb_paxos_vnode:prepare(IndexNode, TxId, RS, WS, VC, Coordinator);
         {remote, RemoteReplica} ->
             %% leader is in another replica, and we have a direct inter_dc connection to it
-            ok = grb_dc_connection_manager:send_red_prepare(RemoteReplica, {coord, FromId, node()}, Partition,
+            ok = grb_dc_connection_manager:send_red_prepare(RemoteReplica, Coordinator, Partition,
                                                             TxId, RS, WS, VC);
         {proxy, LocalNode, RemoteReplica} ->
             %% leader is in another replica, but we don't have a direct inter_dc connection, have
             %% to go through a cluster-local proxy at `LocalNode`
-            SelfCoord = {coord, FromId, node()},
-            Msg = grb_dc_message_utils:encode_msg(SelfCoord, Partition, #red_prepare{tx_id=TxId,
-                                                                                     readset=RS,
-                                                                                     writeset=WS,
-                                                                                     snapshot_vc=VC}),
+            Msg = grb_dc_message_utils:encode_msg(Coordinator, Partition, #red_prepare{tx_id=TxId,
+                                                                                       readset=RS,
+                                                                                       writeset=WS,
+                                                                                       snapshot_vc=VC}),
 
             ok = erpc:cast(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
     end,
