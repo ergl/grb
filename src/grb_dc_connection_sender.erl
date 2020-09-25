@@ -27,6 +27,9 @@
          send_red_heartbeat_ack/6,
          send_red_decide_heartbeat/6]).
 
+%% Other
+-export([send_raw/2]).
+
 %% Shackle API
 -export([init/1,
          setup/2,
@@ -158,6 +161,10 @@ send_red_heartbeat_ack(Pool, FromReplica, Partition, Ballot, Id, Time) ->
 send_red_decide_heartbeat(Pool, FromReplica, Partition, Ballot, Id, Time) ->
     shackle:call(Pool, {red_hb_decide, FromReplica, Partition, Ballot, Id, Time}).
 
+-spec send_raw(inter_dc_red_conn(), binary()) -> ok.
+send_raw(Pool, Binary) ->
+    shackle:call(Pool, {send_raw, Binary}).
+
 -spec close(inter_dc_conn() | inter_dc_red_conn()) -> ok.
 close(PoolName) ->
     _ = shackle_pool:stop(PoolName),
@@ -249,6 +256,9 @@ handle_request({red_hb_decide, FromReplica, Partition, Ballot, Id, Timestamp}, S
                                                                 heartbeat_id=Id,
                                                                 timestamp=Timestamp}),
     {ok, Msg, State};
+
+handle_request({send_raw, Binary}, State) ->
+    {ok, Binary, State};
 
 handle_request(_, _) ->
     erlang:error(unknown_request).

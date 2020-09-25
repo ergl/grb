@@ -29,6 +29,8 @@
          send_red_heartbeat_ack/6,
          send_red_decide_heartbeat/6]).
 
+-export([send_raw/3]).
+
 %% Managemenet API
 -export([connection_closed/2,
          close/1]).
@@ -297,6 +299,15 @@ send_red_decide_heartbeat(ToId, FromId, Partition, Ballot, Id, Time) ->
     try
         PoolName = ets:lookup_element(?RED_CONN_POOL_TABLE, {Partition, ToId}, 2),
         grb_dc_connection_sender:send_red_decide_heartbeat(PoolName, FromId, Partition, Ballot, Id, Time)
+    catch _:_ ->
+        {error, gone}
+    end.
+
+-spec send_raw(replica_id(), partition_id(), binary()) -> ok | {error, term()}.
+send_raw(ToId, Partition, Msg) ->
+    try
+        PoolName = ets:lookup_element(?RED_CONN_POOL_TABLE, {Partition, ToId}, 2),
+        grb_dc_connection_sender:send_raw(PoolName, Msg)
     catch _:_ ->
         {error, gone}
     end.

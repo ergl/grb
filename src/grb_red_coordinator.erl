@@ -1,6 +1,7 @@
 -module(grb_red_coordinator).
 -behavior(gen_server).
 -include("grb.hrl").
+-include("dc_messages.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 %% supervision tree
@@ -211,11 +212,13 @@ send_prepare(FromId, Partition, TxId, RS, WS, VC) ->
         {proxy, LocalNode, RemoteReplica} ->
             %% leader is in another replica, but we don't have a direct inter_dc connection, have
             %% to go through a cluster-local proxy at `LocalNode`
-            %% todo(borja, red): Maybe pre-encode the message here, send a binary (look for more places to do this)
-            ok = erpc:call(LocalNode,
-                           grb_dc_connection_manager,
-                           send_red_prepare,
-                           [RemoteReplica, {coord, FromId, node()}, Partition, TxId, RS, WS, VC])
+            SelfCoord = {coord, FromId, node()},
+            Msg = grb_dc_message_utils:encode_msg(SelfCoord, Partition, #red_prepare{tx_id=TxId,
+                                                                                     readset=RS,
+                                                                                     writeset=WS,
+                                                                                     snapshot_vc=VC}),
+
+            ok = erpc:call(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
     end,
     LeaderLoc.
 
