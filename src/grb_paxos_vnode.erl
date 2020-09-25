@@ -442,7 +442,12 @@ deliver_updates(Partition, From, SynodState) ->
                     ok = grb_propagation_vnode:handle_red_heartbeat(Partition, NextFrom);
                 ({WriteSet, CommitVC}) ->
                     ?LOG_DEBUG("~p DELIVER(~p, ~p)", [Partition, NextFrom, WriteSet]),
-                    ok = grb_main_vnode:handle_red_transaction(Partition, WriteSet, NextFrom, CommitVC)
+                    case map_size(WriteSet) of
+                        0 ->
+                            ok = grb_propagation_vnode:handle_red_heartbeat(Partition, NextFrom);
+                        _ ->
+                            ok = grb_main_vnode:handle_red_transaction(Partition, WriteSet, NextFrom, CommitVC)
+                    end
             end, Entries),
             deliver_updates(Partition, NextFrom, SynodState)
     end.
