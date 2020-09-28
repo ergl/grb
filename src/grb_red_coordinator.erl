@@ -231,11 +231,12 @@ handle_ack(SelfPid, LocalId, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0
 
     {ok, Ballots} = check_ballot(FromPartition, Ballot, Ballots0),
     Acc = Acc0#{FromPartition => {Vote, AcceptVC}},
-    ToAck = maps:get(FromPartition, Quorums0),
-    ?LOG_DEBUG("~p ACCEPT_ACK(~p, ~b), ~b to go", [TxId, FromPartition, Ballot, ToAck - 1]),
-    Quorums = case ToAck of
+    ?LOG_DEBUG("ACCEPT_ACK(~b, ~p) from ~p", [Ballot, TxId, FromPartition]),
+    Quorums = case maps:get(FromPartition, Quorums0, undefined) of
+        %% we already received a quorum from this partition, and we removed it
+        undefined -> Quorums0;
         1 -> maps:remove(FromPartition, Quorums0);
-        _ -> Quorums0#{FromPartition => ToAck - 1}
+        N when is_integer(N) -> Quorums0#{FromPartition => N - 1}
     end,
     case map_size(Quorums) of
         N when N > 0 ->

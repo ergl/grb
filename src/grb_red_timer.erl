@@ -86,11 +86,12 @@ handle_cast({accept_ack, From, InBallot, Id, InTimestamp}, S0=#state{replica=Loc
     %% todo(borja, red): handle bad ballot / timestamp?
     {ok, Ballots} = check_ballot(From, InBallot, Ballots0),
     Timestamp = max_timestamp(InTimestamp, Timestamp0),
-    ToAck = maps:get(From, Quorums0),
-    ?LOG_DEBUG("received TIMER_ACK(~b, ~p, ~b) from ~p, ~b to go", [InBallot, Id, InTimestamp, From, ToAck - 1]),
-    Quorums = case ToAck of
+    ?LOG_DEBUG("received TIMER_ACK(~b, ~p, ~b) from ~p", [InBallot, Id, InTimestamp, From]),
+    Quorums = case maps:get(From, Quorums0, undefined) of
+        %% we already received a quorum from this partition, and we removed it
+        undefined -> Quorums0;
         1 -> maps:remove(From, Quorums0);
-        _ -> Quorums0#{From => ToAck - 1}
+        N when is_integer(N) -> Quorums0#{From => N - 1}
     end,
     S = case map_size(Quorums) of
         N when N > 0 ->
