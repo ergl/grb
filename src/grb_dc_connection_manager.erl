@@ -37,6 +37,7 @@
 
 %% Used through erpc or supervisor machinery
 -ignore_xref([start_link/0,
+              send_raw/3,
               connect_to/1,
               close/1]).
 
