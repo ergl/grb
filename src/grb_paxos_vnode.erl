@@ -108,8 +108,8 @@ decide_heartbeat(Partition, Ballot, Id, Ts) ->
 
 -spec prepare(IndexNode :: index_node(),
               TxId :: term(),
-              Readset :: #{key() => grb_time:ts()},
-              WriteSet :: #{key() => val()},
+              Readset :: readset(),
+              WriteSet :: writeset(),
               SnapshotVC :: vclock(),
               Coord :: red_coord_location()) -> ok.
 
@@ -122,8 +122,8 @@ prepare(IndexNode, TxId, ReadSet, Writeset, SnapshotVC, Coord) ->
 -spec accept(Partition :: partition_id(),
              Ballot :: ballot(),
              TxId :: term(),
-             RS :: #{},
-             WS :: #{},
+             RS :: readset(),
+             WS :: writeset(),
              Vote :: red_vote(),
              PrepareVC :: vclock(),
              Coord :: red_coord_location()) -> ok.

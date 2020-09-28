@@ -37,12 +37,11 @@ connect() ->
 -spec load(non_neg_integer()) -> ok.
 load(Size) ->
     Val = crypto:strong_rand_bytes(Size),
-    BottomRed = 0,
-    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, {update_default, Val, BottomRed}),
+    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, {update_default, Val}),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
     Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, get_default),
-    true = lists:all(fun({P, {DefaultVal, DefaultRed}}) ->
-        case (DefaultVal =:= Val) andalso (DefaultRed =:= BottomRed) of
+    true = lists:all(fun({P, DefaultVal}) ->
+        case DefaultVal =:= Val of
             true -> true;
             false ->
                 ?LOG_WARNING("Couldn't load at partition ~p", [P]),
@@ -111,7 +110,7 @@ prepare_blue(Partition, TxId, WriteSet, VC) ->
 decide_blue(Partition, TxId, VC) ->
     ok = grb_partition_replica:decide_blue(Partition, TxId, VC).
 
--spec commit_red(grb_promise:t(), term(), vclock(), [{partition_id(), #{}, #{}}]) -> ok.
+-spec commit_red(grb_promise:t(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
 -ifdef(BLUE_KNOWN_VC).
 commit_red(Promise, _, VC, _) -> grb_promise:resolve({ok, VC}, Promise).
 -else.

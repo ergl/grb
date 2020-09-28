@@ -26,6 +26,9 @@
 -type key() :: term().
 -type val() :: term().
 
+%% todo(borja, crdt): change operation type when adding crdt lib
+-type readset() :: [key()].
+-type writeset() :: #{key() => val()}.
 
 %% Different ETS tables
 -define(OP_LOG_TABLE, op_log_table).
@@ -75,6 +78,8 @@
               cache/2,
               op/0,
               effect/0,
+              readset/0,
+              writeset/0,
               transaction_type/0,
               replica_id/0,
               vclock/0,

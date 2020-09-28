@@ -6,19 +6,19 @@
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
--ignore_xref([start_link/4]).
+-ignore_xref([start_link/3]).
 
 %% supervision tree
--export([start_link/4]).
+-export([start_link/3]).
 
 %% protocol api
 -export([async_op/5,
          decide_blue/3]).
 
 %% replica management API
--export([start_replicas/4,
+-export([start_replicas/3,
          stop_replicas/2,
-         update_default/4,
+         update_default/3,
          replica_ready/2]).
 
 %% gen_server callbacks
@@ -38,8 +38,7 @@
 
     %% Read replica of the opLog ETS table
     oplog_replica :: atom(),
-    default_bottom_value :: term(),
-    default_bottom_red :: grb_time:ts()
+    default_bottom_value :: term()
 }).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -59,17 +58,16 @@
 %%
 -spec start_link(Partition :: partition_id(),
                  Id :: non_neg_integer(),
-                 Val :: term(),
-                 RedTs :: grb_time:ts()) -> {ok, pid()} | ignore | {error, term()}.
+                 Val :: term()) -> {ok, pid()} | ignore | {error, term()}.
 
-start_link(Partition, Id, Val, RedTs) ->
+start_link(Partition, Id, Val) ->
     Name = {local, generate_replica_name(Partition, Id)},
-    gen_server:start_link(Name, ?MODULE, [Partition, Id, Val, RedTs], []).
+    gen_server:start_link(Name, ?MODULE, [Partition, Id, Val], []).
 
 %% @doc Start `Count` read replicas for the given partition
--spec start_replicas(partition_id(), non_neg_integer(), term(), grb_time:ts()) -> ok.
-start_replicas(Partition, Count, Val, RedTs) ->
-    start_replicas_internal(Partition, Count, Val, RedTs).
+-spec start_replicas(partition_id(), non_neg_integer(), term()) -> ok.
+start_replicas(Partition, Count, Val) ->
+    start_replicas_internal(Partition, Count, Val).
 
 %% @doc Stop `Count` read replicas for the given partition
 -spec stop_replicas(partition_id(), non_neg_integer()) -> ok.
@@ -77,13 +75,13 @@ stop_replicas(Partition, Count) ->
     stop_replicas_internal(Partition, Count).
 
 %% @doc Update the default values at `Count` read replicas
--spec update_default(partition_id(), non_neg_integer(), term(), grb_time:ts()) -> ok.
-update_default(_Partition, 0, _, _) ->
+-spec update_default(partition_id(), non_neg_integer(), term()) -> ok.
+update_default(_Partition, 0, _) ->
     ok;
 
-update_default(Partition, N, Val, RedTs) ->
-    ok = gen_server:call(generate_replica_name(Partition, N), {update_default, Val, RedTs}),
-    update_default(Partition, N - 1, Val, RedTs).
+update_default(Partition, N, Val) ->
+    ok = gen_server:call(generate_replica_name(Partition, N), {update_default, Val}),
+    update_default(Partition, N - 1, Val).
 
 %% @doc Check if all the read replicas at this node and partitions are ready
 -spec replica_ready(partition_id(), non_neg_integer()) -> boolean().
@@ -118,7 +116,7 @@ decide_blue(Partition, TxId, VC) ->
 %% gen_server callbacks
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-init([Partition, Id, Val, RedTs]) ->
+init([Partition, Id, Val]) ->
     Self = generate_replica_name(Partition, Id),
     OpLog = grb_dc_utils:cache_name(Partition, ?OP_LOG_TABLE),
     {ok, OpWait} = application:get_env(grb, op_prepare_wait_ms),
@@ -127,8 +125,7 @@ init([Partition, Id, Val, RedTs]) ->
                 replica_id=grb_dc_manager:replica_id(),
                 known_barrier_wait_ms=OpWait,
                 oplog_replica = OpLog,
-                default_bottom_value=Val,
-                default_bottom_red=RedTs}}.
+                default_bottom_value=Val}}.
 
 handle_call(ready, _From, State) ->
     {reply, ready, State};
@@ -136,8 +133,8 @@ handle_call(ready, _From, State) ->
 handle_call(shutdown, _From, State) ->
     {stop, shutdown, ok, State};
 
-handle_call({update_default, Val, RedTs}, _From, S) ->
-    {reply, ok, S#state{default_bottom_value=Val, default_bottom_red=RedTs}};
+handle_call({update_default, Val}, _From, S) ->
+    {reply, ok, S#state{default_bottom_value=Val}};
 
 handle_call(_Request, _From, _State) ->
     erlang:error(not_implemented).
@@ -237,24 +234,23 @@ check_known_vc(Partition, ReplicaId, VC) ->
 -endif.
 
 -spec perform_op_continue(grb_promise:t(), key(), vclock(), val(), #state{}) -> ok.
-perform_op_continue(Promise, Key, VC, Val, State=#state{default_bottom_value=BottomVal,
-                                                        default_bottom_red=BottomRedTs}) ->
+perform_op_continue(Promise, Key, VC, Val, State=#state{default_bottom_value=BottomVal}) ->
     BaseVal = case Val of <<>> -> BottomVal; _ -> Val end,
     case ets:lookup(State#state.oplog_replica, Key) of
         [] ->
-            %% todo(borja, warn): Check soundness
-            grb_promise:resolve({ok, BaseVal, BottomRedTs}, Promise);
+            grb_promise:resolve({ok, BaseVal}, Promise);
         [{Key, Log}] ->
             %% todo(borja, warn): Totally order log operations
             %% should introduce lamport clock to updates to totally order them
             %% Right now, return the first (highest in the snapshot)
-            %% todo(borja, red): Update redTS with dependence vectors
             case grb_version_log:get_first_lower(VC, Log) of
-                undefined -> grb_promise:resolve({ok, BaseVal, BottomRedTs}, Promise);
-                {_, LastVal, LastVC} ->
-                    RedTs = grb_vclock:get_time(?RED_REPLICA, LastVC),
+                undefined ->
+                    grb_promise:resolve({ok, BaseVal}, Promise);
+
+                %% todo(borja, efficiency): Remove clock from return, we don't use it
+                {_, LastVal, _LastVC} ->
                     ReturnVal = case Val of <<>> -> LastVal; _ -> Val end,
-                    grb_promise:resolve({ok, ReturnVal, RedTs}, Promise)
+                    grb_promise:resolve({ok, ReturnVal}, Promise)
             end
     end.
 
@@ -290,16 +286,16 @@ generate_replica_name(Partition, Id) ->
 random_replica(Partition) ->
     generate_replica_name(Partition, rand:uniform(?READ_CONCURRENCY)).
 
--spec start_replicas_internal(partition_id(), non_neg_integer(), term(), grb_time:ts()) -> ok.
-start_replicas_internal(_Partition, 0, _, _) ->
+-spec start_replicas_internal(partition_id(), non_neg_integer(), term()) -> ok.
+start_replicas_internal(_Partition, 0, _) ->
     ok;
 
-start_replicas_internal(Partition, N, Val, Clock) ->
-    case grb_partition_replica_sup:start_replica(Partition, N, Val, Clock) of
+start_replicas_internal(Partition, N, Val) ->
+    case grb_partition_replica_sup:start_replica(Partition, N, Val) of
         {ok, _} ->
-            start_replicas_internal(Partition, N - 1, Val, Clock);
+            start_replicas_internal(Partition, N - 1, Val);
         {error, {already_started, _}} ->
-            start_replicas_internal(Partition, N - 1, Val, Clock);
+            start_replicas_internal(Partition, N - 1, Val);
         _Other ->
             ?LOG_ERROR("Unable to start pvc read replica for ~p, will skip", [Partition]),
             try
@@ -307,7 +303,7 @@ start_replicas_internal(Partition, N, Val, Clock) ->
             catch _:_ ->
                 ok
             end,
-            start_replicas_internal(Partition, N - 1, Val, Clock)
+            start_replicas_internal(Partition, N - 1, Val)
     end.
 
 -spec stop_replicas_internal(partition_id(), non_neg_integer()) -> ok.

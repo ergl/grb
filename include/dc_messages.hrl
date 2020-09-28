@@ -47,7 +47,7 @@
 
 -record(red_prepare, {
     tx_id :: term(),
-    readset :: #{},
+    readset :: [term()],
     writeset :: #{},
     snapshot_vc :: vclock()
 }).
@@ -55,7 +55,7 @@
 -record(red_accept, {
     ballot :: ballot(),
     tx_id :: term(),
-    readset :: #{},
+    readset :: [term()],
     writeset :: #{},
     decision :: term(),
     prepare_vc :: vclock()

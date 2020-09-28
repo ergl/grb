@@ -215,8 +215,8 @@ send_clocks_heartbeat(ToId, FromId, Partition, KnownVC, StableVC) ->
                        Coordinator :: red_coord_location(),
                        Partition :: partition_id(),
                        TxId :: term(),
-                       RS :: #{},
-                       WS :: #{},
+                       RS :: readset(),
+                       WS :: writeset(),
                        VC :: vclock()) -> ok | {error, term()}.
 
 send_red_prepare(ToId, Coordinator, Partition, TxId, RS, WS, VC) ->
@@ -231,8 +231,8 @@ send_red_prepare(ToId, Coordinator, Partition, TxId, RS, WS, VC) ->
                       Coordinator :: red_coord_location(),
                       Partition :: partition_id(),
                       TxId :: term(),
-                      RS :: #{},
-                      WS :: #{},
+                      RS :: readset(),
+                      WS :: writeset(),
                       Prepare :: {red_vote(), ballot(), vclock()}) -> ok | {error, term()}.
 
 send_red_accept(ToId, Coordinator, Partition, TxId, RS, WS, PrepareMsg) ->

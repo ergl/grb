@@ -57,8 +57,7 @@
     %% It doesn't make sense to append it if we're not connected to other clusters
     should_append_commit = true :: boolean(),
 
-    default_bottom_value = <<>> :: term(),
-    default_bottom_red = 0 :: grb_time:ts()
+    default_bottom_value = <<>> :: term()
 }).
 
 -type state() :: #state{}.
@@ -175,13 +174,12 @@ handle_command(start_blue_hb_timer, _From, S = #state{blue_tick_timer=_Tref}) ->
 
 handle_command(start_replicas, _From, S = #state{partition=P,
                                                  replicas_n=N,
-                                                 default_bottom_value=Val,
-                                                 default_bottom_red=RedTs}) ->
+                                                 default_bottom_value=Val}) ->
 
     Result = case grb_partition_replica:replica_ready(P, N) of
         true -> true;
         false ->
-            ok = grb_partition_replica:start_replicas(P, N, Val, RedTs),
+            ok = grb_partition_replica:start_replicas(P, N, Val),
             grb_partition_replica:replica_ready(P, N)
     end,
     {reply, Result, S};
@@ -202,12 +200,12 @@ handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     {reply, Result, S};
 
 %% called from grb:load/1 to verify loading mechanism
-handle_command(get_default, _From, S=#state{default_bottom_value=Val, default_bottom_red=RedTs}) ->
-    {reply, {Val, RedTs}, S};
+handle_command(get_default, _From, S=#state{default_bottom_value=Val}) ->
+    {reply, Val, S};
 
-handle_command({update_default, DefaultVal, DefaultRed}, _From, S=#state{partition=P, replicas_n=N}) ->
-    Result = grb_partition_replica:update_default(P, N, DefaultVal, DefaultRed),
-    {reply, Result, S#state{default_bottom_value=DefaultVal, default_bottom_red=DefaultRed}};
+handle_command({update_default, DefaultVal}, _From, S=#state{partition=P, replicas_n=N}) ->
+    Result = grb_partition_replica:update_default(P, N, DefaultVal),
+    {reply, Result, S#state{default_bottom_value=DefaultVal}};
 
 handle_command({prepare_blue, TxId, WS, SnapshotVC, Ts}, _From, S=#state{partition=Partition, prepared_blue=PB}) ->
     ?LOG_DEBUG("prepare_blue ~p wtih time ~p", [TxId, Ts]),

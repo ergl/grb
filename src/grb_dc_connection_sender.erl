@@ -122,7 +122,7 @@ send_clocks(Pool, FromReplica, Partition, KnownVC, StableVC) ->
 send_clocks_heartbeat(Pool, FromReplica, Partition, KnownVC, StableVC) ->
     shackle:call(Pool, {clocks_heartbeat, FromReplica, Partition, KnownVC, StableVC}).
 
--spec send_red_prepare(inter_dc_red_conn(), red_coord_location(), partition_id(), term(), #{}, #{}, vclock()) -> ok.
+-spec send_red_prepare(inter_dc_red_conn(), red_coord_location(), partition_id(), term(), readset(), writeset(), vclock()) -> ok.
 send_red_prepare(Pool, Coordinator, Partition, TxId, RS, WS, VC) ->
     shackle:call(Pool, {red_prepare, Coordinator, Partition, TxId, RS, WS, VC}).
 
@@ -130,8 +130,8 @@ send_red_prepare(Pool, Coordinator, Partition, TxId, RS, WS, VC) ->
                       Coord :: red_coord_location(),
                       Partition :: partition_id(),
                       TxId :: term(),
-                      RS :: #{},
-                      WS :: #{},
+                      RS :: readset(),
+                      WS :: writeset(),
                       Prepare :: {red_vote(), ballot(), vclock()}) -> ok.
 
 send_red_accept(Pool, Coord, Partition, TxId, RS, WS, Prepare) ->

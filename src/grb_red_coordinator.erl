@@ -4,6 +4,8 @@
 -include("dc_messages.hrl").
 -include_lib("kernel/include/logger.hrl").
 
+-ignore_xref([start_link/1]).
+
 %% supervision tree
 -export([start_link/1]).
 
@@ -22,7 +24,7 @@
 -record(tx_acc, {
     promise :: grb_promise:t(),
     %% used to hold the data while we wait for the uniform barrier to lift
-    prepares = undefined :: [{partition_id(), #{}, #{}}] | undefined,
+    prepares = undefined :: [{partition_id(), readset(), writeset()}] | undefined,
     snapshot_vc = undefined :: vclock() | undefined,
     locations = [] :: [{partition_id(), leader_location()}],
     quorums_to_ack = #{} :: #{partition_id() => pos_integer()},
@@ -48,7 +50,7 @@ generate_coord_name(Id) ->
     BinId = integer_to_binary(Id),
     grb_dc_utils:safe_bin_to_atom(<<"grb_red_coordinator_", BinId/binary>>).
 
--spec commit(red_coordinator(), grb_promise:t(), term(), vclock(), [{partition_id(), #{}, #{}}]) -> ok.
+-spec commit(red_coordinator(), grb_promise:t(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
 commit(Coordinator, Promise, TxId, SnapshotVC, Prepares) ->
     gen_server:cast(Coordinator, {commit_init, Promise, TxId, SnapshotVC, Prepares}).
 
@@ -201,7 +203,7 @@ check_ballot(Partition, Ballot, Ballots) ->
 %%   own it, so we won't have an active connection to any node that owns P0).
 %%   In that case, we will need to go through a proxy located at the local cluster
 %%   node that owns P0.
--spec send_prepare(red_coord_location(), partition_id(), term(), #{}, #{}, vclock()) -> leader_location().
+-spec send_prepare(red_coord_location(), partition_id(), term(), readset(), writeset(), vclock()) -> leader_location().
 send_prepare(Coordinator, Partition, TxId, RS, WS, VC) ->
     LeaderLoc = grb_red_manager:leader_of(Partition),
     case LeaderLoc of
