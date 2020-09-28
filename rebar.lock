@@ -1,10 +1,10 @@
-{"1.1.0",
+{"1.2.0",
 [{<<"foil">>,{pkg,<<"foil">>,<<"0.1.1">>},1},
  {<<"metal">>,{pkg,<<"metal">>,<<"0.1.1">>},1},
  {<<"poolboy">>,{pkg,<<"poolboy">>,<<"1.5.2">>},1},
  {<<"pvc_proto">>,
   {git,"https://github.com/ergl/pvc_proto.git",
-       {ref,"86d090be65af0fe6ca3dd7a3ce8726703b157d19"}},
+       {ref,"afb59620e369dc53f1493e549543901ab2d14071"}},
   0},
  {<<"quickrand">>,
   {git,"https://github.com/okeuday/quickrand.git",
@@ -18,7 +18,7 @@
   0},
  {<<"riak_core_lite_util">>,
   {git,"https://github.com/riak-core-lite/riak_core_lite_util.git",
-       {ref,"92e6fc43902bf7f0145b6afb9311eb58ab9234cd"}},
+       {ref,"c294504eeb5f4320cf4e3b73a37157056d0b0f07"}},
   0},
  {<<"shackle">>,
   {git,"https://github.com/ergl/shackle.git",
@@ -30,5 +30,11 @@
  {<<"metal">>, <<"5D3D1322DA7BCD34B94FED5486F577973685298883954F7A3E517EF5EF6953F5">>},
  {<<"poolboy">>, <<"392B007A1693A64540CEAD79830443ABF5762F5D30CF50BC95CB2C1AAAFA006B">>},
  {<<"ranch">>, <<"6B1FAB51B49196860B733A49C07604465A47BDB78AA10C1C16A3D199F7F8C881">>},
- {<<"recon">>, <<"430FFA60685AC1EFDFB1FE4C97B8767C92D0D92E6E7C3E8621559BA77598678A">>}]}
+ {<<"recon">>, <<"430FFA60685AC1EFDFB1FE4C97B8767C92D0D92E6E7C3E8621559BA77598678A">>}]},
+{pkg_hash_ext,[
+ {<<"foil">>, <<"CD5F4B6D518168E97D0F8A5D79EEE4D3625EEF1ED33790BA037ACCAD22C7F455">>},
+ {<<"metal">>, <<"88B82B634998A1A768DEDCD372C2F7E657B19445325C0AF5CCBAC62C77210F1D">>},
+ {<<"poolboy">>, <<"DAD79704CE5440F3D5A3681C8590B9DC25D1A561E8F5A9C995281012860901E3">>},
+ {<<"ranch">>, <<"451D8527787DF716D99DC36162FCA05934915DB0B6141BBDAC2EA8D3C7AFC7D7">>},
+ {<<"recon">>, <<"5721C6B6D50122D8F68CCCAC712CAA1231F97894BAB779EFF5FF0F886CB44648">>}]}
 ].
