@@ -106,7 +106,7 @@ handle_cast({accept_ack, From, InBallot, Id, InTimestamp}, S0=#state{replica=Loc
     end,
     {noreply, S};
 
-handle_cast({accept_ack, _, _, _}, S) ->
+handle_cast({accept_ack, _, _, _, _}, S) ->
     %% ignore any ACCEPT_ACK from past heartbeats
     {noreply, S};
 
