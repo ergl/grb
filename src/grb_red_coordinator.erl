@@ -236,7 +236,7 @@ handle_ack(SelfPid, LocalId, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0
         %% we already received a quorum from this partition, and we removed it
         undefined -> Quorums0;
         1 -> maps:remove(FromPartition, Quorums0);
-        N when is_integer(N) -> Quorums0#{FromPartition => N - 1}
+        ToAck when is_integer(ToAck) -> Quorums0#{FromPartition => ToAck - 1}
     end,
     case map_size(Quorums) of
         N when N > 0 ->

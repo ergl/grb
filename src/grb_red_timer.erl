@@ -91,7 +91,7 @@ handle_cast({accept_ack, From, InBallot, Id, InTimestamp}, S0=#state{replica=Loc
         %% we already received a quorum from this partition, and we removed it
         undefined -> Quorums0;
         1 -> maps:remove(From, Quorums0);
-        N when is_integer(N) -> Quorums0#{From => N - 1}
+        ToAck when is_integer(ToAck) -> Quorums0#{From => ToAck - 1}
     end,
     S = case map_size(Quorums) of
         N when N > 0 ->
