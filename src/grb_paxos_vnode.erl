@@ -437,18 +437,14 @@ deliver_updates(Partition, From, SynodState) ->
             From;
         {NextFrom, Entries} ->
             lists:foreach(fun
-                (heartbeat) ->
-                    ?LOG_DEBUG("~p DELIVER_HB(~b)", [Partition, NextFrom]),
-                    ok = grb_propagation_vnode:handle_red_heartbeat(Partition, NextFrom);
-                ({WriteSet, CommitVC}) ->
+                ({WriteSet, CommitVC}) when is_map(WriteSet) andalso map_size(WriteSet) =/= 0->
                     ?LOG_DEBUG("~p DELIVER(~p, ~p)", [Partition, NextFrom, WriteSet]),
-                    case map_size(WriteSet) of
-                        0 ->
-                            ok = grb_propagation_vnode:handle_red_heartbeat(Partition, NextFrom);
-                        _ ->
-                            ok = grb_main_vnode:handle_red_transaction(Partition, WriteSet, NextFrom, CommitVC)
-                    end
+                    ok = grb_main_vnode:handle_red_transaction(Partition, WriteSet, CommitVC);
+                (_) ->
+                    ok
             end, Entries),
+            ?LOG_DEBUG("~p DELIVER_HB(~b)", [Partition, NextFrom]),
+            ok = grb_propagation_vnode:handle_red_heartbeat(Partition, NextFrom),
             deliver_updates(Partition, NextFrom, SynodState)
     end.
 

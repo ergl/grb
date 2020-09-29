@@ -7,7 +7,7 @@
 -export([prepare_blue/4,
          decide_blue/3,
          handle_replicate/5,
-         handle_red_transaction/4]).
+         handle_red_transaction/3]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -107,10 +107,10 @@ handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
                                            ?master)
     end.
 
--spec handle_red_transaction(partition_id(), {}, grb_time:ts(), vclock()) -> ok.
-handle_red_transaction(Partition, WS, RedTime, VC) ->
+-spec handle_red_transaction(partition_id(), writeset(), vclock()) -> ok.
+handle_red_transaction(Partition, WS, VC) ->
     riak_core_vnode_master:command({Partition, node()},
-                                   {handle_red_tx, WS, RedTime, VC},
+                                   {handle_red_tx, WS, VC},
                                    ?master).
 
 %%%===================================================================
@@ -220,13 +220,10 @@ handle_command({handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC}, _Fro
     ok = handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, State),
     {noreply, State};
 
-handle_command({handle_red_tx, WS, RedTime, VC}, _From, S=#state{partition=Partition,
-                                                                 op_log=OperationLog,
-                                                                 op_log_size=LogSize,
-                                                                 op_last_red=LastRed}) ->
-
+handle_command({handle_red_tx, WS, VC}, _From, S=#state{op_log=OperationLog,
+                                                        op_log_size=LogSize,
+                                                        op_last_red=LastRed}) ->
     ok = update_partition_state(?RED_REPLICA, WS, VC, OperationLog, LogSize, LastRed),
-    ok = grb_propagation_vnode:handle_red_heartbeat(Partition, RedTime),
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->
