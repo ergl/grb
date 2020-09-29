@@ -27,6 +27,10 @@ if [ -z "$INTER_DC_RED_PORT" ]; then
   export INTER_DC_RED_PORT=8990
 fi
 
+if [ -z "$OP_LOG_REPLICAS" ]; then
+  export OP_LOG_REPLICAS=20
+fi
+
 if [ -z "$VSN_LOG_SIZE" ]; then
   export VSN_LOG_SIZE=25
 fi

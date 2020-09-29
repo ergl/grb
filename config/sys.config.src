@@ -59,6 +59,9 @@
     %% enabled by default.
     {auto_start_background_processes, false},
 
+    %% How many replicas per main vnode (readers)
+    {op_log_replicas, ${OP_LOG_REPLICAS}},
+
     %% How many versions to keep per key
     {version_log_size, ${VSN_LOG_SIZE}},
 

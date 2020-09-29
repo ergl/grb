@@ -42,7 +42,7 @@
     partition :: partition_id(),
 
     %% number of gen_servers replicating this vnode state
-    replicas_n = ?READ_CONCURRENCY :: non_neg_integer(),
+    replicas_n :: non_neg_integer(),
 
     prepared_blue :: #{any() => {#{}, vclock()}},
 
@@ -138,12 +138,14 @@ init([Partition]) ->
     %%   in the process queue, and some events will be processed quicker. Since
     %%   we want to control the size of the queue, this allows us to do that.
     {ok, BlueTickInterval} = application:get_env(grb, self_blue_heartbeat_interval),
+    NumReplicas = application:get_env(grb, op_log_replicas, ?READ_CONCURRENCY),
     LastRed = grb_dc_utils:new_cache(Partition,
                                      ?OP_LOG_LAST_RED,
                                      [set, protected, named_table,
                                       {read_concurrency, true}, {keypos, #last_red_record.key}]),
 
     State = #state{partition = Partition,
+                   replicas_n=NumReplicas,
                    prepared_blue = #{},
                    blue_tick_interval=BlueTickInterval,
                    op_log_size = KeyLogSize,
