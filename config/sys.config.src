@@ -97,10 +97,8 @@
     {local_broadcast_interval, ${BCAST_KNOWN_VC_INTERVAL_MS}},
 
     %% Number of ms to wait before re-checking `wait` statements on OP_REQUEST
-    %% and COMMIT_BLUE. For OP_REQUEST, it will wait until knownVC[d] > snapshotVC[d],
-    %% which is bounded by the clock interval time, so we set it to the same value.
-    %% todo(borja): revisit
-    {op_prepare_wait_ms, ${SELF_HB_INTERVAL_MS}},
+    %% and COMMIT_BLUE.
+    {op_prepare_wait_ms, ${OP_CHECK_RETRY_MS}},
 
     %% How often to prune the logs of all replicas
     {prune_committed_blue_interval, ${COMMITTED_BLUE_PRUNE_INTERVAL_MS}},
