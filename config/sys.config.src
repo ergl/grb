@@ -58,7 +58,6 @@
     %% How many versions to keep per key
     {version_log_size, ${VSN_LOG_SIZE}},
 
-    %% todo(borja): Play with these settings.
     %% Timer intervals, in ms.
     %%
     %% How often do we increase our own knownVC entry?

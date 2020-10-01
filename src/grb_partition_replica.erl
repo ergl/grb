@@ -102,6 +102,11 @@ replica_ready(Partition, N) ->
 %% Protocol API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+%% todo(borja, efficiency): Check for wait outside of process
+%%
+%%  If we can proceed with the read, do that outside of this process, and then
+%%  we can reply to the client without any messages being sent. Only enter the
+%%  gen_server if we have to wait until the partition catches up.
 -spec async_op(grb_promise:t(), partition_id(), key(), vclock(), val()) -> ok.
 async_op(Promise, Partition, Key, VC, Val) ->
     Target = random_replica(Partition),
