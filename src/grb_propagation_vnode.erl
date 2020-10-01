@@ -57,7 +57,8 @@
 
 %% Called by vnode proxy
 -ignore_xref([start_vnode/1,
-              handle_info/2]).
+              handle_info/2,
+              stable_vc/1]).
 
 -define(master, grb_propagation_vnode_master).
 
@@ -69,6 +70,9 @@
 -define(stable_red_key, stable_vc_red).
 -define(stable_key, stable_vc).
 -define(uniform_key, uniform_vc).
+
+-define(PARTITION_CLOCK_TABLE, partition_clock_table).
+-define(CLOG_TABLE(Replica, Partition), {?MODULE, commit_log, Replica, Partition}).
 
 -type stable_matrix() :: #{replica_id() => vclock()}.
 -type global_known_matrix() :: #{{replica_id(), replica_id()} => grb_time:ts()}.
@@ -134,7 +138,7 @@ get_commit_log(Partition) ->
 
 -spec get_commit_log(replica_id(), partition_id()) -> grb_remote_commit_log:t().
 get_commit_log(Replica, Partition) ->
-    persistent_term:get(?CLOG(Replica, Partition)).
+    persistent_term:get(?CLOG_TABLE(Replica, Partition)).
 
 %%%===================================================================
 %%% common public api
@@ -143,10 +147,10 @@ get_commit_log(Replica, Partition) ->
 -spec known_vc(partition_id()) -> vclock().
 -ifdef(BLUE_KNOWN_VC).
 known_vc(Partition) ->
-    known_vc_internal(grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
+    known_vc_internal(clock_table(Partition)).
 -else.
 known_vc(Partition) ->
-    Table = grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE),
+    Table = clock_table(Partition),
     grb_vclock:set_time(?RED_REPLICA,
                         known_time_internal(?RED_REPLICA, Table),
                         known_vc_internal(Table)).
@@ -161,7 +165,7 @@ known_vc_internal(ClockTable) ->
 
 -spec known_time(partition_id(), (replica_id() | ?RED_REPLICA)) -> grb_time:ts().
 known_time(Partition, ReplicaId) ->
-    known_time_internal(ReplicaId, grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
+    known_time_internal(ReplicaId, clock_table(Partition)).
 
 -spec known_time_internal((replica_id() | ?RED_REPLICA), clock_cache()) -> grb_time:ts().
 known_time_internal(ReplicaId, ClockTable) ->
@@ -173,11 +177,11 @@ known_time_internal(ReplicaId, ClockTable) ->
 
 -spec stable_vc(partition_id()) -> vclock().
 stable_vc(Partition) ->
-    ets:lookup_element(grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?stable_key, 2).
+    ets:lookup_element(clock_table(Partition), ?stable_key, 2).
 
 -spec stable_red(partition_id()) -> grb_time:ts().
 stable_red(Partition) ->
-    ets:lookup_element(grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?stable_red_key, 2).
+    ets:lookup_element(clock_table(Partition), ?stable_red_key, 2).
 
 -spec update_stable_vc_sync(partition_id(), vclock()) -> ok.
 update_stable_vc_sync(Partition, SVC) ->
@@ -221,7 +225,7 @@ merge_remote_stable_vc(Partition, VC) ->
 
 -spec uniform_vc(partition_id()) -> vclock().
 uniform_vc(Partition) ->
-    ets:lookup_element(grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE), ?uniform_key, 2).
+    ets:lookup_element(clock_table(Partition), ?uniform_key, 2).
 
 -spec update_uniform_vc(partition_id(), vclock()) -> ok.
 update_uniform_vc(Partition, SVC) ->
@@ -239,18 +243,18 @@ merge_remote_uniform_vc(Partition, VC) ->
 
 -spec handle_blue_heartbeat(partition_id(), replica_id(), grb_time:ts()) -> ok.
 handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
-    update_known_vc(ReplicaId, Ts, grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
+    update_known_vc(ReplicaId, Ts, clock_table(Partition)).
 
 -spec handle_red_heartbeat(partition_id(), grb_time:ts()) -> ok.
 handle_red_heartbeat(Partition, Ts) ->
-    update_known_vc(?RED_REPLICA, Ts, grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE)).
+    update_known_vc(?RED_REPLICA, Ts, clock_table(Partition)).
 
 %% @doc Like handle_blue_heartbeat/3, but for our own replica, and sync
 -spec handle_self_blue_heartbeat(partition_id(), grb_time:ts()) -> ok.
 handle_self_blue_heartbeat(Partition, Ts) ->
     SelfReplica = grb_dc_manager:replica_id(),
     %% ok to insert directly, we are always called from the same place
-    true = ets:insert(grb_dc_utils:cache_name(Partition, ?PARTITION_CLOCK_TABLE), {?known_key(SelfReplica), Ts}),
+    true = ets:insert(clock_table(Partition), {?known_key(SelfReplica), Ts}),
     ok.
 
 -spec handle_clock_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
@@ -291,8 +295,9 @@ init([Partition]) ->
     {ok, PruneInterval} = application:get_env(grb, prune_committed_blue_interval),
     {ok, UniformInterval} = application:get_env(grb, uniform_replication_interval),
 
-    ClockTable = grb_dc_utils:new_cache(Partition, ?PARTITION_CLOCK_TABLE,
-                                        [ordered_set, public, named_table, {read_concurrency, true}]),
+    ClockTable = ets:new(?PARTITION_CLOCK_TABLE, [ordered_set, public, {read_concurrency, true}]),
+    ok = persistent_term:put({?MODULE, Partition, ?PARTITION_CLOCK_TABLE}, ClockTable),
+
     true = ets:insert(ClockTable, [{?uniform_key, grb_vclock:new()},
                                    {?stable_key, grb_vclock:new()},
                                    {?stable_red_key, 0},
@@ -449,7 +454,7 @@ populate_logs_internal(S=#state{remote_logs=Logs0,
 
     Logs = lists:foldl(fun(Replica, LogAcc) ->
         L = grb_remote_commit_log:new(),
-        ok = persistent_term:put(?CLOG(Replica, Partition), L),
+        ok = persistent_term:put(?CLOG_TABLE(Replica, Partition), L),
         LogAcc#{Replica => L}
     end, Logs0, RemoteReplicas),
 
@@ -807,6 +812,10 @@ min_ts(Left, Right) -> min(Left, Right).
 %%%===================================================================
 %%% Util Functions
 %%%===================================================================
+
+-spec clock_table(partition_id()) -> cache_id().
+clock_table(Partition) ->
+    persistent_term:get({?MODULE, Partition, ?PARTITION_CLOCK_TABLE}).
 
 -spec is_ready(cache_id()) -> boolean().
 is_ready(Table) ->

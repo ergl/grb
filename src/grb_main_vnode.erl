@@ -3,6 +3,10 @@
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
+%% ETS table API
+-export([op_log_table/1,
+         last_red_table/1]).
+
 %% Public API
 -export([prepare_blue/4,
          decide_blue/3,
@@ -35,6 +39,9 @@
 -define(master, grb_main_vnode_master).
 -define(blue_tick_req, blue_tick_event).
 
+-define(OP_LOG_TABLE, op_log_table).
+-define(OP_LOG_LAST_RED, op_log_last_red_table).
+
 -type op_log() :: cache(key(), grb_version_log:t()).
 -type last_red() :: cache(key(), #last_red_record{}).
 
@@ -63,6 +70,18 @@
 -type state() :: #state{}.
 
 -export_type([last_red/0]).
+
+%%%===================================================================
+%%% ETS API
+%%%===================================================================
+
+-spec op_log_table(partition_id()) -> cache_id().
+op_log_table(Partition) ->
+    persistent_term:get({?MODULE, Partition, ?OP_LOG_TABLE}).
+
+-spec last_red_table(partition_id()) -> cache_id().
+last_red_table(Partition) ->
+    persistent_term:get({?MODULE, Partition, ?OP_LOG_LAST_RED}).
 
 %%%===================================================================
 %%% API
@@ -139,18 +158,20 @@ init([Partition]) ->
     %%   we want to control the size of the queue, this allows us to do that.
     {ok, BlueTickInterval} = application:get_env(grb, self_blue_heartbeat_interval),
     NumReplicas = application:get_env(grb, op_log_replicas, ?READ_CONCURRENCY),
-    LastRed = grb_dc_utils:new_cache(Partition,
-                                     ?OP_LOG_LAST_RED,
-                                     [set, protected, named_table,
-                                      {read_concurrency, true}, {keypos, #last_red_record.key}]),
+
+    OpLogTable = ets:new(?OP_LOG_TABLE, [set, protected, {read_concurrency, true}]),
+    ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_TABLE}, OpLogTable),
+
+    LastRedTable = ets:new(?OP_LOG_LAST_RED, [set, protected, {read_concurrency, true}, {keypos, #last_red_record.key}]),
+    ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_LAST_RED}, LastRedTable),
 
     State = #state{partition = Partition,
                    replicas_n=NumReplicas,
                    prepared_blue = #{},
                    blue_tick_interval=BlueTickInterval,
                    op_log_size = KeyLogSize,
-                   op_log = grb_dc_utils:new_cache(Partition, ?OP_LOG_TABLE),
-                   op_last_red = LastRed},
+                   op_log = OpLogTable,
+                   op_last_red = LastRedTable},
 
     {ok, State}.
 

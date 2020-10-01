@@ -30,12 +30,6 @@
 -type readset() :: [key()].
 -type writeset() :: #{key() => val()}.
 
-%% Different ETS tables
--define(OP_LOG_TABLE, op_log_table).
--define(OP_LOG_LAST_RED, op_log_last_red_table).
--define(PARTITION_CLOCK_TABLE, partition_clock_table).
--define(CLOG(Replica, Partition), {commit_log, Replica, Partition}).
-
 %% Describes the current replica, consumed by other replicas (as a whole)
 -record(replica_descriptor, {
     replica_id :: replica_id(),

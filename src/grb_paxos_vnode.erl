@@ -164,7 +164,7 @@ init([Partition]) ->
                    deliver_interval=DeliverInterval,
                    decision_retry_interval=RetryInterval,
                    prune_interval=PruningInterval,
-                   op_log_red_replica=grb_dc_utils:cache_name(Partition, ?OP_LOG_LAST_RED),
+                   op_log_red_replica=grb_main_vnode:last_red_table(Partition),
                    synod_state=undefined},
     {ok, State}.
 

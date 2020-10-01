@@ -118,7 +118,7 @@ decide_blue(Partition, TxId, VC) ->
 
 init([Partition, Id, Val]) ->
     Self = generate_replica_name(Partition, Id),
-    OpLog = grb_dc_utils:cache_name(Partition, ?OP_LOG_TABLE),
+    OpLog = grb_main_vnode:op_log_table(Partition),
     {ok, OpWait} = application:get_env(grb, op_prepare_wait_ms),
     {ok, #state{self=Self,
                 partition=Partition,
