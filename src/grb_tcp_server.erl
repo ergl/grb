@@ -1,6 +1,4 @@
-
 -module(grb_tcp_server).
-
 -behaviour(gen_server).
 -behavior(ranch_protocol).
 -include_lib("kernel/include/logger.hrl").
@@ -30,6 +28,9 @@
     id_len :: non_neg_integer()
 }).
 
+-type proto_context() :: {term(), module(), atom()}.
+-type state() :: #state{}.
+
 start_server() ->
     DefaultPort = application:get_env(grb, tcp_port, ?TCP_PORT),
     {ok, _}  = ranch:start_listener(?TCP_NAME,
@@ -47,6 +48,10 @@ start_server() ->
 %% Socket is deprecated, will be removed
 start_link(Ref, _Sock, Transport, Opts) ->
     {ok, proc_lib:spawn_link(?MODULE, init, [{Ref, Transport, Opts}])}.
+
+%%%===================================================================
+%%% gen_server callbacks
+%%%===================================================================
 
 init({Ref, Transport, _Opts}) ->
     {ok, Socket} = ranch:handshake(Ref),
@@ -75,8 +80,7 @@ handle_info({tcp, Socket, Data}, State = #state{socket=Socket,
         <<MessageId:IdLen, Request/binary>> ->
             {Module, Type, Msg} = pvc_proto:decode_client_req(Request),
             ?LOG_DEBUG("request id=~b, type=~p, msg=~w", [MessageId, Type, Msg]),
-            Promise = grb_promise:new(self(), {MessageId, Module, Type}),
-            ok = grb_tcp_handler:process(Promise, Type, Msg);
+            ok = handle_request(Type, Msg, {MessageId, Module, Type}, State);
         _ ->
             ?LOG_WARNING("~p received unknown data ~p", [?MODULE, Data])
     end,
@@ -94,14 +98,52 @@ handle_info(timeout, State) ->
     ?LOG_INFO("server got timeout"),
     {stop, normal, State};
 
-handle_info({'$grb_promise_resolve', Result, {Id, Mod, Type}}, S=#state{socket=Socket,
-                                                                        id_len=IdLen,
-                                                                        transport=Transport}) ->
-    ?LOG_DEBUG("response id=~b, msg=~w", [Id, Result]),
-    Reply = pvc_proto:encode_serv_reply(Mod, Type, Result),
-    Transport:send(Socket, <<Id:IdLen, Reply/binary>>),
-    {noreply, S};
+handle_info({'$grb_promise_resolve', Result, Context}, State) ->
+    ok = reply_to_client(Result, Context, State),
+    {noreply, State};
 
 handle_info(E, S) ->
     ?LOG_WARNING("server got unexpected info with msg ~w", [E]),
     {noreply, S}.
+
+%%%===================================================================
+%%% internal
+%%%===================================================================
+
+-spec reply_to_client(term(), proto_context(), state()) -> ok.
+reply_to_client(Result, {Id, Mod, Type}, #state{socket=Socket, id_len=IdLen, transport=Transport}) ->
+    ?LOG_DEBUG("response id=~b, msg=~w", [Id, Result]),
+    Reply = pvc_proto:encode_serv_reply(Mod, Type, Result),
+    Transport:send(Socket, <<Id:IdLen, Reply/binary>>),
+    ok.
+
+-spec handle_request(atom(), #{}, proto_context(), state()) -> ok.
+handle_request('Load', #{bin_size := Size}, Context, State) ->
+    reply_to_client(grb:load(Size), Context, State);
+
+handle_request('UniformBarrier', #{client_vc := CVC, partition := Partition}, Context, _State) ->
+    grb:uniform_barrier(grb_promise:new(self(), Context), Partition, CVC);
+
+handle_request('ConnectRequest', _, Context, State) ->
+    reply_to_client(grb:connect(), Context, State);
+
+handle_request('StartReq', #{client_vc := CVC, partition := Partition}, Context, State) ->
+    reply_to_client(grb:start_transaction(Partition, CVC), Context, State);
+
+handle_request('OpRequest', Args, Context, _State) ->
+    #{partition := P, key := K, value := V, snapshot_vc := VC} = Args,
+    grb:perform_op(grb_promise:new(self(), Context), P, K, VC, V);
+
+handle_request('PrepareBlueNode', Args, Context, State) ->
+    #{transaction_id := TxId, snapshot_vc := VC, prepares := Prepares} = Args,
+    Votes = [ {ok, P, grb:prepare_blue(P, TxId, WS, VC)} || #{partition := P, writeset := WS} <- Prepares],
+    reply_to_client(Votes, Context, State);
+
+handle_request('DecideBlueNode', Args, Context, State) ->
+    #{transaction_id := TxId, partitions := Ps, commit_vc := CVC} = Args,
+    _ = [grb:decide_blue(P, TxId, CVC) || P <- Ps],
+    reply_to_client(ok, Context, State);
+
+handle_request('CommitRed', Args, Context, _State) ->
+    #{transaction_id := TxId, snapshot_vc := VC, prepares := Prepares} = Args,
+    grb:commit_red(grb_promise:new(self(), Context), TxId, VC, Prepares).

@@ -263,28 +263,18 @@ advance_clock_single(Node, P, Replicas, ClockName) ->
 
 -spec uniform_barrier(replica_id(), node(), partition_id(), vclock()) -> ok.
 uniform_barrier(_Replica, Node, Partition, Clock) ->
-    ok = erpc:call(Node, grb_tcp_handler, sync_process,
-                         ['UniformBarrier', #{client_vc => Clock, partition => Partition}]).
+    ok = erpc:call(Node, grb, sync_uniform_barrier, [Partition, Clock]).
 
 -spec read_only_transaction(replica_id(), node(), partition_id(), key(), vclock()) -> {val(), vclock()}.
 read_only_transaction(_Replica, Node, Partition, Key, Clock) ->
     SVC = erpc:call(Node, grb, start_transaction, [Partition, Clock]),
-    {ok, Val} = erpc:call(Node, grb_tcp_handler, sync_process,
-                          ['OpRequest', #{partition => Partition,
-                                          key => Key,
-                                          value => <<>>,
-                                          snapshot_vc => SVC}]),
+    {ok, Val} = erpc:call(Node, grb, sync_perform_op, [Partition, Key, SVC, <<>>]),
     {Val, SVC}.
 
 -spec update_transaction(replica_id(), node(), partition_id(), key(), val(), vclock()) -> vclock().
 update_transaction(Replica, Node, Partition, Key, Value, Clock) ->
     SVC = erpc:call(Node, grb, start_transaction, [Partition, Clock]),
-    {ok, Value} = erpc:call(Node, grb_tcp_handler, sync_process,
-                            ['OpRequest', #{partition => Partition,
-                                            key => Key,
-                                            value => Value,
-                                            snapshot_vc => SVC}]),
-
+    {ok, Value} = erpc:call(Node, grb, sync_perform_op, [Partition, Key, SVC, Value]),
     PT = erpc:call(Node, grb, prepare_blue, [Partition, ignore, #{Key => Value}, SVC]),
     CVC = SVC#{Replica => PT},
     ok = erpc:call(Node, grb, decide_blue, [Partition, ignore, CVC]),

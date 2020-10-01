@@ -16,6 +16,11 @@
          decide_blue/3,
          commit_red/4]).
 
+-ifdef(TEST).
+-export([sync_uniform_barrier/2,
+         sync_perform_op/4]).
+-endif.
+
 %% Called by rel
 -ignore_xref([start/0,
               stop/0]).
@@ -117,4 +122,24 @@ commit_red(Promise, _, VC, _) -> grb_promise:resolve({ok, VC}, Promise).
 commit_red(Promise, TxId, SnapshotVC, Prepares) ->
     Coordinator = grb_red_manager:register_coordinator(TxId),
     grb_red_coordinator:commit(Coordinator, Promise, TxId, SnapshotVC, Prepares).
+-endif.
+
+-ifdef(TEST).
+-spec sync_uniform_barrier(partition_id(), vclock()) -> ok.
+sync_uniform_barrier(Partition, CVC) ->
+    Ref = make_ref(),
+    uniform_barrier(grb_promise:new(self(), Ref), Partition, CVC),
+    receive
+        {'$grb_promise_resolve', Result, Ref} ->
+            Result
+    end.
+
+-spec sync_perform_op(partition_id(), key(), vclock(), val()) -> {ok, val()}.
+sync_perform_op(Partition, Key, VC, Val) ->
+    Ref = make_ref(),
+    perform_op(grb_promise:new(self(), Ref), Partition, Key, VC, Val),
+    receive
+        {'$grb_promise_resolve', Result, Ref} ->
+            Result
+    end.
 -endif.
