@@ -52,13 +52,6 @@
     %% The port to send/recv red inter-dc communication (default is 8990)
     {inter_dc_red_port, ${INTER_DC_RED_PORT}},
 
-    %% Auto-start book-keeping processes in the background
-    %% These processes should start after the ring for a cluster
-    %% is fully connected. If the node is not going to be joined
-    %% with others, it makes sense to start it with these processes
-    %% enabled by default.
-    {auto_start_background_processes, false},
-
     %% How many replicas per main vnode (readers)
     {op_log_replicas, ${OP_LOG_REPLICAS}},
 
