@@ -42,14 +42,20 @@ connect() ->
 -spec load(non_neg_integer()) -> ok.
 load(Size) ->
     Val = crypto:strong_rand_bytes(Size),
-    Res = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, {update_default, Val}),
+
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    LocalNodes = riak_core_ring:all_members(Ring),
+
+    Res = erpc:multicall(LocalNodes, grb_dc_utils, set_default_bottom_value, [Val]),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
-    Res1 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, get_default),
-    true = lists:all(fun({P, DefaultVal}) ->
+
+    Res1 = lists:zip(LocalNodes, erpc:multicall(LocalNodes, grb_dc_utils, get_default_bottom_value, [])),
+    true = lists:all(fun({Node, DefaultVal}) ->
         case DefaultVal =:= Val of
-            true -> true;
+            true ->
+                true;
             false ->
-                ?LOG_WARNING("Couldn't load at partition ~p", [P]),
+                ?LOG_WARNING("Couldn't load at node ~p", [Node]),
                 false
         end
     end, Res1),

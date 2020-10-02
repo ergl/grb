@@ -2,7 +2,7 @@
 -behavior(supervisor).
 -include("grb.hrl").
 
--export([start_replica/3,
+-export([start_replica/2,
          start_link/0]).
 
 -export([init/1]).
@@ -12,9 +12,9 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
--spec start_replica(partition_id(), non_neg_integer(), term()) -> supervisor:startchild_ret().
-start_replica(Partition, Id, Val) ->
-    supervisor:start_child(?MODULE, [Partition, Id, Val]).
+-spec start_replica(partition_id(), non_neg_integer()) -> supervisor:startchild_ret().
+start_replica(Partition, Id) ->
+    supervisor:start_child(?MODULE, [Partition, Id]).
 
 init([]) ->
     {ok, {{simple_one_for_one, 5, 10},
