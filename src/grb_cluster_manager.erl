@@ -24,39 +24,39 @@ create_cluster(Nodes, TreeFanout) ->
 join_nodes(N=[SingleNode], Fanout) ->
     ?LOG_INFO("Checking that vnodes are ready...~n"),
     ok = wait_until_vnodes_ready(SingleNode),
-    ?LOG_INFO("Node ready, starting background processes~n"),
+    ?LOG_INFO("Node ready, starting background processes"),
     erpc:call(SingleNode, grb_dc_manager, start_background_processes, []),
     ?LOG_INFO("starting broadcast tree~n"),
     ok = start_broadcast_tree(N, Fanout),
     ok = wait_until_master_ready(SingleNode),
-    ?LOG_INFO("Successfully joined nodes ~p~n", [N]),
+    ?LOG_INFO("Successfully joined nodes ~p", [N]),
     ok;
 
 join_nodes([MainNode | _] = Nodes, Fanout) ->
     lists:foreach(fun(N) -> erlang:set_cookie(N, grb_cookie) end, Nodes),
     ok = join_cluster(Nodes),
 
-    ?LOG_INFO("Starting background processes~n"),
+    ?LOG_INFO("Starting background processes"),
     ok = start_background_processes(MainNode),
 
-    ?LOG_INFO("Started background processes, starting broadcast tree~n"),
+    ?LOG_INFO("Started background processes, starting broadcast tree"),
     ok = start_broadcast_tree(Nodes, Fanout),
 
-    ?LOG_INFO("Started broadcast tree, checking master ready~n"),
+    ?LOG_INFO("Started broadcast tree, checking master ready"),
     ok = wait_until_master_ready(MainNode),
 
-    ?LOG_INFO("Successfully joined nodes ~p~n", [Nodes]),
+    ?LOG_INFO("Successfully joined nodes ~p", [Nodes]),
     ok.
 
 -spec start_background_processes(node()) -> ok.
 start_background_processes(Node) ->
     BackgroundReady = fun() ->
-        ?LOG_INFO("start_background_processes~n"),
+        ?LOG_INFO("start_background_processes"),
         try
             ok = erpc:call(Node, grb_dc_manager, start_background_processes, []),
             true
         catch _:_ ->
-            ?LOG_INFO("Error on start_background_processes, retrying~n"),
+            ?LOG_INFO("Error on start_background_processes, retrying"),
             false
         end
     end,
@@ -94,7 +94,7 @@ sorted_ring_owners(Node) ->
         {ok, Ring} ->
             Owners = [Owner || {_Idx, Owner} <- rpc:call(Node, riak_core_ring, all_owners, [Ring])],
             SortedOwners = lists:usort(Owners),
-            ?LOG_INFO("Owners at ~p: ~p~n", [Node, SortedOwners]),
+            ?LOG_INFO("Owners at ~p: ~p", [Node, SortedOwners]),
             {ok, SortedOwners};
 
         {badrpc, _}=BadRpc ->
@@ -117,15 +117,15 @@ check_nodes_own_their_ring([H | T]) ->
 request_join(Node, MasterNode) ->
     timer:sleep(5000),
     R = rpc:call(Node, riak_core, staged_join, [MasterNode]),
-    ?LOG_INFO("[join request] ~p to ~p: (result ~p)~n", [Node, MasterNode, R]),
+    ?LOG_INFO("[join request] ~p to ~p: (result ~p)", [Node, MasterNode, R]),
     ok.
 
 -spec wait_plan_ready(node()) -> ok.
 wait_plan_ready(Node) ->
-    ?LOG_INFO("[ring plan] Will start plan on ~p~n", [Node]),
+    ?LOG_INFO("[ring plan] Will start plan on ~p", [Node]),
     case rpc:call(Node, riak_core_claimant, plan, []) of
         {error, ring_not_ready} ->
-            ?LOG_INFO("[ring plan] Ring not ready, retrying...~n"),
+            ?LOG_INFO("[ring plan] Ring not ready, retrying..."),
             timer:sleep(5000),
             ok = wait_until_no_pending_changes(Node),
             wait_plan_ready(Node);
@@ -136,17 +136,17 @@ wait_plan_ready(Node) ->
 
 -spec commit_plan(node()) -> ok.
 commit_plan(Node) ->
-    ?LOG_INFO("[ring commit] Will start commit on ~p~n", [Node]),
+    ?LOG_INFO("[ring commit] Will start commit on ~p", [Node]),
     case rpc:call(Node, riak_core_claimant, commit, []) of
         {error, plan_changed} ->
-            ?LOG_INFO("[ring commit] Plan changed, retrying...~n"),
+            ?LOG_INFO("[ring commit] Plan changed, retrying..."),
             timer:sleep(100),
             ok = wait_until_no_pending_changes(Node),
             ok = wait_plan_ready(Node),
             commit_plan(Node);
 
         {error, ring_not_ready} ->
-            ?LOG_INFO("[ring commit] Ring not ready, retrying...~n"),
+            ?LOG_INFO("[ring commit] Ring not ready, retrying..."),
             timer:sleep(100),
             wait_until_no_pending_changes(Node),
             commit_plan(Node);
@@ -166,7 +166,7 @@ try_cluster_ready(Nodes) ->
 
 -spec try_cluster_ready([node()], non_neg_integer(), non_neg_integer()) -> ok.
 try_cluster_ready([MainNode | _] = _Nodes, 0, _SleepMs) ->
-    ?LOG_INFO("[cluster ready] Still not ready, will retry plan~n"),
+    ?LOG_INFO("[cluster ready] Still not ready, will retry plan"),
     ok = wait_plan_ready(MainNode),
     commit_plan(MainNode);
 
@@ -198,17 +198,17 @@ is_ready(Node, MainNode) ->
 %%
 -spec wait_until_no_pending_changes([node()] | node()) -> ok | fail.
 wait_until_no_pending_changes([MainNode | _] = Nodes) when is_list(Nodes) ->
-    ?LOG_INFO("~p~n", [?FUNCTION_NAME]),
+    ?LOG_INFO("~p", [?FUNCTION_NAME]),
     NoPendingHandoffs = fun() ->
         rpc:multicall(Nodes, riak_core_vnode_manager, force_handoffs, []),
         {Rings, BadNodes} = rpc:multicall(Nodes, riak_core_ring_manager, get_raw_ring, []),
-        ?LOG_INFO("Check no pending handoffs (badnodes: ~p)...~n", [BadNodes]),
+        ?LOG_INFO("Check no pending handoffs (badnodes: ~p)...", [BadNodes]),
         case BadNodes of
             [] ->
                 Res = lists:all(fun({ok, Ring}) ->
                     [] =:= rpc:call(MainNode, riak_core_ring, pending_changes, [Ring])
                 end, Rings),
-                ?LOG_INFO("All nodes with no pending changes: ~p~n", [Res]),
+                ?LOG_INFO("All nodes with no pending changes: ~p", [Res]),
                 Res;
             _ ->
                 false
@@ -231,7 +231,7 @@ wait_until_nodes_ready([MainNode | _] = Nodes) ->
             ok ->
                 true;
             Res ->
-                ?LOG_INFO("wait_until_nodes_ready got ~p~n", [Res]),
+                ?LOG_INFO("wait_until_nodes_ready got ~p", [Res]),
                 false
         end
                      end, Nodes),
@@ -240,7 +240,7 @@ wait_until_nodes_ready([MainNode | _] = Nodes) ->
 %% @doc Wait until all nodes agree about all ownership views
 -spec wait_until_nodes_agree_about_ownership([node()]) -> ok.
 wait_until_nodes_agree_about_ownership(Nodes) ->
-    ?LOG_INFO("~p~n", [?FUNCTION_NAME]),
+    ?LOG_INFO("~p", [?FUNCTION_NAME]),
     SortedNodes = lists:usort(Nodes),
     true = lists:all(fun(Node) ->
         Res = wait_until(fun() ->
@@ -255,7 +255,7 @@ wait_until_nodes_agree_about_ownership(Nodes) ->
             ok ->
                 true;
             Res ->
-                ?LOG_INFO("wait_until_nodes_agree_about_ownership got ~p~n", [Res]),
+                ?LOG_INFO("wait_until_nodes_agree_about_ownership got ~p", [Res]),
                 false
         end
     end, Nodes),
@@ -265,13 +265,13 @@ wait_until_nodes_agree_about_ownership(Nodes) ->
 %%      converged (ie. `riak_core_ring:is_ready' returns `true').
 -spec wait_until_ring_converged([node()]) -> ok.
 wait_until_ring_converged([MainNode | _] = Nodes) ->
-    ?LOG_INFO("~p~n", [?FUNCTION_NAME]),
+    ?LOG_INFO("~p", [?FUNCTION_NAME]),
     true = lists:all(fun(Node) ->
         case wait_until(fun() -> is_ring_ready(Node, MainNode) end) of
             ok ->
                 true;
             Res ->
-                ?LOG_INFO("wait_until_ring_converged got ~p~n", [Res]),
+                ?LOG_INFO("wait_until_ring_converged got ~p", [Res]),
                 false
         end
                      end, Nodes),
@@ -279,7 +279,7 @@ wait_until_ring_converged([MainNode | _] = Nodes) ->
 
 %% @private
 is_ring_ready(Node, MainNode) ->
-    ?LOG_INFO("~p~n", [?FUNCTION_NAME]),
+    ?LOG_INFO("~p", [?FUNCTION_NAME]),
     case rpc:call(Node, riak_core_ring_manager, get_raw_ring, []) of
         {ok, Ring} ->
             rpc:call(MainNode, riak_core_ring, ring_ready, [Ring]);
