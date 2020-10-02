@@ -28,7 +28,7 @@
     id_len :: non_neg_integer()
 }).
 
--type proto_context() :: {term(), module(), atom()}.
+-type proto_context() :: {integer(), atom(), atom()}.
 -type state() :: #state{}.
 
 start_server() ->
@@ -117,7 +117,7 @@ reply_to_client(Result, {Id, Mod, Type}, #state{socket=Socket, id_len=IdLen, tra
     Transport:send(Socket, <<Id:IdLen, Reply/binary>>),
     ok.
 
--spec handle_request(atom(), #{}, proto_context(), state()) -> ok.
+-spec handle_request(atom(), #{atom() => term()}, proto_context(), state()) -> ok.
 handle_request('Load', #{bin_size := Size}, Context, State) ->
     reply_to_client(grb:load(Size), Context, State);
 

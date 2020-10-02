@@ -157,6 +157,9 @@ start_background_processes() ->
     Res3 = grb_dc_utils:bcast_vnode_sync(grb_main_vnode_master, start_replicas, 1000),
     ok = lists:foreach(fun({_, true}) -> ok end, Res3),
 
+    %% if we're not in red mode, this won't do anything
+    ok = grb_paxos_vnode:all_fetch_red_table(),
+
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 

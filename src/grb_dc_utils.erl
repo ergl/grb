@@ -23,7 +23,8 @@
          ready_ring_members/0]).
 
 %% Called via `erpc` or for debug purposes
--ignore_xref([is_ring_owner/0,
+-ignore_xref([set_default_bottom_value/1,
+              is_ring_owner/0,
               key_location/1,
               inter_dc_ip_port/0,
               pending_ring_changes/0,

@@ -4,7 +4,8 @@
 -include_lib("kernel/include/logger.hrl").
 
 %% init api
--export([init_leader_state/0,
+-export([all_fetch_red_table/0,
+         init_leader_state/0,
          init_follower_state/0]).
 
 %% heartbeat api
@@ -60,7 +61,7 @@
     prune_interval :: non_neg_integer(),
 
     %% read replica of the last version cache by grb_main_vnode
-    op_log_red_replica :: atom(),
+    op_log_red_replica :: cache_id() | undefined,
     synod_state = undefined :: grb_paxos_state:t() | undefined,
 
     %% a buffer of outstanding decision messages
@@ -69,6 +70,16 @@
     %% right after we receive an ACCEPT with a matching ballot and transaction id
     decision_buffer = #{} :: #{{term(), ballot()} => {red_vote(), vclock()} | grb_time:ts()}
 }).
+
+-spec all_fetch_red_table() -> ok.
+-ifdef(BLUE_KNOWN_VC).
+all_fetch_red_table() ->
+    ok.
+-else.
+all_fetch_red_table() ->
+    Res = grb_dc_utils:bcast_vnode_sync(?master, fetch_red_table, 1000),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res).
+-endif.
 
 -spec init_leader_state() -> ok.
 init_leader_state() ->
@@ -159,12 +170,13 @@ init([Partition]) ->
     {ok, RetryInterval} = application:get_env(grb, red_heartbeat_interval),
     {ok, DeliverInterval} = application:get_env(grb, red_delivery_interval),
     PruningInterval = application:get_env(grb, red_prune_interval, 0),
+
     %% don't care about setting bad values, we will overwrite it
     State = #state{partition=Partition,
                    deliver_interval=DeliverInterval,
                    decision_retry_interval=RetryInterval,
                    prune_interval=PruningInterval,
-                   op_log_red_replica=grb_main_vnode:last_red_table(Partition),
+                   op_log_red_replica=undefined,
                    synod_state=undefined},
     {ok, State}.
 
@@ -173,6 +185,15 @@ handle_command(ping, _Sender, State) ->
 
 handle_command(is_ready, _Sender, State) ->
     {reply, true, State};
+
+handle_command(fetch_red_table, _Sender, S0=#state{partition=Partition}) ->
+    {Result, S} = try
+        Table = grb_main_vnode:last_red_table(Partition),
+        {ok, S0#state{op_log_red_replica=Table}}
+    catch _:_  ->
+        {error, S0}
+    end,
+    {reply, Result, S};
 
 handle_command(init_leader, _Sender, S=#state{synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
