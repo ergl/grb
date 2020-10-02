@@ -12,7 +12,9 @@
 -endif.
 
 %% Common public API
--export([known_vc/1,
+-export([partition_ready/2,
+         partition_ready/3,
+         known_vc/1,
          known_time/2,
          stable_vc/1,
          stable_red/1,
@@ -144,6 +146,33 @@ get_commit_log(Replica, Partition) ->
 %%% common public api
 %%%===================================================================
 
+-spec partition_ready(partition_id(), vclock()) -> ready | not_ready.
+partition_ready(Partition, SnapshotVC) ->
+    partition_ready(Partition, grb_dc_manager:replica_id(), SnapshotVC).
+
+-spec partition_ready(partition_id(), replica_id(), vclock()) -> ready | not_ready.
+-ifdef(BLUE_KNOWN_VC).
+partition_ready(Partition, ReplicaId, SnapshotVC) ->
+    SnapshotTime = grb_vclock:get_time(ReplicaId, SnapshotVC),
+    PartitionTime = known_time(Partition, ReplicaId),
+    case PartitionTime >= SnapshotTime of
+        true -> ready;
+        false -> not_ready %% todo(borja, stat): log miss
+    end.
+-else.
+partition_ready(Partition, ReplicaId, SnapshotVC) ->
+    SnapshotTime = grb_vclock:get_time(ReplicaId, SnapshotVC),
+    SnapshotRed = grb_vclock:get_time(?RED_REPLICA, SnapshotVC),
+    PartitionTime = known_time(Partition, ReplicaId),
+    PartitionRed = known_time(Partition, ?RED_REPLICA),
+    BlueCheck = PartitionTime >= SnapshotTime,
+    RedCheck = PartitionRed >= SnapshotRed,
+    case (BlueCheck andalso RedCheck) of
+        true -> ready;
+        false -> not_ready %% todo(borja, stat): log miss
+    end.
+-endif.
+
 -spec known_vc(partition_id()) -> vclock().
 -ifdef(BLUE_KNOWN_VC).
 known_vc(Partition) ->
@@ -233,6 +262,9 @@ update_uniform_vc(Partition, SVC) ->
                                    {update_uniform_vc, SVC},
                                    ?master).
 
+%% todo(borja, efficiency): Do another version that simply updates, does not return
+%% used for prologue for do_op / prepare, we don't need to return for these, but we
+%% do for start_transaction
 %% @doc Update the uniformVC at all replicas but the current one, return result
 -spec merge_remote_uniform_vc(partition_id(), vclock()) -> vclock().
 merge_remote_uniform_vc(Partition, VC) ->

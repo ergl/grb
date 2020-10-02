@@ -90,11 +90,6 @@ replica_ready(Partition, N) ->
 %% Protocol API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-%% todo(borja, efficiency): Check for wait outside of process
-%%
-%%  If we can proceed with the read, do that outside of this process, and then
-%%  we can reply to the client without any messages being sent. Only enter the
-%%  gen_server if we have to wait until the partition catches up.
 -spec async_op(grb_promise:t(), partition_id(), key(), vclock(), val()) -> ok.
 async_op(Promise, Partition, Key, VC, Val) ->
     Target = random_replica(Partition),
@@ -129,7 +124,7 @@ handle_call(_Request, _From, _State) ->
     erlang:error(not_implemented).
 
 handle_cast({perform_op, Promise, Key, VC, Val}, State) ->
-    ok = perform_op_internal(Promise, Key, VC, Val, State),
+    ok = perform_op_wait(Promise, Key, VC, Val, State),
     {noreply, State};
 
 handle_cast({decide_blue, TxId, VC}, State=#state{replica_id=ReplicaId, known_barrier_wait_ms=WaitMs}) ->
@@ -155,92 +150,24 @@ handle_info(Info, State) ->
 %% Internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec perform_op_internal(Promise :: grb_promise:t(),
-                          Key :: key(),
-                          SnapshotVC :: vclock(),
-                          Val :: val(),
-                          State :: #state{}) -> ok.
-
--ifdef(BASIC_REPLICATION).
-
-perform_op_internal(Promise, Key, SnapshotVC, Val, State=#state{partition=Partition}) ->
-    _ = grb_propagation_vnode:merge_remote_stable_vc(Partition, SnapshotVC),
-    perform_op_wait(Promise, Key, SnapshotVC, Val, State).
-
--else.
-
-perform_op_internal(Promise, Key, SnapshotVC, Val, State=#state{partition=Partition}) ->
-    _ = grb_propagation_vnode:merge_remote_uniform_vc(Partition, SnapshotVC),
-    perform_op_wait(Promise, Key, SnapshotVC, Val, State).
-
--endif.
-
 -spec perform_op_wait(Promise :: grb_promise:t(),
                       Key :: key(),
                       SnapshotVC :: vclock(),
                       Val :: val(),
                       State :: #state{}) -> ok.
 
-perform_op_wait(Promise, Key, SnapshotVC, Val, S=#state{partition=Partition,
-                                                        replica_id=ReplicaId,
-                                                        known_barrier_wait_ms=WaitMs}) ->
+perform_op_wait(Promise, Key, SnapshotVC, Val, #state{partition=Partition,
+                                                      replica_id=ReplicaId,
+                                                      oplog_replica=OpLogReplica,
+                                                      known_barrier_wait_ms=WaitMs}) ->
 
-    case check_known_vc(Partition, ReplicaId, SnapshotVC) of
+    case grb_propagation_vnode:partition_ready(Partition, ReplicaId, SnapshotVC) of
         not_ready ->
             erlang:send_after(WaitMs, self(), {retry_op_wait, Promise, Key, SnapshotVC, Val}),
             ok;
         ready ->
-            perform_op_continue(Promise, Key, SnapshotVC, Val, S)
-    end.
-
--spec check_known_vc(partition_id(), replica_id(), vclock()) -> ready | not_ready.
--ifdef(BLUE_KNOWN_VC).
-check_known_vc(Partition, ReplicaId, VC) ->
-    ClientTime = grb_vclock:get_time(ReplicaId, VC),
-    LocalTime = grb_propagation_vnode:known_time(Partition, ReplicaId),
-    case LocalTime >= ClientTime of
-        true ->
-            ready;
-        false ->
-            %% todo(borja, stat): log miss
-            not_ready
-    end.
--else.
-check_known_vc(Partition, ReplicaId, VC) ->
-    ClientBlue = grb_vclock:get_time(ReplicaId, VC),
-    ClientRed = grb_vclock:get_time(?RED_REPLICA, VC),
-    LocalBlue = grb_propagation_vnode:known_time(Partition, ReplicaId),
-    LocalRed = grb_propagation_vnode:known_time(Partition, ?RED_REPLICA),
-    BlueCheck = LocalBlue >= ClientBlue,
-    RedCheck = LocalRed >= ClientRed,
-    case (BlueCheck andalso RedCheck) of
-        true ->
-            ready;
-        false ->
-            %% todo(borja, stat): log miss
-            not_ready
-    end.
--endif.
-
--spec perform_op_continue(grb_promise:t(), key(), vclock(), val(), #state{}) -> ok.
-perform_op_continue(Promise, Key, VC, Val, #state{oplog_replica=OpLog}) ->
-    BaseVal = case Val of <<>> -> grb_dc_utils:get_default_bottom_value(); _ -> Val end,
-    case ets:lookup(OpLog, Key) of
-        [] ->
-            grb_promise:resolve({ok, BaseVal}, Promise);
-        [{Key, Log}] ->
-            %% todo(borja, warn): Totally order log operations
-            %% should introduce lamport clock to updates to totally order them
-            %% Right now, return the first (highest in the snapshot)
-            case grb_version_log:get_first_lower(VC, Log) of
-                undefined ->
-                    grb_promise:resolve({ok, BaseVal}, Promise);
-
-                %% todo(borja, efficiency): Remove clock from return, we don't use it
-                {_, LastVal, _LastVC} ->
-                    ReturnVal = case Val of <<>> -> LastVal; _ -> Val end,
-                    grb_promise:resolve({ok, ReturnVal}, Promise)
-            end
+            grb_promise:resolve(grb_main_vnode:perform_operation_with_table(OpLogReplica, Key, SnapshotVC, Val),
+                                Promise)
     end.
 
 -spec decide_blue_internal(partition_id(), non_neg_integer(), replica_id(), _, vclock()) -> ok.

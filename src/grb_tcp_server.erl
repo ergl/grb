@@ -130,9 +130,14 @@ handle_request('ConnectRequest', _, Context, State) ->
 handle_request('StartReq', #{client_vc := CVC, partition := Partition}, Context, State) ->
     reply_to_client(grb:start_transaction(Partition, CVC), Context, State);
 
-handle_request('OpRequest', Args, Context, _State) ->
-    #{partition := P, key := K, value := V, snapshot_vc := VC} = Args,
-    grb:perform_op(grb_promise:new(self(), Context), P, K, VC, V);
+handle_request('OpRequest', Args, Context, State) ->
+    #{partition := Partition, key := Key, value := Value, snapshot_vc := SnapshotVC} = Args,
+    case grb:try_operation(Partition, Key, SnapshotVC, Value) of
+        not_ready ->
+            grb:async_operation(grb_promise:new(self(), Context), Partition, Key, SnapshotVC, Value);
+        Return ->
+            reply_to_client(Return, Context, State)
+    end;
 
 handle_request('PrepareBlueNode', Args, Context, State) ->
     #{transaction_id := TxId, snapshot_vc := VC, prepares := Prepares} = Args,

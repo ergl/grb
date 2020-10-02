@@ -11,7 +11,8 @@
          load/1,
          uniform_barrier/3,
          start_transaction/2,
-         perform_op/5,
+         try_operation/4,
+         async_operation/5,
          prepare_blue/4,
          decide_blue/3,
          commit_red/4]).
@@ -109,9 +110,19 @@ start_transaction(Partition, ClientVC) ->
 -endif.
 -endif.
 
--spec perform_op(grb_promise:t(), partition_id(), key(), vclock(), val()) -> ok.
-perform_op(Promise, Partition, Key, SnapshotVC, Val) ->
-    ok = grb_partition_replica:async_op(Promise, Partition, Key, SnapshotVC, Val).
+-spec try_operation(partition_id(), key(), vclock(), val()) -> {ok, val()} | not_ready.
+try_operation(Partition, Key, SnapshotVC, Value) ->
+    _ = try_operation_prologue(Partition, SnapshotVC),
+    case grb_propagation_vnode:partition_ready(Partition, SnapshotVC) of
+        not_ready ->
+            not_ready;
+        ready ->
+            grb_main_vnode:perform_operation(Partition, Key, SnapshotVC, Value)
+    end.
+
+-spec async_operation(grb_promise:t(), partition_id(), key(), vclock(), val()) -> ok.
+async_operation(Promise, Partition, Key, SnapshotVC, Val) ->
+    grb_partition_replica:async_op(Promise, Partition, Key, SnapshotVC, Val).
 
 -spec prepare_blue(partition_id(), any(), any(), vclock()) -> non_neg_integer().
 prepare_blue(Partition, TxId, WriteSet, VC) ->
@@ -130,6 +141,23 @@ commit_red(Promise, TxId, SnapshotVC, Prepares) ->
     grb_red_coordinator:commit(Coordinator, Promise, TxId, SnapshotVC, Prepares).
 -endif.
 
+%%%===================================================================
+%%% Internal
+%%%===================================================================
+
+-spec try_operation_prologue(partition_id(), vclock()) -> vclock().
+-ifdef(BASIC_REPLICATION).
+try_operation_prologue(Partition, SnapshotVC) ->
+    grb_propagation_vnode:merge_remote_stable_vc(Partition, SnapshotVC).
+-else.
+try_operation_prologue(Partition, SnapshotVC) ->
+    grb_propagation_vnode:merge_remote_uniform_vc(Partition, SnapshotVC).
+-endif.
+
+%%%===================================================================
+%%% Test
+%%%===================================================================
+
 -ifdef(TEST).
 -spec sync_uniform_barrier(partition_id(), vclock()) -> ok.
 sync_uniform_barrier(Partition, CVC) ->
@@ -142,10 +170,15 @@ sync_uniform_barrier(Partition, CVC) ->
 
 -spec sync_perform_op(partition_id(), key(), vclock(), val()) -> {ok, val()}.
 sync_perform_op(Partition, Key, VC, Val) ->
-    Ref = make_ref(),
-    perform_op(grb_promise:new(self(), Ref), Partition, Key, VC, Val),
-    receive
-        {'$grb_promise_resolve', Result, Ref} ->
-            Result
+    case try_operation(Partition, Key, VC, Val) of
+        {ok, Return} ->
+            {ok, Return};
+        not_ready ->
+            Ref = make_ref(),
+            async_operation(grb_promise:new(self(), Ref), Partition, Key, VC, Val),
+            receive
+                {'$grb_promise_resolve', Result, Ref} ->
+                    Result
+            end
     end.
 -endif.

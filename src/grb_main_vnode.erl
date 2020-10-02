@@ -8,7 +8,9 @@
          last_red_table/1]).
 
 %% Public API
--export([prepare_blue/4,
+-export([perform_operation/4,
+         perform_operation_with_table/4,
+         prepare_blue/4,
          decide_blue/3,
          handle_replicate/5,
          handle_red_transaction/3]).
@@ -84,6 +86,40 @@ last_red_table(Partition) ->
 %%%===================================================================
 %%% API
 %%%===================================================================
+
+-spec perform_operation(partition_id(), key(), vclock(), val()) -> {ok, val()}.
+perform_operation(Partition, Key, SnapshotVC, Value) ->
+    perform_operation_with_table(op_log_table(Partition), Key, SnapshotVC, Value).
+
+%% todo(borja, crdts): Should use LWW, aggregate operations on top of given op
+%%
+%% Right now it only reads the last version below SnapshotVC, but it should aggregate
+%% the chosen operations on top of the given value (or operation)
+-spec perform_operation_with_table(cache_id(), key(), vclock(), val()) -> {ok, val()}.
+perform_operation_with_table(OpLogTable, Key, SnapshotVC, Value) ->
+    BottomValue = resolve_bottom_value(Value),
+    case ets:lookup(OpLogTable, Key) of
+        [] ->
+            {ok, BottomValue};
+
+        [{Key, VersionLog}] ->
+            case grb_version_log:get_first_lower(SnapshotVC, VersionLog) of
+                undefined ->
+                    {ok, BottomValue};
+
+                {_, LastValue, _LastCommitVC} ->
+                    %% todo(borja, efficiency): Remove clock from return if we don't use it
+                    {ok, resolve_value(Value, LastValue)}
+            end
+    end.
+
+-spec resolve_bottom_value(val()) -> val().
+resolve_bottom_value(<<>>) -> grb_dc_utils:get_default_bottom_value();
+resolve_bottom_value(Other) -> Other.
+
+-spec resolve_value(val(), val()) -> val().
+resolve_value(<<>>, Last) -> Last;
+resolve_value(Any, _) -> Any.
 
 -spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
 prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
