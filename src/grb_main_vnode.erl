@@ -139,11 +139,10 @@ decide_blue(Partition, TxId, CommitVC) ->
 -spec update_prepare_clocks(partition_id(), vclock()) -> ok.
 -ifdef(BASIC_REPLICATION).
 update_prepare_clocks(Partition, SnapshotVC) ->
-    _ = grb_propagation_vnode:merge_remote_stable_vc(Partition, SnapshotVC),
-    ok.
+    grb_propagation_vnode:merge_into_stable_vc(Partition, SnapshotVC).
 -else.
 update_prepare_clocks(Partition, SnapshotVC) ->
-    _ = grb_propagation_vnode:merge_remote_uniform_vc(Partition, SnapshotVC),
+    grb_propagation_vnode:merge_into_uniform_vc(Partition, SnapshotVC),
     ok.
 -endif.
 

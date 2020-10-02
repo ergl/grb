@@ -27,12 +27,14 @@
 
 -ifdef(BASIC_REPLICATION).
 %% Basic Replication API
--export([merge_remote_stable_vc/2]).
+-export([merge_remote_stable_vc/2,
+         merge_into_stable_vc/2]).
 -endif.
 
 %% Uniform Replication API
 -export([uniform_vc/1,
          merge_remote_uniform_vc/2,
+         merge_into_uniform_vc/2,
          handle_clock_update/4,
          handle_clock_heartbeat_update/4,
          register_uniform_barrier/3,
@@ -246,6 +248,12 @@ merge_remote_stable_vc(Partition, VC) ->
                                    ?master),
     S1.
 
+-spec merge_into_stable_vc(partition_id(), vclock()) -> ok.
+merge_into_stable_vc(Partition, VC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {cure_update_svc_no_return, VC},
+                                   ?master).
+
 -endif.
 
 %%%===================================================================
@@ -262,9 +270,6 @@ update_uniform_vc(Partition, SVC) ->
                                    {update_uniform_vc, SVC},
                                    ?master).
 
-%% todo(borja, efficiency): Do another version that simply updates, does not return
-%% used for prologue for do_op / prepare, we don't need to return for these, but we
-%% do for start_transaction
 %% @doc Update the uniformVC at all replicas but the current one, return result
 -spec merge_remote_uniform_vc(partition_id(), vclock()) -> vclock().
 merge_remote_uniform_vc(Partition, VC) ->
@@ -272,6 +277,13 @@ merge_remote_uniform_vc(Partition, VC) ->
     S1 = grb_vclock:max_at_keys(grb_dc_manager:remote_replicas(), S0, VC),
     update_uniform_vc(Partition, S1),
     S1.
+
+%% @doc Update the uniformVC at all replicas but the current one, doesn't return anything
+-spec merge_into_uniform_vc(partition_id(), vclock()) -> ok.
+merge_into_uniform_vc(Partition, VC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {merge_uniform_vc, VC},
+                                   ?master).
 
 -spec handle_blue_heartbeat(partition_id(), replica_id(), grb_time:ts()) -> ok.
 handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
@@ -395,6 +407,12 @@ handle_command({cure_update_svc, StableVC}, _Sender, S=#state{clock_cache=ClockT
     true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
     {noreply, S};
 
+handle_command({cure_update_svc_no_return, SnapshotVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
+    OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
+    NewSVC = grb_vclock:max_at_keys(grb_dc_manager:remote_replicas(), OldSVC, SnapshotVC),
+    true = ets:update_element(ClockTable, ?stable_key, {2, NewSVC}),
+    {noreply, S};
+
 handle_command({recompute_stable_vc, SVC}, _Sender, State=#state{clock_cache=ClockTable}) ->
     NewStableVC = recompute_stable_vc(SVC, ClockTable),
     {reply, ok, recompute_local_uniform_vc(NewStableVC, State)};
@@ -403,6 +421,12 @@ handle_command({update_uniform_vc, SVC}, _Sender, S=#state{clock_cache=ClockTabl
     OldSVC = ets:lookup_element(ClockTable, ?uniform_key, 2),
     %% Safe to update everywhere, caller has already ensured to not update the current replica
     NewSVC = grb_vclock:max(OldSVC, SVC),
+    true = ets:update_element(ClockTable, ?uniform_key, {2, NewSVC}),
+    {noreply, S};
+
+handle_command({merge_uniform_vc, SnapshotVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
+    OldSVC = ets:lookup_element(ClockTable, ?uniform_key, 2),
+    NewSVC = grb_vclock:max_at_keys(grb_dc_manager:remote_replicas(), OldSVC, SnapshotVC),
     true = ets:update_element(ClockTable, ?uniform_key, {2, NewSVC}),
     {noreply, S};
 

@@ -112,7 +112,7 @@ start_transaction(Partition, ClientVC) ->
 
 -spec try_operation(partition_id(), key(), vclock(), val()) -> {ok, val()} | not_ready.
 try_operation(Partition, Key, SnapshotVC, Value) ->
-    _ = try_operation_prologue(Partition, SnapshotVC),
+    ok = try_operation_prologue(Partition, SnapshotVC),
     case grb_propagation_vnode:partition_ready(Partition, SnapshotVC) of
         not_ready ->
             not_ready;
@@ -145,13 +145,13 @@ commit_red(Promise, TxId, SnapshotVC, Prepares) ->
 %%% Internal
 %%%===================================================================
 
--spec try_operation_prologue(partition_id(), vclock()) -> vclock().
+-spec try_operation_prologue(partition_id(), vclock()) -> ok.
 -ifdef(BASIC_REPLICATION).
 try_operation_prologue(Partition, SnapshotVC) ->
-    grb_propagation_vnode:merge_remote_stable_vc(Partition, SnapshotVC).
+    grb_propagation_vnode:merge_into_stable_vc(Partition, SnapshotVC).
 -else.
 try_operation_prologue(Partition, SnapshotVC) ->
-    grb_propagation_vnode:merge_remote_uniform_vc(Partition, SnapshotVC).
+    grb_propagation_vnode:merge_into_uniform_vc(Partition, SnapshotVC).
 -endif.
 
 %%%===================================================================
