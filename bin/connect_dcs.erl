@@ -1,4 +1,5 @@
 #!/usr/bin/env escript
+
 %% -*- erlang -*-
 %%! -smp enable -hidden -name connect_dcs@127.0.0.1 -setcookie grb_cookie
 
@@ -9,7 +10,11 @@
 -spec usage() -> no_return().
 usage() ->
     Name = filename:basename(escript:script_name()),
-    io:fwrite(standard_error, "Usage: ~s [-d] [-f config_file] | 'node_1@host_1' ... 'node_n@host_n' ~n", [Name]),
+    io:fwrite(
+        standard_error,
+        "Usage: ~s [-d] [-f config_file] | 'node_1@host_1' ... 'node_n@host_n' ~n",
+        [Name]
+    ),
     halt(1).
 
 main(Args) ->
@@ -20,12 +25,14 @@ main(Args) ->
             halt(1);
         {ok, Map} ->
             erlang:put(dry_run, maps:get(dry_run, Map, false)),
-            prepare(validate(
-                case Map of
-                    #{config := ConfigFile} -> parse_node_config(ConfigFile);
-                    #{rest := Nodes} -> parse_node_list(Nodes)
-                end
-            ))
+            prepare(
+                validate(
+                    case Map of
+                        #{config := ConfigFile} -> parse_node_config(ConfigFile);
+                        #{rest := Nodes} -> parse_node_list(Nodes)
+                    end
+                )
+            )
     end.
 
 %% @doc Parse node names from config file
@@ -48,7 +55,9 @@ parse_node_config(ConfigFilePath) ->
                             {LeaderMarker, [NodeName | AllNodesAcc]}
                     end
                 end,
-                {undefined, []}, ClusterMap),
+                {undefined, []},
+                ClusterMap
+            ),
             {ok, {config, Leader, AllNodes}};
         _ ->
             error
@@ -64,24 +73,27 @@ parse_node_list([]) ->
     {error, emtpy_node_list};
 parse_node_list([Node]) ->
     {ok, {node_list, [list_to_atom(Node)]}};
-parse_node_list([_|_]=NodeListString) ->
+parse_node_list([_ | _] = NodeListString) ->
     try
-        Nodes = lists:foldl(fun(NodeString, Acc) ->
-            [ list_to_atom(NodeString) | Acc]
-        end, [], NodeListString),
+        Nodes = lists:foldl(
+            fun(NodeString, Acc) ->
+                [list_to_atom(NodeString) | Acc]
+            end,
+            [],
+            NodeListString
+        ),
         {ok, {node_list, lists:reverse(Nodes)}}
-    catch Err -> {error, Err}
+    catch
+        Err -> {error, Err}
     end.
 
 %% @doc Validate parsing, then proceed
 -spec validate({ok, term()} | error | {error, term()}) -> {ok, term()} | no_return().
 validate(error) ->
     usage();
-
 validate({error, Reason}) ->
     io:fwrite(standard_error, "Validate error: ~p~n", [Reason]),
     usage();
-
 validate({ok, Payload}) ->
     {ok, Payload}.
 
@@ -92,10 +104,11 @@ prepare({ok, {node_list, Nodes}}) -> prepare(hd(Nodes), Nodes).
 
 prepare(Leader, AllNodes) ->
     io:format("Starting clustering at leader ~w of nodes ~w~n", [Leader, AllNodes]),
-    Res = case erlang:get(dry_run) of
-        false -> erpc:call(Leader, grb_dc_manager, create_replica_groups, [AllNodes]);
-        true -> {error, dry_run}
-    end,
+    Res =
+        case erlang:get(dry_run) of
+            false -> erpc:call(Leader, grb_dc_manager, create_replica_groups, [AllNodes]);
+            true -> {error, dry_run}
+        end,
     case Res of
         {error, Reason} ->
             io:fwrite(standard_error, "Error connecting clusters: ~p~n", [Reason]),
@@ -109,15 +122,17 @@ prepare(Leader, AllNodes) ->
 %% getopt
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-parse_args([], _) -> {error, noargs};
+parse_args([], _) ->
+    {error, noargs};
 parse_args(Args, Required) ->
     case parse_args_inner(Args, #{}) of
         {ok, Opts} -> required(Required, Opts);
         Err -> Err
     end.
 
-parse_args_inner([], Acc) -> {ok, Acc};
-parse_args_inner([ [$- | Flag] | Args], Acc) ->
+parse_args_inner([], Acc) ->
+    {ok, Acc};
+parse_args_inner([[$- | Flag] | Args], Acc) ->
     case Flag of
         [$f] ->
             parse_flag(Flag, Args, fun(Arg) -> Acc#{config => Arg} end);
@@ -131,7 +146,6 @@ parse_args_inner([ [$- | Flag] | Args], Acc) ->
         _ ->
             {error, {badarg, Flag}}
     end;
-
 parse_args_inner(Words, Acc) ->
     {ok, Acc#{rest => Words}}.
 
