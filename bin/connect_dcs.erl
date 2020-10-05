@@ -43,7 +43,7 @@ parse_node_config(ConfigFilePath) ->
     case file:consult(ConfigFilePath) of
         {ok, Terms} ->
             {clusters, ClusterMap} = lists:keyfind(clusters, 1, Terms),
-            {red_leader_cluster, LeaderCluster} = lists:keyfind(red_leader, 1, Terms),
+            {red_leader_cluster, LeaderCluster} = lists:keyfind(red_leader_cluster, 1, Terms),
             {Leader, AllNodes} = maps:fold(
                 fun(ClusterKey, #{servers := Servers}, {LeaderMarker, AllNodesAcc}) ->
                     [MainNode | _] = lists:usort(Servers),
