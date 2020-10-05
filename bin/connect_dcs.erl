@@ -9,7 +9,7 @@
 -spec usage() -> no_return().
 usage() ->
     Name = filename:basename(escript:script_name()),
-    io:fwrite(standard_error, "Usage: ~s [-f config_file] | 'node_1@host_1' ... 'node_n@host_n' ~n", [Name]),
+    io:fwrite(standard_error, "Usage: ~s [-d] [-f config_file] | 'node_1@host_1' ... 'node_n@host_n' ~n", [Name]),
     halt(1).
 
 main(Args) ->
@@ -18,10 +18,14 @@ main(Args) ->
             io:fwrite(standard_error, "Wrong option: reason ~p~n", [Reason]),
             usage(),
             halt(1);
-        {ok, #{config := ConfigFile}} ->
-            prepare(validate(parse_node_config(ConfigFile)));
-        {ok, #{rest := Nodes}} ->
-            prepare(validate(parse_node_list(Nodes)))
+        {ok, Map} ->
+            erlang:put(dry_run, maps:get(dry_run, Map, false)),
+            prepare(validate(
+                case Map of
+                    #{config := ConfigFile} -> parse_node_config(ConfigFile);
+                    #{rest := Nodes} -> parse_node_list(Nodes)
+                end
+            ))
     end.
 
 %% @doc Parse node names from config file
@@ -32,11 +36,20 @@ parse_node_config(ConfigFilePath) ->
     case file:consult(ConfigFilePath) of
         {ok, Terms} ->
             {clusters, ClusterMap} = lists:keyfind(clusters, 1, Terms),
-            Nodes = maps:fold(fun(_, #{servers := Servers}, Acc) ->
-                [MainNode | _] = lists:usort(Servers),
-                [build_erlang_node_name(MainNode) | Acc]
-            end, [], ClusterMap),
-            {ok, Nodes};
+            {red_leader_cluster, LeaderCluster} = lists:keyfind(red_leader, 1, Terms),
+            {Leader, AllNodes} = maps:fold(
+                fun(ClusterKey, #{servers := Servers}, {LeaderMarker, AllNodesAcc}) ->
+                    [MainNode | _] = lists:usort(Servers),
+                    NodeName = build_erlang_node_name(MainNode),
+                    case ClusterKey of
+                        LeaderCluster ->
+                            {NodeName, [NodeName | AllNodesAcc]};
+                        _ ->
+                            {LeaderMarker, [NodeName | AllNodesAcc]}
+                    end
+                end,
+                {undefined, []}, ClusterMap),
+            {ok, {config, Leader, AllNodes}};
         _ ->
             error
     end.
@@ -50,18 +63,18 @@ build_erlang_node_name(Node) ->
 parse_node_list([]) ->
     {error, emtpy_node_list};
 parse_node_list([Node]) ->
-    {ok, [list_to_atom(Node)]};
+    {ok, {node_list, [list_to_atom(Node)]}};
 parse_node_list([_|_]=NodeListString) ->
     try
         Nodes = lists:foldl(fun(NodeString, Acc) ->
             [ list_to_atom(NodeString) | Acc]
         end, [], NodeListString),
-        {ok, lists:reverse(Nodes)}
+        {ok, {node_list, lists:reverse(Nodes)}}
     catch Err -> {error, Err}
     end.
 
 %% @doc Validate parsing, then proceed
--spec validate({ok, [node()]} | error | {error, term()}) -> ok | no_return().
+-spec validate({ok, term()} | error | {error, term()}) -> {ok, term()} | no_return().
 validate(error) ->
     usage();
 
@@ -69,19 +82,26 @@ validate({error, Reason}) ->
     io:fwrite(standard_error, "Validate error: ~p~n", [Reason]),
     usage();
 
-validate({ok, Nodes}) ->
-    {ok, Nodes}.
+validate({ok, Payload}) ->
+    {ok, Payload}.
 
--spec prepare({ok, [node()]}) -> ok | no_return().
-prepare({ok, Nodes}) ->
-    io:format("Starting clustering of nodes ~p~n", [Nodes]),
-    Res = erpc:call(hd(Nodes), grb_dc_manager, create_replica_groups, [Nodes]),
+-spec prepare({ok, term()}) -> ok | no_return().
+prepare({ok, {config, undefined, All}}) -> prepare(hd(All), All);
+prepare({ok, {config, Leader, All}}) -> prepare(Leader, All);
+prepare({ok, {node_list, Nodes}}) -> prepare(hd(Nodes), Nodes).
+
+prepare(Leader, AllNodes) ->
+    io:format("Starting clustering at leader ~w of nodes ~w~n", [Leader, AllNodes]),
+    Res = case erlang:get(dry_run) of
+        false -> erpc:call(Leader, grb_dc_manager, create_replica_groups, [AllNodes]);
+        true -> {error, dry_run}
+    end,
     case Res of
         {error, Reason} ->
             io:fwrite(standard_error, "Error connecting clusters: ~p~n", [Reason]),
             halt(1);
         {ok, Descriptors} ->
-            io:format("Joined clusters ~p~n", [Descriptors]),
+            io:format("Joined clusters ~w~n", [Descriptors]),
             ok
     end.
 
@@ -103,6 +123,8 @@ parse_args_inner([ [$- | Flag] | Args], Acc) ->
             parse_flag(Flag, Args, fun(Arg) -> Acc#{config => Arg} end);
         "-file" ->
             parse_flag(Flag, Args, fun(Arg) -> Acc#{config => Arg} end);
+        [$d] ->
+            parse_args_inner(Args, Acc#{dry_run => true});
         [$h] ->
             usage(),
             halt(0);
