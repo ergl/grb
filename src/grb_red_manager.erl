@@ -65,8 +65,21 @@ persist_follower_info(LeaderReplica) ->
 
 -spec calc_quorum_size() -> non_neg_integer().
 calc_quorum_size() ->
-    AllLen = length(grb_dc_manager:all_replicas()),
-    floor(AllLen / 2) + 1.
+    case os:getenv("GRB_QUORUM_OVERRIDE") of
+        false ->
+            AllLen = length(grb_dc_manager:all_replicas()),
+            floor(AllLen / 2) + 1;
+
+        ValueStr ->
+            case list_to_integer(ValueStr) of
+                -1 ->
+                    %% disable on -1
+                    AllLen = length(grb_dc_manager:all_replicas()),
+                    floor(AllLen / 2) + 1;
+                Other ->
+                    Other
+            end
+    end.
 
 -spec quorum_size() -> non_neg_integer().
 quorum_size() ->
