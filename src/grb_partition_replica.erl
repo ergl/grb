@@ -172,24 +172,12 @@ perform_op_wait(Promise, Key, SnapshotVC, Val, #state{partition=Partition,
 
 -spec decide_blue_internal(partition_id(), non_neg_integer(), replica_id(), _, vclock()) -> ok.
 decide_blue_internal(Partition, WaitMs, ReplicaId, TxId, VC) ->
-    case check_current_clock(ReplicaId, VC) of
+    case grb_main_vnode:decide_blue_ready(ReplicaId, VC) of
         not_ready ->
             erlang:send_after(WaitMs, self(), {retry_decide, TxId, VC}),
             ok;
         ready ->
             grb_main_vnode:decide_blue(Partition, TxId, VC)
-    end.
-
--spec check_current_clock(replica_id(), vclock()) -> ready | not_ready.
-check_current_clock(ReplicaId, VC) ->
-    SelfBlue = grb_vclock:get_time(ReplicaId, VC),
-    CurrentTS = grb_time:timestamp(),
-    case CurrentTS >= SelfBlue of
-        true ->
-            ready;
-        false ->
-            %% todo(borja, stat): log miss
-            not_ready
     end.
 
 -spec generate_replica_name(partition_id(), non_neg_integer()) -> atom().

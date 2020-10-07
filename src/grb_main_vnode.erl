@@ -11,6 +11,8 @@
 -export([perform_operation/4,
          perform_operation_with_table/4,
          prepare_blue/4,
+         decide_blue_ready/1,
+         decide_blue_ready/2,
          decide_blue/3,
          handle_replicate/5,
          handle_red_transaction/3]).
@@ -128,6 +130,18 @@ prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
                                         {prepare_blue, TxId, WriteSet, SnapshotVC, Ts},
                                         ?master),
     Ts.
+
+-spec decide_blue_ready(vclock()) -> ready | not_ready.
+decide_blue_ready(CommitVC) ->
+    decide_blue_ready(grb_dc_manager:replica_id(), CommitVC).
+
+-spec decide_blue_ready(replica_id(), vclock()) -> ready | not_ready.
+decide_blue_ready(ReplicaId, CommitVC) ->
+    Self = grb_vclock:get_time(ReplicaId, CommitVC),
+    case grb_time:timestamp() >= Self of
+        true -> ready;
+        false -> not_ready %% todo(borja, stat): log miss
+    end.
 
 -spec decide_blue(partition_id(), term(), vclock()) -> ok.
 decide_blue(Partition, TxId, CommitVC) ->

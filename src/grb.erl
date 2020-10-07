@@ -130,7 +130,15 @@ prepare_blue(Partition, TxId, WriteSet, VC) ->
 
 -spec decide_blue(partition_id(), any(), vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->
-    ok = grb_partition_replica:decide_blue(Partition, TxId, VC).
+    case grb_main_vnode:decide_blue_ready(VC) of
+        ready ->
+            grb_main_vnode:decide_blue(Partition, TxId, VC);
+        not_ready ->
+            %% if the current node is not ready, wait until it is at the partition replica
+            %% (timer wait until ready)
+            %% todo(borja, efficiency): can we use hybrid clocks here?
+            grb_partition_replica:decide_blue(Partition, TxId, VC)
+    end.
 
 -spec commit_red(grb_promise:t(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
 -ifdef(BLUE_KNOWN_VC).
