@@ -144,10 +144,10 @@ handle_request('PrepareBlueNode', Args, Context, State) ->
     Votes = [ {ok, P, grb:prepare_blue(P, TxId, WS, VC)} || #{partition := P, writeset := WS} <- Prepares],
     reply_to_client(Votes, Context, State);
 
-handle_request('DecideBlueNode', Args, Context, State) ->
+handle_request('DecideBlueNode', Args, _Context, _State) ->
     #{transaction_id := TxId, partitions := Ps, commit_vc := CVC} = Args,
     _ = [grb:decide_blue(P, TxId, CVC) || P <- Ps],
-    reply_to_client(ok, Context, State);
+    ok;
 
 handle_request('CommitRed', Args, Context, _State) ->
     #{transaction_id := TxId, snapshot_vc := VC, prepares := Prepares} = Args,
