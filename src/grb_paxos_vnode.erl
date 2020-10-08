@@ -16,9 +16,9 @@
 
 %% tx API
 -export([prepare/6,
-         accept/8,
-         broadcast_decision/6,
-         decide/5]).
+    accept/8,
+    broadcast_decision/6,
+    decide/5, reply_accept_ack/7]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -126,7 +126,7 @@ decide_heartbeat(Partition, Ballot, Id, Ts) ->
 
 prepare(IndexNode, TxId, ReadSet, Writeset, SnapshotVC, Coord) ->
     riak_core_vnode_master:command(IndexNode,
-                                   {prepare, TxId, ReadSet, Writeset, SnapshotVC},
+                                   {prepare, TxId, ReadSet, Writeset, SnapshotVC, {node(), erlang:timestamp()}},
                                    Coord,
                                    ?master).
 
@@ -230,20 +230,26 @@ handle_command({prepare_hb, Id}, _Sender, S=#state{replica_id=LocalId,
     end,
     {noreply, S#state{synod_state=LeaderState}};
 
-handle_command({prepare, TxId, RS, WS, SnapshotVC},
+handle_command({prepare, TxId, RS, WS, SnapshotVC, {SentNode, SentTime}},
                Coordinator, S=#state{replica_id=LocalId,
                                      partition=Partition,
                                      synod_state=LeaderState0,
                                      op_log_red_replica=LastRed}) ->
 
-    {Result, LeaderState} = grb_paxos_state:prepare(TxId, RS, WS, SnapshotVC, LastRed, LeaderState0),
+    ok = grb_measurements:log_leader_qlen(element(2, process_info(self(), message_queue_len))),
+    Now = erlang:timestamp(),
+    {PrepareTook, {Result, LeaderState}} = timer:tc(grb_paxos_state, prepare, [TxId, RS, WS, SnapshotVC, LastRed, LeaderState0]),
+    if
+        SentNode =:= node() -> grb_measurements:log_leader_vnode(timer:now_diff(Now, SentTime));
+        true -> ok
+    end,
     ?LOG_DEBUG("~p: ~p prepared as ~p, reply to coordinator ~p", [Partition, TxId, Result, Coordinator]),
     case Result of
         {already_decided, Decision, CommitVC} ->
             %% skip replicas, this is enough to reply to the client
             reply_already_decided(Coordinator, LocalId, Partition, TxId, Decision, CommitVC);
         {Vote, Ballot, PrepareVC}=Prepare ->
-            reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
+            reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC, #{prepare => PrepareTook}),
             lists:foreach(fun(ReplicaId) ->
                 grb_dc_connection_manager:send_red_accept(ReplicaId, Coordinator, Partition,
                                                           TxId, RS, WS, Prepare)
@@ -261,14 +267,16 @@ handle_command({accept, Ballot, TxId, RS, WS, Vote, PrepareVC}, Coordinator, S0=
                                                                                        decision_buffer=DecisionBuffer0}) ->
 
     ?LOG_DEBUG("~p: ACCEPT(~b, ~p, ~p), reply to coordinator ~p", [Partition, Ballot, TxId, Vote, Coordinator]),
-    {ok, FollowerState} = grb_paxos_state:accept(Ballot, TxId, RS, WS, Vote, PrepareVC, FollowerState0),
+    ok = grb_measurements:log_follower_qlen(element(2, process_info(self(), message_queue_len))),
+    {AcceptTook, {ok, FollowerState}} = timer:tc(grb_paxos_state, accept, [Ballot, TxId, RS, WS, Vote, PrepareVC, FollowerState0]),
     S1 = S0#state{synod_state=FollowerState},
     S = case maps:take({TxId, Ballot}, DecisionBuffer0) of
         error ->
-            reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
+            reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC, #{accept => AcceptTook}),
             S1;
 
         {{Decision, CommitVC}, DecisionBuffer} ->
+            ok = grb_measurements:log_buffered_decision(),
             %% if the coordinator already sent us a decision, there's no need to cast an ACCEPT_ACK message
             %% because the coordinator does no longer care
             ?LOG_DEBUG("~p: buffered DECIDE(~b, ~p, ~p)", [Partition, Ballot, TxId, Decision]),
@@ -379,6 +387,17 @@ reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vot
             erpc:cast(OtherNode, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC]);
         {OtherReplica, _} ->
             grb_dc_connection_manager:send_red_accept_ack(OtherReplica, Node, Partition, Ballot, TxId, Vote, PrepareVC)
+    end.
+
+reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC, Timings) ->
+    MyNode = node(),
+    case {Replica, Node} of
+        {MyReplica, MyNode} ->
+            grb_red_coordinator:accept_ack(Partition, Ballot, TxId, Vote, PrepareVC, Timings);
+        {MyReplica, OtherNode} ->
+            erpc:cast(OtherNode, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC, Timings]);
+        {OtherReplica, _} ->
+            grb_dc_connection_manager:send_red_accept_ack(OtherReplica, Node, Partition, Ballot, TxId, Vote, {PrepareVC, Timings})
     end.
 
 -spec reply_already_decided(red_coord_location(), replica_id(), partition_id(), term(), red_vote(), vclock()) -> ok.

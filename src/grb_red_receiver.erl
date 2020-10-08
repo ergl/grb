@@ -72,6 +72,7 @@ handle_info(
     {tcp, Socket, <<?VERSION:?VERSION_BITS, P:?PARTITION_BITS/big-unsigned-integer, Payload/binary>>},
     State = #state{socket=Socket, transport=Transport}
 ) ->
+    ok = grb_measurements:log_red_receiver_qlen(element(2, process_info(self(), message_queue_len))),
     {SourceReplica, Request} = grb_dc_message_utils:decode_payload(Payload),
     ?LOG_DEBUG("Received msg from ~p to ~p: ~p", [SourceReplica, P, Request]),
     ok = handle_request(P, SourceReplica, Request),
@@ -115,8 +116,16 @@ handle_request(Partition, Node, #red_accept_ack{ballot=Ballot, tx_id=TxId,
                                                   decision=Vote, prepare_vc=PrepareVC}) ->
     MyNode = node(),
     case Node of
-        MyNode -> grb_red_coordinator:accept_ack(Partition, Ballot, TxId, Vote, PrepareVC);
-        _ -> erpc:cast(Node, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC])
+        MyNode ->
+            case PrepareVC of
+                {VC, Timings} -> grb_red_coordinator:accept_ack(Partition, Ballot, TxId, Vote, VC, Timings);
+                _ -> grb_red_coordinator:accept_ack(Partition, Ballot, TxId, Vote, PrepareVC)
+            end;
+        _ ->
+            case PrepareVC of
+                {VC, Timings} -> erpc:cast(Node, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, VC, Timings]);
+                _ -> erpc:cast(Node, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC])
+            end
     end;
 
 handle_request(Partition, _SourceReplica, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->

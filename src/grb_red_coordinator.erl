@@ -14,6 +14,8 @@
          already_decided/3,
          accept_ack/5]).
 
+-export([accept_ack/6]).
+
 %% gen_server callbacks
 -export([init/1,
          handle_call/3,
@@ -29,7 +31,10 @@
     locations = [] :: [{partition_id(), leader_location()}],
     quorums_to_ack = #{} :: #{partition_id() => pos_integer()},
     ballots = #{} :: partition_ballots(),
-    accumulator = #{} :: #{partition_id() => {red_vote(), vclock()}}
+    accumulator = #{} :: #{partition_id() => {red_vote(), vclock()}},
+    started_barrier :: erlang:timestamp() | undefined,
+    started_send :: erlang:timestamp() | undefined,
+    barrier_time = undefined :: non_neg_integer() | undefined
 }).
 
 -record(state, {
@@ -73,7 +78,14 @@ accept_ack(Partition, Ballot, TxId, Vote, AcceptVC) ->
     case grb_red_manager:transaction_coordinator(TxId) of
         error -> ok;
         {ok, Coordinator} ->
-            gen_server:cast(Coordinator, {accept_ack, Partition, Ballot, TxId, Vote, AcceptVC})
+            gen_server:cast(Coordinator, {accept_ack, Partition, Ballot, TxId, Vote, {AcceptVC, #{}}})
+    end.
+
+accept_ack(Partition, Ballot, TxId, Vote, AcceptVC, Timings) ->
+    case grb_red_manager:transaction_coordinator(TxId) of
+        error -> ok;
+        {ok, Coordinator} ->
+            gen_server:cast(Coordinator, {accept_ack, Partition, Ballot, TxId, Vote, {AcceptVC, Timings}})
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -103,6 +115,7 @@ handle_cast({commit_init, Promise, Partition, TxId, SnapshotVC, Prepares}, S0=#s
             init_tx_and_send(Promise, TxId, SnapshotVC, Prepares, S0);
         false ->
             ?LOG_DEBUG("registering barrier for ~w", [TxId]),
+            ok = grb_measurements:log_red_read_barrier(),
             grb_propagation_vnode:register_red_uniform_barrier(Partition, Timestamp, Pid, TxId),
             init_tx(Promise, TxId, SnapshotVC, Prepares, S0)
     end,
@@ -150,6 +163,8 @@ handle_info(Info, State) ->
 
 init_tx(Promise, TxId, SnapshotVC, Prepares, S=#state{accumulators=Acc}) ->
     S#state{accumulators=Acc#{TxId => #tx_acc{promise=Promise,
+                                              started_barrier=erlang:timestamp(),
+                                              started_send=undefined,
                                               prepares=Prepares,
                                               snapshot_vc=SnapshotVC}}}.
 
@@ -166,14 +181,17 @@ init_tx_and_send(Promise, TxId, SnapshotVC, Prepares, S=#state{self_location=Sel
     end,
     {LeaderLocations, QuorumsToAck} = lists:foldl(SendFun, {[], #{}}, Prepares),
     S#state{accumulators=Acc#{TxId => #tx_acc{promise=Promise,
+                                              started_barrier=undefined,
+                                              started_send=erlang:timestamp(),
                                               locations=LeaderLocations,
                                               quorums_to_ack=QuorumsToAck}}}.
 
 send_tx_prepares(TxId, S=#state{self_location=SelfCoord,
                                 quorum_size=QuorumSize,
                                 accumulators=Acc}) ->
-
+    Now = erlang:timestamp(),
     TxData = #tx_acc{prepares=Prepares, snapshot_vc=SnapshotVC} = maps:get(TxId, Acc),
+    BarrierDiff = timer:now_diff(Now, TxData#tx_acc.started_barrier),
     SendFun = fun({Partition, Readset, Writeset}, {LeaderAcc, QuorumAcc}) ->
         Location = send_prepare(SelfCoord, Partition, TxId, Readset, Writeset, SnapshotVC),
         {
@@ -183,6 +201,7 @@ send_tx_prepares(TxId, S=#state{self_location=SelfCoord,
     end,
     {LeaderLocations, QuorumsToAck} = lists:foldl(SendFun, {[], #{}}, Prepares),
     S#state{accumulators=Acc#{TxId => TxData#tx_acc{prepares=undefined, snapshot_vc=undefined,
+                                                    started_send=erlang:timestamp(), barrier_time=BarrierDiff,
                                                     locations=LeaderLocations, quorums_to_ack=QuorumsToAck}}}.
 
 -spec check_ballot(partition_id(), ballot(), partition_ballots()) -> {ok, partition_ballots()} | error.
@@ -225,11 +244,12 @@ send_prepare(Coordinator, Partition, TxId, RS, WS, VC) ->
     end,
     LeaderLoc.
 
-handle_ack(SelfPid, LocalId, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0, TxState) ->
+handle_ack(SelfPid, LocalId, FromPartition, Ballot, TxId, Vote, {AcceptVC, IncomingTiming}, TxAcc0, TxState) ->
     #tx_acc{ballots=Ballots0, quorums_to_ack=Quorums0, accumulator=Acc0} = TxState,
 
     {ok, Ballots} = check_ballot(FromPartition, Ballot, Ballots0),
-    Acc = Acc0#{FromPartition => {Vote, AcceptVC}},
+    Acc = Acc0#{FromPartition => {Vote, {AcceptVC, aggregate_timing(IncomingTiming,
+                                                                    maps:get(FromPartition, Acc0, undefined))}}},
     ?LOG_DEBUG("ACCEPT_ACK(~b, ~p) from ~p", [Ballot, TxId, FromPartition]),
     Quorums = case maps:get(FromPartition, Quorums0, undefined) of
         %% we already received a quorum from this partition, and we removed it
@@ -241,8 +261,11 @@ handle_ack(SelfPid, LocalId, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0
         N when N > 0 ->
             TxAcc0#{TxId => TxState#tx_acc{quorums_to_ack=Quorums, accumulator=Acc, ballots=Ballots}};
         0 ->
-            Outcome={Decision, CommitVC} = decide_transaction(Acc),
-            reply_to_client(Outcome, TxState#tx_acc.promise),
+            Diff = timer:now_diff(erlang:timestamp(), TxState#tx_acc.started_send),
+            BarrierDiff = TxState#tx_acc.barrier_time,
+            {Decision, {CommitVC, Timings}} = decide_transaction(Acc),
+            reply_to_client({Decision, {CommitVC, Timings#{coordinator_commit => Diff,
+                                                           coordinator_barrier => BarrierDiff}}}, TxState#tx_acc.promise),
 
             lists:foreach(fun({Partition, Location}) ->
                 Ballot = maps:get(Partition, Ballots),
@@ -253,10 +276,22 @@ handle_ack(SelfPid, LocalId, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0
             maps:remove(TxId, TxAcc0)
     end.
 
+aggregate_timing(Timing, undefined) ->
+    case Timing of
+        #{prepare := _} -> Timing#{accept_acc => []};
+        #{accept := AcceptTime} -> #{accept_acc => [AcceptTime]}
+    end;
+aggregate_timing(Timing, {_, {_, AccTiming}}) ->
+    case Timing of
+        #{prepare := PrepareTime} -> AccTiming#{prepare => PrepareTime};
+        #{accept := AcceptTime} ->
+            maps:update_with(accept_acc, fun(L) -> [AcceptTime | L] end, AccTiming)
+    end.
+
 -spec decide_transaction(#{partition_id() => {red_vote(), vclock()}}) -> {red_vote(), vclock()}.
 decide_transaction(VoteMap) ->
     maps:fold(fun
-        (_, {Vote, VC}, undefined) -> {Vote, VC};
+        (_, {Vote, {VC, Timing}}, undefined) -> {Vote, {VC, Timing}};
         (_, {Vote, VC}, VoteAcc) -> reduce_vote(Vote, VC, VoteAcc)
     end, undefined, VoteMap).
 
@@ -285,7 +320,7 @@ remote_broadcast(Node, FromReplica, Partition, Ballot, TxId, Decision, CommitVC)
 -spec reduce_vote(red_vote(), vclock(), {red_vote(), vclock()}) -> {red_vote(), vclock()}.
 reduce_vote(_, _, {{abort, _}, _}=Err) -> Err;
 reduce_vote({abort, _}=Err, VC, _) -> {Err, VC};
-reduce_vote(ok, CommitVC, {ok, AccCommitVC}) -> {ok, grb_vclock:max(CommitVC, AccCommitVC)}.
+reduce_vote(ok, {CommitVC, Timings}, {ok, {AccCommitVC, AccTimings}}) -> {ok, {grb_vclock:max(CommitVC, AccCommitVC), maps:merge(Timings, AccTimings)}}.
 
 -spec reply_to_client({red_vote(), vclock()}, grb_promise:t()) -> ok.
 reply_to_client({ok, CommitVC}, Promise) ->
