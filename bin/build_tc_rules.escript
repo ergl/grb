@@ -4,7 +4,6 @@
 
 -export([main/1]).
 
--define(IFACE, enp1s0).
 -define(ROOT_CMD_STR, "sudo tc qdisc add dev ~p root handle 1: prio bands ~b priomap ~s").
 -define(NETEM_CMD_STR, "sudo tc qdisc add dev ~p parent 1:~b handle ~b: netem delay ~bms").
 -define(FILTER_CMD_STR, "sudo tc filter add dev ~p parent 1:0 protocol ip prio 1 u32 match ip dst ~s/32 flowid 1:~b").
@@ -123,7 +122,6 @@ setup_tc_root(Lanes) ->
 priomap(Lanes) when is_integer(Lanes) ->
     lists:join(" ", lists:duplicate(16, integer_to_list(Lanes))).
 
-
 %% Safety functions and wrappers
 
 safe_cmd(Cmd) ->
@@ -183,15 +181,47 @@ parse_args([ [$- | Flag] | Args], Acc) ->
         _ ->
             {error, {option, Flag}}
     end;
-
 parse_args(_, _) ->
     {error, noarg}.
 
 -spec default_iface() -> atom().
 default_iface() ->
-    case inet:gethostname() of
-        {ok, "apollo-2-4"} ->
-            eth0;
-        _ ->
-            ?IFACE
-    end.
+    {ok, Hostname} = inet:gethostname(),
+    Addr = ip_addr_for_hostname(Hostname),
+    {ok, IfAddr} = inet:getifaddrs(),
+    hd(
+        lists:filtermap(
+            fun({Iface, Props}) ->
+                case proplists:get_value(addr, Props) of
+                    Addr -> {true, list_to_atom(Iface)};
+                    _ -> false
+                end
+            end,
+            IfAddr
+        )
+    ).
+
+ip_addr_for_hostname("apollo-1-1") -> {10, 10, 5, 31};
+ip_addr_for_hostname("apollo-1-2") -> {10, 10, 5, 32};
+ip_addr_for_hostname("apollo-1-3") -> {10, 10, 5, 33};
+ip_addr_for_hostname("apollo-1-4") -> {10, 10, 5, 34};
+ip_addr_for_hostname("apollo-1-5") -> {10, 10, 5, 35};
+ip_addr_for_hostname("apollo-1-6") -> {10, 10, 5, 36};
+ip_addr_for_hostname("apollo-1-7") -> {10, 10, 5, 37};
+ip_addr_for_hostname("apollo-1-8") -> {10, 10, 5, 38};
+ip_addr_for_hostname("apollo-1-9") -> {10, 10, 5, 39};
+ip_addr_for_hostname("apollo-1-10") -> {10, 10, 5, 40};
+ip_addr_for_hostname("apollo-1-11") -> {10, 10, 5, 41};
+ip_addr_for_hostname("apollo-1-12") -> {10, 10, 5, 42};
+ip_addr_for_hostname("apollo-2-1") -> {10, 10, 5, 61};
+ip_addr_for_hostname("apollo-2-2") -> {10, 10, 5, 62};
+ip_addr_for_hostname("apollo-2-3") -> {10, 10, 5, 63};
+ip_addr_for_hostname("apollo-2-4") -> {10, 10, 5, 64};
+ip_addr_for_hostname("apollo-2-5") -> {10, 10, 5, 65};
+ip_addr_for_hostname("apollo-2-6") -> {10, 10, 5, 66};
+ip_addr_for_hostname("apollo-2-7") -> {10, 10, 5, 67};
+ip_addr_for_hostname("apollo-2-8") -> {10, 10, 5, 68};
+ip_addr_for_hostname("apollo-2-9") -> {10, 10, 5, 69};
+ip_addr_for_hostname("apollo-2-10") -> {10, 10, 5, 70};
+ip_addr_for_hostname("apollo-2-11") -> {10, 10, 5, 71};
+ip_addr_for_hostname("apollo-2-12") -> {10, 10, 5, 72}.
