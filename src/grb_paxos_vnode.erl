@@ -269,11 +269,6 @@ handle_command({accept, Ballot, TxId, RS, WS, Vote, PrepareVC}, Coordinator, S0=
             S1;
 
         {{Decision, CommitVC}, DecisionBuffer} ->
-            %% fixme(borja, red): Buffered decision might never be delivered
-            %% Since the decision message was merely buffered, heartbeats with a higher commit timestamp
-            %% can be delivered (no committed tx in preparedRed or decidedRed with a lower timestamp), making
-            %% the process advance past this commit timestamp. This will cause the transaction to be ignored
-
             %% if the coordinator already sent us a decision, there's no need to cast an ACCEPT_ACK message
             %% because the coordinator does no longer care
             ?LOG_DEBUG("~p: buffered DECIDE(~b, ~p, ~p)", [Partition, Ballot, TxId, Decision]),
@@ -421,7 +416,9 @@ decide_hb_internal(Ballot, Id, Ts, S=#state{synod_state=SynodState0,
 
         not_prepared ->
             ?LOG_DEBUG("~p: DECIDE_HEARTBEAT(~b, ~p) := not_prepared, buffering", [S#state.partition, Ballot, Id]),
-            %% buffer the decision until we receive a matching ACCEPT from the leader
+            %% buffer the decision and reserve our commit spot
+            %% until we receive a matching ACCEPT from the leader
+            ok = grb_paxos_state:reserve_decision(Id, ok, Ts, SynodState0),
             {ok, S#state{decision_buffer=Buffer#{{Id, Ballot} => Ts}}}
     end.
 
@@ -445,7 +442,9 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_state=SynodStat
 
         not_prepared ->
             ?LOG_DEBUG("~p: DECIDE(~b, ~p) := not_prepared, buffering", [S#state.partition, Ballot, TxId]),
-            %% buffer the decision until we receive a matching ACCEPT from the leader
+            %% buffer the decision and reserve our commit spot
+            %% until we receive a matching ACCEPT from the leader
+            ok = grb_paxos_state:reserve_decision(TxId, Decision, CommitVC, SynodState0),
             {ok, S#state{decision_buffer=Buffer#{{TxId, Ballot} => {Decision, CommitVC}}}}
     end.
 
