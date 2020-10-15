@@ -372,7 +372,7 @@ update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, _LastRed) ->
     true = ets:insert(OpLog, Objects),
     ok.
 -else.
-%% Dialyzer really doesn't like what's happening inside update_last_red/6, so it bottles upwards to this
+%% Dialyzer really doesn't like what's happening inside update_last_red/7, so it bottles upwards to this
 %% function.
 -dialyzer({no_return, update_partition_state/6}).
 update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, LastRed) ->
@@ -380,7 +380,7 @@ update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, LastRed) ->
     AllReplicas = [?RED_REPLICA | grb_dc_manager:all_replicas()],
     Objects = maps:fold(fun(Key, Value, Acc) ->
         Log = append_to_log(TxType, Key, Value, CommitVC, OpLog, DefaultSize),
-        ok = update_last_red(Key, Vsn, AllReplicas, CommitVC, LastRed, DefaultSize),
+        ok = update_last_red(TxType, Key, Vsn, AllReplicas, CommitVC, LastRed, DefaultSize),
         [{Key, Log} | Acc]
     end, [], WS),
     true = ets:insert(OpLog, Objects),
@@ -393,7 +393,8 @@ update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, LastRed) ->
 %%
 %% Once the list hits a certain size, we can fetch it, prune it, and add it again. This should
 %% only happen from time to time, if we tune the size correctly (25 clocks by default).
--spec update_last_red(Key :: key(),
+-spec update_last_red(TxType :: transaction_type(),
+                      Key :: key(),
                       Vsn :: grb_time:ts(),
                       AtReplicas :: [replica_id()],
                       CommitVC :: vclock(),
@@ -401,8 +402,24 @@ update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, LastRed) ->
                       LogSize :: non_neg_integer()) -> ok.
 
 %% dialyzer doesn't like the calls to red_clocks_match/1 / append_clocks_match/4
--dialyzer({nowarn_function, update_last_red/6}).
-update_last_red(Key, Vsn, AtReplicas, CommitVC, LastRed, LogSize) ->
+-dialyzer({nowarn_function, update_last_red/7}).
+-ifndef('RED_BLUE_CONFLICT').
+update_last_red(blue, _, _, _, _, _, _) ->
+    ok;
+update_last_red(red, Key, Vsn, AtReplicas, CommitVC, LastRed, LogSize) ->
+    update_last_red_log(Key, Vsn, AtReplicas, CommitVC, LastRed, LogSize).
+-else.
+update_last_red(_TxType, Key, Vsn, AtReplicas, CommitVC, LastRed, LogSize) ->
+    update_last_red_log(Key, Vsn, AtReplicas, CommitVC, LastRed, LogSize).
+-endif.
+
+-spec update_last_red_log(Key :: key(),
+                          Vsn :: grb_time:ts(),
+                          AtReplicas :: [replica_id()],
+                          CommitVC :: vclock(),
+                          LastRed :: last_red(),
+                          LogSize :: non_neg_integer()) -> ok.
+update_last_red_log(Key, Vsn, AtReplicas, CommitVC, LastRed, LogSize) ->
     case ets:select(LastRed, red_clocks_match(Key)) of
         [{OldRed, ListSize}] when ListSize > LogSize ->
             %% Compact the list of vector clocks when we reach the limit
