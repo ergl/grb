@@ -150,5 +150,5 @@ handle_request('DecideBlueNode', Args, _Context, _State) ->
     ok;
 
 handle_request('CommitRed', Args, Context, _State) ->
-    #{transaction_id := TxId, snapshot_vc := VC, prepares := Prepares} = Args,
-    grb:commit_red(grb_promise:new(self(), Context), TxId, VC, Prepares).
+    #{transaction_id := TxId, snapshot_vc := VC, prepares := Prepares, partition := TargetP} = Args,
+    grb:commit_red(grb_promise:new(self(), Context), TargetP, TxId, VC, Prepares).

@@ -11,8 +11,7 @@
          key_location/1,
          bcast_vnode_sync/2,
          bcast_vnode_sync/3,
-         bcast_vnode_local_sync/2,
-         bcast_vnode_local_sync/3]).
+         bcast_vnode_local_sync/2]).
 
 %% Managing ETS tables
 -export([safe_bin_to_atom/1]).
@@ -104,14 +103,6 @@ bcast_vnode_sync(Master, Request, Timeout) ->
 bcast_vnode_local_sync(Master, Request) ->
     [begin
          {P, riak_core_vnode_master:sync_command({P, node()}, Request, Master)}
-     end || P <- get_local_partitions()].
-
-%% @doc Broadcast a message to all vnodes of the given type
-%%      in the current physical node.
--spec bcast_vnode_local_sync(atom(), any(), non_neg_integer()) -> any().
-bcast_vnode_local_sync(Master, Request, Timeout) ->
-    [begin
-         {P, riak_core_vnode_master:sync_command({P, node()}, Request, Master, Timeout)}
      end || P <- get_local_partitions()].
 
 -spec get_local_partitions() -> [partition_id()].

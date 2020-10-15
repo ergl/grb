@@ -9,7 +9,7 @@
 %% supervision tree
 -export([start_link/1]).
 
--export([commit/5,
+-export([commit/6,
          commit_send/2,
          already_decided/3,
          accept_ack/5]).
@@ -50,9 +50,9 @@ generate_coord_name(Id) ->
     BinId = integer_to_binary(Id),
     grb_dc_utils:safe_bin_to_atom(<<"grb_red_coordinator_", BinId/binary>>).
 
--spec commit(red_coordinator(), grb_promise:t(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
-commit(Coordinator, Promise, TxId, SnapshotVC, Prepares) ->
-    gen_server:cast(Coordinator, {commit_init, Promise, TxId, SnapshotVC, Prepares}).
+-spec commit(red_coordinator(), grb_promise:t(), partition_id(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
+commit(Coordinator, Promise, TargetPartition, TxId, SnapshotVC, Prepares) ->
+    gen_server:cast(Coordinator, {commit_init, Promise, TargetPartition, TxId, SnapshotVC, Prepares}).
 
 -spec commit_send(red_coordinator(), term()) -> ok.
 commit_send(Coordinator, TxId) ->
@@ -94,8 +94,7 @@ handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
-handle_cast({commit_init, Promise, TxId, SnapshotVC, Prepares}, S0=#state{self_pid=Pid, replica=LocalId}) ->
-    Partition = grb_dc_manager:random_local_partition(),
+handle_cast({commit_init, Promise, Partition, TxId, SnapshotVC, Prepares}, S0=#state{self_pid=Pid, replica=LocalId}) ->
     Timestamp = grb_vclock:get_time(LocalId, SnapshotVC),
     UniformTimestamp = grb_vclock:get_time(LocalId, grb_propagation_vnode:uniform_vc(Partition)),
     S = case Timestamp =< UniformTimestamp of

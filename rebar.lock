@@ -4,7 +4,7 @@
  {<<"poolboy">>,{pkg,<<"poolboy">>,<<"1.5.2">>},1},
  {<<"pvc_proto">>,
   {git,"https://github.com/ergl/pvc_proto.git",
-       {ref,"afb59620e369dc53f1493e549543901ab2d14071"}},
+       {ref,"a83696e9a765ea650806aaa11a72779900f37ae5"}},
   0},
  {<<"quickrand">>,
   {git,"https://github.com/okeuday/quickrand.git",

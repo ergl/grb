@@ -15,7 +15,7 @@
          async_operation/5,
          prepare_blue/4,
          decide_blue/3,
-         commit_red/4]).
+         commit_red/5]).
 
 -ifdef(TEST).
 -export([sync_uniform_barrier/2,
@@ -140,13 +140,13 @@ decide_blue(Partition, TxId, VC) ->
             grb_partition_replica:decide_blue(Partition, TxId, VC)
     end.
 
--spec commit_red(grb_promise:t(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
+-spec commit_red(grb_promise:t(), partition_id(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
 -ifdef(BLUE_KNOWN_VC).
-commit_red(Promise, _, VC, _) -> grb_promise:resolve({ok, VC}, Promise).
+commit_red(Promise, _, _, VC, _) -> grb_promise:resolve({ok, VC}, Promise).
 -else.
-commit_red(Promise, TxId, SnapshotVC, Prepares) ->
+commit_red(Promise, TargetPartition, TxId, SnapshotVC, Prepares) ->
     Coordinator = grb_red_manager:register_coordinator(TxId),
-    grb_red_coordinator:commit(Coordinator, Promise, TxId, SnapshotVC, Prepares).
+    grb_red_coordinator:commit(Coordinator, Promise, TargetPartition, TxId, SnapshotVC, Prepares).
 -endif.
 
 %%%===================================================================
