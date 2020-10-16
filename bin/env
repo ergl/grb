@@ -23,10 +23,6 @@ if [ -z "$INTER_DC_PORT" ]; then
   export INTER_DC_PORT=8989
 fi
 
-if [ -z "$INTER_DC_RED_PORT" ]; then
-  export INTER_DC_RED_PORT=8990
-fi
-
 if [ -z "$OP_LOG_REPLICAS" ]; then
   export OP_LOG_REPLICAS=20
 fi

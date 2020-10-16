@@ -49,9 +49,6 @@
     %% The port to send/recv inter-dc communication (default is 8989)
     {inter_dc_port, ${INTER_DC_PORT}},
 
-    %% The port to send/recv red inter-dc communication (default is 8990)
-    {inter_dc_red_port, ${INTER_DC_RED_PORT}},
-
     %% How many replicas per main vnode (readers)
     {op_log_replicas, ${OP_LOG_REPLICAS}},
 
@@ -67,9 +64,6 @@
     %% partition might not receive transactions in a while, we need to perform
     %% automatic ticks from time time.
     {self_blue_heartbeat_interval, ${SELF_HB_INTERVAL_MS}},
-
-    %% Shackle pool size for (blue) inter dc sender
-    {inter_dc_pool_size, ${INTER_DC_SENDER_POOL_SIZE}},
 
     %% How often do we replicate _our_ transactions to other replicas?
     {basic_replication_interval, ${REPLICATION_INTERVAL_MS}},
@@ -97,9 +91,6 @@
 
     %% How often to prune the logs of all replicas
     {prune_committed_blue_interval, ${COMMITTED_BLUE_PRUNE_INTERVAL_MS}},
-
-    %% Shackle pool size for (red) inter dc sender
-    {inter_dc_red_pool_size, ${RED_SENDER_POOL_SIZE}},
 
     %% Pool size for the red transaction coordinator
     {red_coord_pool_size, ${RED_COORD_POOL_SIZE}},

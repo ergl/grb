@@ -11,13 +11,13 @@
 %% heartbeat api
 -export([prepare_heartbeat/2,
          accept_heartbeat/5,
-         broadcast_hb_decision/5,
+         broadcast_hb_decision/4,
          decide_heartbeat/4]).
 
 %% tx API
 -export([prepare/6,
          accept/8,
-         broadcast_decision/6,
+         broadcast_decision/5,
          decide/5]).
 
 %% riak_core_vnode callbacks
@@ -103,11 +103,10 @@ accept_heartbeat(Partition, SourceReplica, Ballot, Id, Ts) ->
                                    {accept_hb, SourceReplica, Ballot, Id, Ts},
                                    ?master).
 
--spec broadcast_hb_decision(partition_id(), replica_id(), ballot(), term(), grb_time:ts()) -> ok.
-broadcast_hb_decision(Partition, SourceReplica, Ballot, Id, Ts) ->
+-spec broadcast_hb_decision(partition_id(), ballot(), term(), grb_time:ts()) -> ok.
+broadcast_hb_decision(Partition, Ballot, Id, Ts) ->
     lists:foreach(fun(ReplicaId) ->
-        grb_dc_connection_manager:send_red_decide_heartbeat(ReplicaId, SourceReplica,
-                                                            Partition, Ballot, Id, Ts)
+        grb_dc_connection_manager:send_red_decide_heartbeat(ReplicaId, Partition, Ballot, Id, Ts)
     end, grb_dc_connection_manager:connected_replicas()),
     decide_heartbeat(Partition, Ballot, Id, Ts).
 
@@ -145,10 +144,10 @@ accept(Partition, Ballot, TxId, RS, WS, Vote, PrepareVC, Coord) ->
                                    Coord,
                                    ?master).
 
--spec broadcast_decision(replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-broadcast_decision(LocalId, Partition, Ballot, TxId, Decision, CommitVC) ->
+-spec broadcast_decision(partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+broadcast_decision(Partition, Ballot, TxId, Decision, CommitVC) ->
     lists:foreach(fun(ReplicaId) ->
-        grb_dc_connection_manager:send_red_decision(ReplicaId, LocalId, Partition, Ballot, TxId, Decision, CommitVC)
+        grb_dc_connection_manager:send_red_decision(ReplicaId, Partition, Ballot, TxId, Decision, CommitVC)
     end, grb_dc_connection_manager:connected_replicas()),
     decide(Partition, Ballot, TxId, Decision, CommitVC).
 
@@ -209,8 +208,7 @@ handle_command(init_follower, _Sender, S=#state{synod_state=undefined}) ->
 %%% leader protocol messages
 %%%===================================================================
 
-handle_command({prepare_hb, Id}, _Sender, S=#state{replica_id=LocalId,
-                                                   partition=Partition,
+handle_command({prepare_hb, Id}, _Sender, S=#state{partition=Partition,
                                                    synod_state=LeaderState0}) ->
 
     {Result, LeaderState} = grb_paxos_state:prepare_hb(Id, LeaderState0),
@@ -219,7 +217,7 @@ handle_command({prepare_hb, Id}, _Sender, S=#state{replica_id=LocalId,
             ?LOG_DEBUG("~p: HEARTBEAT_PREPARE(~b, ~p, ~b)", [Partition, Ballot, Id, Timestamp]),
             grb_red_timer:handle_accept_ack(Partition, Ballot, Id, Timestamp),
             lists:foreach(fun(ReplicaId) ->
-                grb_dc_connection_manager:send_red_heartbeat(ReplicaId, LocalId, Partition,
+                grb_dc_connection_manager:send_red_heartbeat(ReplicaId, Partition,
                                                              Ballot, Id, Timestamp)
             end, grb_dc_connection_manager:connected_replicas());
 
@@ -277,8 +275,7 @@ handle_command({accept, Ballot, TxId, RS, WS, Vote, PrepareVC}, Coordinator, S0=
     end,
     {noreply, S};
 
-handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{replica_id=LocalId,
-                                                                              partition=Partition,
+handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{partition=Partition,
                                                                               synod_state=FollowerState0,
                                                                               decision_buffer=DecisionBuffer0}) ->
 
@@ -287,8 +284,7 @@ handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{re
     S1 = S0#state{synod_state=FollowerState},
     S = case maps:take({Id, Ballot}, DecisionBuffer0) of
         error ->
-            ok = grb_dc_connection_manager:send_red_heartbeat_ack(SourceReplica, LocalId,
-                                                                  Partition, Ballot, Id, Ts),
+            ok = grb_dc_connection_manager:send_red_heartbeat_ack(SourceReplica, Partition, Ballot, Id, Ts),
             S1;
 
         {FinalTs, DecisionBuffer} ->
@@ -390,7 +386,7 @@ reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decisi
         {MyReplica, OtherNode} ->
             erpc:cast(OtherNode, grb_red_coordinator, already_decided, [TxId, Decision, CommitVC]);
         {OtherReplica, _} ->
-            grb_dc_connection_manager:send_red_decided(OtherReplica, Node, Partition, TxId, Decision, CommitVC)
+            grb_dc_connection_manager:send_red_already_decided(OtherReplica, Node, Partition, TxId, Decision, CommitVC)
     end.
 
 -spec decide_hb_internal(ballot(), term(), grb_time:ts(), #state{}) -> {ok, #state{}} | error.

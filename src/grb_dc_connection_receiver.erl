@@ -7,7 +7,7 @@
 -include_lib("kernel/include/logger.hrl").
 
 %% Module API
--export([start_server/0]).
+-export([start_service/0]).
 
 %% ranch_protocol callback
 -export([start_link/4]).
@@ -19,24 +19,25 @@
          handle_info/2,
          terminate/2]).
 
--define(SERVICE_NAME, grb_inter_dc).
+-define(SERVICE, grb_inter_dc).
 -define(SERVICE_POOL, (1 * erlang:system_info(schedulers_online))).
 
 -record(state, {
     socket :: inet:socket(),
-    transport :: module()
+    transport :: module(),
+    sender_partition = undefined :: partition_id() | undefined,
+    sender_replica = undefined :: replica_id() | undefined
 }).
 
-start_server() ->
-    {ok, Port} = application:get_env(grb, inter_dc_port),
-    {ok, _} = ranch:start_listener(?SERVICE_NAME,
-                                   ranch_tcp,
-                                   [{port, Port},
-                                    {num_acceptors, ?SERVICE_POOL},
-                                    {max_connections, infinity}],
-                                   ?MODULE,
-                                   []),
-    ActualPort = ranch:get_port(?SERVICE_NAME),
+-spec start_service() -> ok.
+start_service() ->
+    start_service(?SERVICE, application:get_env(grb, inter_dc_port)).
+
+start_service(ServiceName, {ok, Port}) ->
+    {ok, _} = ranch:start_listener(ServiceName, ranch_tcp,
+                                   [{port, Port}, {num_acceptors, ?SERVICE_POOL}, {max_connections, infinity}],
+                                   ?MODULE, []),
+    ActualPort = ranch:get_port(ServiceName),
     ?LOG_INFO("~p server started on port ~p", [?MODULE, ActualPort]),
     ok.
 
@@ -65,12 +66,26 @@ terminate(_Reason, #state{socket=Socket, transport=Transport}) ->
     ok.
 
 handle_info(
-    {tcp, Socket, <<?VERSION:?VERSION_BITS, P:?PARTITION_BITS/big-unsigned-integer, Payload/binary>>},
+    {tcp, Socket, <<?VERSION:?VERSION_BITS, ?DC_PING:?MSG_KIND_BITS,
+                    P:?PARTITION_BITS/big-unsigned-integer,
+                    Payload/binary>>},
     State = #state{socket=Socket, transport=Transport}
 ) ->
-    {SourceReplica, Request} = grb_dc_message_utils:decode_payload(Payload),
-    ?LOG_DEBUG("Received msg from ~p to ~p: ~p", [SourceReplica, P, Request]),
-    ok = handle_request(P, SourceReplica, Request),
+    SenderReplica = binary_to_term(Payload),
+    ?LOG_DEBUG("Received connect ping from ~p:~p", [SenderReplica, P]),
+    Transport:setopts(Socket, [{active, once}]),
+    {noreply, State#state{sender_partition=P, sender_replica=SenderReplica}};
+
+handle_info(
+    {tcp, Socket, <<?VERSION:?VERSION_BITS, Payload/binary>>},
+    State = #state{socket=Socket,
+                   transport=Transport,
+                   sender_partition=Partition,
+                   sender_replica=SenderReplica}
+) ->
+    Request = grb_dc_messages:decode_payload(Payload),
+    ?LOG_DEBUG("Received msg to ~p: ~p", [Partition, Request]),
+    ok = handle_request(SenderReplica, Partition, Request),
     Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
@@ -95,18 +110,56 @@ handle_info(E, S) ->
     ?LOG_WARNING("replication server received unexpected info with msg ~w", [E]),
     {noreply, S}.
 
-%% We would have to add type information to every {_, replica_message} pair so that
-%% dialyzer doesn't complain about the second argument being different types
--dialyzer({nowarn_function, handle_request/3}).
--spec handle_request(partition_id(), replica_id() | red_coord_location() | node(), replica_message()) -> ok.
-handle_request(Partition, SourceReplica, #blue_heartbeat{timestamp=Ts}) ->
+-spec handle_request(replica_id(), partition_id(), replica_message()) -> ok.
+handle_request(ConnReplica, Partition, #blue_heartbeat{timestamp=Ts}) ->
+    grb_propagation_vnode:handle_blue_heartbeat(Partition, ConnReplica, Ts);
+
+handle_request(ConnReplica, Partition, #replicate_tx{tx_id=TxId, writeset=WS, commit_vc=VC}) ->
+    grb_main_vnode:handle_replicate(Partition, ConnReplica, TxId, WS, VC);
+
+handle_request(ConnReplica, Partition, #update_clocks{known_vc=KnownVC, stable_vc=StableVC}) ->
+    grb_propagation_vnode:handle_clock_update(Partition, ConnReplica, KnownVC, StableVC);
+
+handle_request(ConnReplica, Partition, #update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}) ->
+    grb_propagation_vnode:handle_clock_heartbeat_update(Partition, ConnReplica, KnownVC, StableVC);
+
+handle_request(_, Partition, #forward_heartbeat{replica=SourceReplica, timestamp=Ts}) ->
     grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, Ts);
 
-handle_request(Partition, SourceReplica, #replicate_tx{tx_id=TxId, writeset=WS, commit_vc=VC}) ->
+handle_request(_, Partition, #forward_transaction{replica=SourceReplica, tx_id=TxId, writeset=WS, commit_vc=VC}) ->
     grb_main_vnode:handle_replicate(Partition, SourceReplica, TxId, WS, VC);
 
-handle_request(Partition, SourceReplica, #update_clocks{known_vc=KnownVC, stable_vc=StableVC}) ->
-    grb_propagation_vnode:handle_clock_update(Partition, SourceReplica, KnownVC, StableVC);
+handle_request(_, Partition, #red_prepare{coord_location=Coordinator, tx_id=TxId, readset=RS, writeset=WS, snapshot_vc=VC}) ->
+    grb_paxos_vnode:prepare({Partition, node()}, TxId, RS, WS, VC, Coordinator);
 
-handle_request(Partition, SourceReplica, #update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}) ->
-    grb_propagation_vnode:handle_clock_heartbeat_update(Partition, SourceReplica, KnownVC, StableVC).
+handle_request(_, Partition, #red_accept{coord_location=Coordinator, ballot=Ballot, tx_id=TxId,
+                                         readset=RS, writeset=WS, decision=Vote, prepare_vc=VC}) ->
+
+    grb_paxos_vnode:accept(Partition, Ballot, TxId, RS, WS, Vote, VC, Coordinator);
+
+handle_request(_, Partition, #red_accept_ack{target_node=Node, ballot=Ballot, tx_id=TxId,
+                                             decision=Vote, prepare_vc=PrepareVC}) ->
+    MyNode = node(),
+    case Node of
+        MyNode -> grb_red_coordinator:accept_ack(Partition, Ballot, TxId, Vote, PrepareVC);
+        _ -> erpc:cast(Node, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC])
+    end;
+
+handle_request(_, Partition, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->
+    grb_paxos_vnode:decide(Partition, Ballot, TxId, Decision, CommitVC);
+
+handle_request(_, _, #red_already_decided{target_node=Node, tx_id=TxId, decision=Vote, commit_vc=CommitVC}) ->
+    MyNode = node(),
+    case Node of
+        MyNode -> grb_red_coordinator:already_decided(TxId, Vote, CommitVC);
+        _ -> erpc:cast(Node, grb_red_coordinator, already_decided, [TxId, Vote, CommitVC])
+    end;
+
+handle_request(ConnReplica, Partition, #red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
+    grb_paxos_vnode:accept_heartbeat(Partition, ConnReplica, B, Id, Ts);
+
+handle_request(_, Partition, #red_heartbeat_ack{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
+    grb_red_timer:handle_accept_ack(Partition, B, Id, Ts);
+
+handle_request(_, Partition, #red_heartbeat_decide{ballot=Ballot, heartbeat_id=Id, timestamp=Ts}) ->
+    grb_paxos_vnode:decide_heartbeat(Partition, Ballot, Id, Ts).

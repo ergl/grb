@@ -95,7 +95,6 @@ start_node(Name, Config) ->
             ok = erpc:call(Node, application, load, [riak_core]),
             ok = erpc:call(Node, application, load, [syntax_tools]),
             ok = erpc:call(Node, application, load, [compiler]),
-            ok = erpc:call(Node, application, load, [shackle]),
             ok = erpc:call(Node, application, load, [ranch]),
             ok = erpc:call(Node, application, load, [grb]),
 
@@ -126,10 +125,8 @@ start_node(Name, Config) ->
             ok = erpc:call(Node, application, set_env, [grb, tcp_port, Port + 1]),
             ok = erpc:call(Node, application, set_env, [grb, tcp_id_len_bits, 16]),
             ok = erpc:call(Node, application, set_env, [grb, inter_dc_port, Port + 2]),
-            ok = erpc:call(Node, application, set_env, [grb, inter_dc_red_port, Port + 3]),
             ok = erpc:call(Node, application, set_env, [grb, version_log_size, 25]),
             ok = erpc:call(Node, application, set_env, [grb, self_blue_heartbeat_interval, 5]),
-            ok = erpc:call(Node, application, set_env, [grb, inter_dc_pool_size, 16]),
             ok = erpc:call(Node, application, set_env, [grb, basic_replication_interval, 5]),
             ok = erpc:call(Node, application, set_env, [grb, uniform_replication_interval, 5000]),
             ok = erpc:call(Node, application, set_env, [grb, remote_clock_broadcast_interval, 10000]),
@@ -137,7 +134,6 @@ start_node(Name, Config) ->
             ok = erpc:call(Node, application, set_env, [grb, op_prepare_wait_ms, 5]),
             ok = erpc:call(Node, application, set_env, [grb, prune_committed_blue_interval, 50]),
 
-            ok = erpc:call(Node, application, set_env, [grb, inter_dc_red_pool_size, 16]),
             ok = erpc:call(Node, application, set_env, [grb, red_heartbeat_interval, 5]),
             ok = erpc:call(Node, application, set_env, [grb, red_delivery_interval, 10]),
             ok = erpc:call(Node, application, set_env, [grb, red_prune_interval, 20]),

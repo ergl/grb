@@ -56,7 +56,7 @@ start_link(Ref, _Sock, Transport, Opts) ->
 init({Ref, Transport, _Opts}) ->
     {ok, Socket} = ranch:handshake(Ref),
     ok = ranch:remove_connection(Ref),
-    ok = Transport:setopts(Socket, [{active, once}, {packet, 4}]),
+    ok = Transport:setopts(Socket, [{active, once}, {packet, 4}, {nodelay, true}]),
     IdLen = application:get_env(grb, tcp_id_len_bits, 16),
     State = #state{socket=Socket, transport=Transport, id_len=IdLen},
     gen_server:enter_loop(?MODULE, [], State).
