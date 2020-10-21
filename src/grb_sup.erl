@@ -33,6 +33,7 @@ init(_Args) ->
     BlueTxVnode = ?VNODE(grb_main_vnode_master, grb_main_vnode),
 
     BlueTxReplicaSup = ?CHILD(grb_partition_replica_sup, supervisor, []),
+    InterDCSenderSup = ?CHILD(grb_dc_connection_sender_sup, supervisor, []),
     InterDCConnManager = ?CHILD(grb_dc_connection_manager, worker, []),
     LocalBroadcast = ?CHILD(grb_local_broadcast, worker, []),
 
@@ -40,6 +41,7 @@ init(_Args) ->
                                     BlueTxVnode,
                                     BlueTxReplicaSup,
                                     LocalBroadcast,
+                                    InterDCSenderSup,
                                     InterDCConnManager]),
 
     {ok, {{one_for_one, 5, 10}, ChildSpecs}}.

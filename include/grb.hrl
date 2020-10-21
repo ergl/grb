@@ -34,7 +34,7 @@
 -record(replica_descriptor, {
     replica_id :: replica_id(),
     num_partitions :: non_neg_integer(),
-    remote_addresses :: #{partition_id() => {inet:ip_address(), inet:port_number()} }
+    remote_addresses :: #{partition_id() => {inet:ip_address(), inet:port_number()}}
 }).
 
 -type replica_descriptor() :: #replica_descriptor{}.
@@ -42,10 +42,10 @@
 -define(INTER_DC_SOCK_OPTS, [binary,
                              {active, once},
                              {deliver, term},
-                             {packet, 4}]).
+                             {packet, 4},
+                             {nodelay, true}]).
 
 -type inter_dc_conn() :: atom().
--type inter_dc_red_conn() :: atom().
 
 -type red_coordinator() :: pid().
 -type red_vote() :: ok | {abort, atom()}.
@@ -81,7 +81,6 @@
               val/0,
               replica_descriptor/0,
               inter_dc_conn/0,
-              inter_dc_red_conn/0,
               red_coordinator/0,
               red_vote/0,
               ballot/0,

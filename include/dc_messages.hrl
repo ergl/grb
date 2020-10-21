@@ -8,8 +8,8 @@
 
 %% Serialize messages as ints instead of records
 -define(MSG_KIND_BITS, 8).
--define(REPL_TX_KIND, 0).
--define(BLUE_HB_KIND, 1).
+-define(BLUE_HB_KIND, 0).
+-define(REPL_TX_KIND, 1).
 -define(UPDATE_CLOCK_KIND, 2).
 -define(UPDATE_CLOCK_HEARTBEAT_KIND, 3).
 
@@ -25,14 +25,21 @@
 -define(RED_HB_ACK_KIND, 10).
 -define(RED_HB_DECIDE_KIND, 11).
 
+%% Forward messages
+-define(FWD_BLUE_HB_KIND, 12).
+-define(FWD_BLUE_TX_KIND, 13).
+
+%% Ping
+-define(DC_PING, 14).
+
+-record(blue_heartbeat, {
+    timestamp :: grb_time:ts()
+}).
+
 -record(replicate_tx, {
     tx_id :: term(),
     writeset :: #{},
     commit_vc :: vclock()
-}).
-
--record(blue_heartbeat, {
-    timestamp :: grb_time:ts()
 }).
 
 -record(update_clocks, {
@@ -45,7 +52,20 @@
     stable_vc :: vclock()
 }).
 
+-record(forward_heartbeat, {
+    replica :: replica_id(),
+    timestamp :: grb_time:ts()
+}).
+
+-record(forward_transaction, {
+    replica :: replica_id(),
+    tx_id :: term(),
+    writeset :: #{},
+    commit_vc :: vclock()
+}).
+
 -record(red_prepare, {
+    coord_location :: term(),
     tx_id :: term(),
     readset :: [term()],
     writeset :: #{},
@@ -53,6 +73,7 @@
 }).
 
 -record(red_accept, {
+    coord_location :: term(),
     ballot :: ballot(),
     tx_id :: term(),
     readset :: [term()],
@@ -62,6 +83,7 @@
 }).
 
 -record(red_accept_ack, {
+    target_node :: node(),
     ballot :: ballot(),
     tx_id :: term(),
     decision :: term(),
@@ -76,6 +98,7 @@
 }).
 
 -record(red_already_decided, {
+    target_node :: node(),
     tx_id :: term(),
     decision :: term(),
     commit_vc :: vclock()
@@ -99,10 +122,12 @@
     timestamp :: grb_time:ts()
 }).
 
--type replica_message() :: #replicate_tx{}
-                         | #blue_heartbeat{}
+-type replica_message() :: #blue_heartbeat{}
+                         | #replicate_tx{}
                          | #update_clocks{}
                          | #update_clocks_heartbeat{}
+                         | #forward_heartbeat{}
+                         | #forward_transaction{}
                          | #red_prepare{}
                          | #red_accept{}
                          | #red_accept_ack{}

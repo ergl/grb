@@ -61,8 +61,8 @@ set_default_bottom_value(Value) ->
 cluster_info() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     ReplicaID = riak_core_ring:cluster_name(Ring),
-    {NumPartitions, Nodes} = riak_core_ring:chash(Ring),
-    {ok, ReplicaID, NumPartitions, Nodes}.
+    Chash = riak_core_ring:chash(Ring),
+    {ok, ReplicaID, chash:size(Chash), chash:nodes(Chash)}.
 
 -spec inter_dc_ip_port() -> {inet:ip_address(), inet:port_number()}.
 inter_dc_ip_port() ->
@@ -79,9 +79,9 @@ my_partitions() ->
 -spec key_location(key()) -> index_node().
 key_location(Key) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    {Num, List} = riak_core_ring:chash(Ring),
-    Pos = convert_key(Key) rem Num + 1,
-    lists:nth(Pos, List).
+    Chash = riak_core_ring:chash(Ring),
+    Pos = convert_key(Key) rem chash:size(Chash) + 1,
+    lists:nth(Pos, chash:nodes(Chash)).
 
 %% @doc Broadcast a message to all vnodes of the given type
 %%      in the current data center

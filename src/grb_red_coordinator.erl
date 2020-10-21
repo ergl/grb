@@ -125,14 +125,13 @@ handle_cast({already_decided, TxId, Vote, VoteVC}, S0=#state{self_pid=Pid, accum
     {noreply, S};
 
 handle_cast({accept_ack, From, Ballot, TxId, Vote, AcceptVC}, S0=#state{self_pid=Pid,
-                                                                        replica=LocalId,
                                                                         accumulators=TxAcc}) ->
     S = case maps:get(TxId, TxAcc, undefined) of
         undefined ->
             ?LOG_DEBUG("missed ACCEPT_ACK(~b, ~p, ~p) from ~p", [Ballot, TxId, Vote, From]),
             S0;
         TxState ->
-            S0#state{accumulators=handle_ack(Pid, LocalId, From, Ballot, TxId, Vote, AcceptVC, TxAcc, TxState)}
+            S0#state{accumulators=handle_ack(Pid, From, Ballot, TxId, Vote, AcceptVC, TxAcc, TxState)}
     end,
     {noreply, S};
 
@@ -216,16 +215,21 @@ send_prepare(Coordinator, Partition, TxId, RS, WS, VC) ->
         {proxy, LocalNode, RemoteReplica} ->
             %% leader is in another replica, but we don't have a direct inter_dc connection, have
             %% to go through a cluster-local proxy at `LocalNode`
-            Msg = grb_dc_message_utils:encode_msg(Coordinator, Partition, #red_prepare{tx_id=TxId,
-                                                                                       readset=RS,
-                                                                                       writeset=WS,
-                                                                                       snapshot_vc=VC}),
-
+            Msg = grb_dc_messages:red_prepare(Coordinator, TxId, RS, WS, VC),
             ok = erpc:cast(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
     end,
     LeaderLoc.
 
-handle_ack(SelfPid, LocalId, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0, TxState) ->
+-spec handle_ack(SelfPid :: pid(),
+                 FromPartition :: partition_id(),
+                 Ballot :: ballot(),
+                 TxId :: term(),
+                 Vote :: red_vote(),
+                 AcceptVC :: vclock(),
+                 TxAcc0 :: #{term() => #tx_acc{}},
+                 TxState :: #tx_acc{}) -> TxAcc :: #{term() => #tx_acc{}}.
+
+handle_ack(SelfPid, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0, TxState) ->
     #tx_acc{ballots=Ballots0, quorums_to_ack=Quorums0, accumulator=Acc0} = TxState,
 
     {ok, Ballots} = check_ballot(FromPartition, Ballot, Ballots0),
@@ -246,7 +250,7 @@ handle_ack(SelfPid, LocalId, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0
 
             lists:foreach(fun({Partition, Location}) ->
                 Ballot = maps:get(Partition, Ballots),
-                send_decision(LocalId, Partition, Location, Ballot, TxId, Decision, CommitVC)
+                send_decision(Partition, Location, Ballot, TxId, Decision, CommitVC)
             end, TxState#tx_acc.locations),
 
             ok = grb_red_manager:unregister_coordinator(TxId, SelfPid),
@@ -260,27 +264,27 @@ decide_transaction(VoteMap) ->
         (_, {Vote, VC}, VoteAcc) -> reduce_vote(Vote, VC, VoteAcc)
     end, undefined, VoteMap).
 
--spec send_decision(replica_id(), partition_id(), leader_location(), ballot(), term(), red_vote(), vclock()) -> ok.
-send_decision(FromId, Partition, {proxy, LocalNode, _}, Ballot, TxId, Decision, CommitVC) ->
-    remote_broadcast(LocalNode, FromId, Partition, Ballot, TxId, Decision, CommitVC);
+-spec send_decision(partition_id(), leader_location(), ballot(), term(), red_vote(), vclock()) -> ok.
+send_decision(Partition, {proxy, LocalNode, _}, Ballot, TxId, Decision, CommitVC) ->
+    remote_broadcast(LocalNode, Partition, Ballot, TxId, Decision, CommitVC);
 
-send_decision(FromId, Partition, {local, {_, LocalNode}}, Ballot, TxId, Decision, CommitVC) ->
+send_decision(Partition, {local, {_, LocalNode}}, Ballot, TxId, Decision, CommitVC) ->
     MyNode = node(),
     case LocalNode of
-        MyNode -> local_broadcast(FromId, Partition, Ballot, TxId, Decision, CommitVC);
-        _ -> remote_broadcast(LocalNode, FromId, Partition, Ballot, TxId, Decision, CommitVC)
+        MyNode -> local_broadcast(Partition, Ballot, TxId, Decision, CommitVC);
+        _ -> remote_broadcast(LocalNode, Partition, Ballot, TxId, Decision, CommitVC)
     end;
 
-send_decision(FromId, Partition, {remote, _}, Ballot, TxId, Decision, CommitVC) ->
-    local_broadcast(FromId, Partition, Ballot, TxId, Decision, CommitVC).
+send_decision(Partition, {remote, _}, Ballot, TxId, Decision, CommitVC) ->
+    local_broadcast(Partition, Ballot, TxId, Decision, CommitVC).
 
--spec local_broadcast(replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-local_broadcast(FromReplica, Partition, Ballot, TxId, Decision, CommitVC) ->
-    grb_paxos_vnode:broadcast_decision(FromReplica, Partition, Ballot, TxId, Decision, CommitVC).
+-spec local_broadcast(partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+local_broadcast(Partition, Ballot, TxId, Decision, CommitVC) ->
+    grb_paxos_vnode:broadcast_decision(Partition, Ballot, TxId, Decision, CommitVC).
 
--spec remote_broadcast(node(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-remote_broadcast(Node, FromReplica, Partition, Ballot, TxId, Decision, CommitVC) ->
-    erpc:cast(Node, grb_paxos_vnode, broadcast_decision, [FromReplica, Partition, Ballot, TxId, Decision, CommitVC]).
+-spec remote_broadcast(node(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+remote_broadcast(Node, Partition, Ballot, TxId, Decision, CommitVC) ->
+    erpc:cast(Node, grb_paxos_vnode, broadcast_decision, [Partition, Ballot, TxId, Decision, CommitVC]).
 
 -spec reduce_vote(red_vote(), vclock(), {red_vote(), vclock()}) -> {red_vote(), vclock()}.
 reduce_vote(_, _, {{abort, _}, _}=Err) -> Err;

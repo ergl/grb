@@ -76,8 +76,7 @@ handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
-handle_cast({accept_ack, From, InBallot, Id, InTimestamp}, S0=#state{replica=LocalId,
-                                                                     partitions=Partitions,
+handle_cast({accept_ack, From, InBallot, Id, InTimestamp}, S0=#state{partitions=Partitions,
                                                                      current_hb_id=Id,
                                                                      current_hb_timestamp=Timestamp0,
                                                                      ballots=Ballots0,
@@ -100,7 +99,7 @@ handle_cast({accept_ack, From, InBallot, Id, InTimestamp}, S0=#state{replica=Loc
             ?LOG_DEBUG("decided heartbeat ~w with timestamp ~b", [Id, Timestamp]),
             lists:foreach(fun(P) ->
                 Ballot = maps:get(P, Ballots),
-                ok = grb_paxos_vnode:broadcast_hb_decision(P, LocalId, Ballot, Id, Timestamp)
+                ok = grb_paxos_vnode:broadcast_hb_decision(P, Ballot, Id, Timestamp)
             end, Partitions),
             rearm_heartbeat_timer(S0)
     end,

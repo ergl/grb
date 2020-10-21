@@ -691,12 +691,12 @@ replicate_internal(S=#state{self_log=LocalLog0,
     lists:foreach(fun(Target) ->
         case ToSend of
             [] ->
-                HBRes = grb_dc_connection_manager:send_heartbeat(Target, LocalId, Partition, LocalTime),
+                HBRes = grb_dc_connection_manager:send_heartbeat(Target, Partition, LocalTime),
                 ?LOG_DEBUG("send basic heartbeat to ~p: ~p~n", [Target, HBRes]),
                 ok;
             Transactions ->
                 lists:foreach(fun(Tx) ->
-                    TxRes = grb_dc_connection_manager:send_tx(Target, LocalId, Partition, Tx),
+                    TxRes = grb_dc_connection_manager:send_tx(Target, Partition, Tx),
                     ?LOG_DEBUG("send transaction ~p to ~p: ~p~n", [Tx, Target, TxRes]),
                     ok
                 end, Transactions)
@@ -723,16 +723,16 @@ replicate_internal(S=#state{self_log=LocalLog,
         case ToSend of
             [] ->
                 % piggy back clocks on top of the send_heartbeat message, avoid extra message on the wire
-                HBRes = grb_dc_connection_manager:send_clocks_heartbeat(Target, LocalId, Partition, KnownVC, StableVC),
+                HBRes = grb_dc_connection_manager:send_clocks_heartbeat(Target, Partition, KnownVC, StableVC),
                 ?LOG_DEBUG("send clocks/heartbeat to ~p: ~p~n", [Target, HBRes]),
                 ok;
             Transactions ->
                 %% can't merge with other messages here, send one before
                 %% we could piggy-back on top of the first tx, but w/ever
-                ClockRes = grb_dc_connection_manager:send_clocks(Target, LocalId, Partition, KnownVC, StableVC),
+                ClockRes = grb_dc_connection_manager:send_clocks(Target, Partition, KnownVC, StableVC),
                 ?LOG_DEBUG("send clocks to ~p: ~p~n", [Target, ClockRes]),
                 lists:foreach(fun(Tx) ->
-                    TxRes = grb_dc_connection_manager:send_tx(Target, LocalId, Partition, Tx),
+                    TxRes = grb_dc_connection_manager:send_tx(Target, Partition, Tx),
                     ?LOG_DEBUG("send transaction ~p to ~p: ~p~n", [Tx, Target, TxRes]),
                     ok
                 end, Transactions)
@@ -791,13 +791,13 @@ ureplicate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, ClockTable,
     ToSend = grb_remote_commit_log:get_bigger(ThresholdTime, maps:get(RelayReplica, Logs)),
     case ToSend of
         [] ->
-            HBRes = grb_dc_connection_manager:send_heartbeat(TargetReplica, RelayReplica, Partition, HeartBeatTime),
+            HBRes = grb_dc_connection_manager:forward_heartbeat(TargetReplica, RelayReplica, Partition, HeartBeatTime),
             ?LOG_DEBUG("relay heartbeat to ~p from ~p: ~p~n", [TargetReplica, RelayReplica, HBRes]),
             ok;
         Txs ->
             %% Entries are already ordered to commit time at the replica of the log
             lists:foreach(fun(Tx) ->
-                TxRes = grb_dc_connection_manager:send_tx(TargetReplica, RelayReplica, Partition, Tx),
+                TxRes = grb_dc_connection_manager:forward_tx(TargetReplica, RelayReplica, Partition, Tx),
                 ?LOG_DEBUG("relay transaction to ~p from ~p: ~p~n", [TargetReplica, RelayReplica, TxRes]),
                 ok
             end, Txs)

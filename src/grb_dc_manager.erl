@@ -320,45 +320,26 @@ stop_propagation_processes() ->
 %%      in an entire DC.
 %%
 -spec replica_descriptor() -> replica_descriptor().
--ifdef(BLUE_KNOWN_VC).
 replica_descriptor() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     Id = riak_core_ring:cluster_name(Ring),
-    {NumPartitions, PartitionList} = riak_core_ring:chash(Ring),
+    Chash = riak_core_ring:chash(Ring),
+    PartitionsWithInfo = build_remote_addresses(chash:nodes(Chash)),
+    #replica_descriptor{
+        replica_id=Id,
+        num_partitions=chash:size(Chash),
+        remote_addresses=PartitionsWithInfo
+    }.
+
+-spec build_remote_addresses([index_node()]) -> #{partition_id() => {inet:ip_address(), inet:port_number()}}.
+build_remote_addresses(Indices) ->
     %% Convert a list of [{partition_id(), node()}, ...] into
     %% #{partition_id() => {inet:ip_address(), inet:port_number()}}
-    {PartitionsWithInfo, _} = lists:foldl(fun({P, Node}, {PartitionInfo, IPMap}) ->
+    {PartitionInfo, _} = lists:foldl(fun({P, Node}, {PartitionInfo, IPMap}) ->
         {IP, Port} = maps:get(Node, IPMap, erpc:call(Node, grb_dc_utils, inter_dc_ip_port, [])),
         {PartitionInfo#{P => {IP, Port}}, IPMap#{Node => {IP, Port}}}
-    end, {#{}, #{}}, PartitionList),
-    #replica_descriptor{
-        replica_id=Id,
-        num_partitions=NumPartitions,
-        remote_addresses=PartitionsWithInfo
-    }.
--else.
-replica_descriptor() ->
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    Id = riak_core_ring:cluster_name(Ring),
-    {NumPartitions, PartitionList} = riak_core_ring:chash(Ring),
-    %% Convert a list of [{partition_id(), node()}, ...] into
-    %% #{partition_id() => {inet:ip_address(), inet:port_number()}}
-    {PartitionsWithInfo, _} = lists:foldl(fun({P, Node}, {PartitionInfo, IPMap}) ->
-        case maps:get(Node, IPMap, undefined) of
-            undefined ->
-                {IP, BluePort} = erpc:call(Node, grb_dc_utils, inter_dc_ip_port, []),
-                {ok, RedPort} = erpc:call(Node, application, get_env, [grb, inter_dc_red_port]),
-                {PartitionInfo#{P => {IP, {BluePort, RedPort}}}, IPMap#{Node => {IP, {BluePort, RedPort}}}};
-            {IP, Ports} ->
-                {PartitionInfo#{P => {IP, Ports}}, IPMap#{Node => {IP, Ports}}}
-        end
-    end, {#{}, #{}}, PartitionList),
-    #replica_descriptor{
-        replica_id=Id,
-        num_partitions=NumPartitions,
-        remote_addresses=PartitionsWithInfo
-    }.
--endif.
+    end, {#{}, #{}}, Indices),
+    PartitionInfo.
 
 %% @doc Commands this cluster to join to all given descriptors
 %%
@@ -372,8 +353,8 @@ connect_to_replicas(Descriptors) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     LocalId = riak_core_ring:cluster_name(Ring),
     LocalNodes = riak_core_ring:all_members(Ring),
-    {LocalNumPartitions, _} = riak_core_ring:chash(Ring),
-    connect_to_replicas(Descriptors, LocalId, LocalNodes, LocalNumPartitions).
+    NumPartitions = chash:size(riak_core_ring:chash(Ring)),
+    connect_to_replicas(Descriptors, LocalId, LocalNodes, NumPartitions).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal Functions

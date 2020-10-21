@@ -11,9 +11,6 @@
                   riak_core,
                   riak_core_lite_util,
                   ranch,
-                  syntax_tools,
-                  compiler,
-                  shackle,
                   pvc_proto,
                   runtime_tools,
                   recon

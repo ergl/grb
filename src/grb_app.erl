@@ -18,8 +18,7 @@ start(_StartType, _StartArgs) ->
             ok = register_vnodes(),
             ok = enable_debug_logs(),
             ok = grb_tcp_server:start_server(),
-            ok = grb_dc_connection_receiver:start_server(),
-            ok = grb_red_receiver:start_server(),
+            ok = grb_dc_connection_receiver:start_service(),
             {ok, Pid}
     end.
 

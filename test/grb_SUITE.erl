@@ -152,6 +152,7 @@ read_your_writes_test(C) ->
     CVC = update_transaction(Replica, Node, Partition, Key, Val, #{}),
     {Val, _} = read_only_transaction(Replica, Node, Partition, Key, CVC).
 
+-ifndef(BASIC_REPLICATION).
 propagate_updates_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     {Key, Val, CommitVC} = ?config(propagate_info, C),
@@ -161,6 +162,12 @@ propagate_updates_test(C) ->
         {Val, _} = read_only_transaction(Replica, Node, Partition, Key, CommitVC),
         ok
     end).
+-else.
+propagate_updates_test(_C) ->
+    %% There's no reliable way of marking when an update has been replicated
+    %% at another partition, uniform barrier won't help here.
+    ok.
+-endif.
 
 replication_queue_flush_test(C) ->
     ClusterMap = ?config(cluster_info, C),
