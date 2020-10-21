@@ -47,6 +47,9 @@
 -define(deliver, deliver_event).
 -define(prune, prune_event).
 
+-define(leader_queue_length_stat, {?MODULE, leader_message_queue}).
+-define(follower_queue_length_stat, {?MODULE, follower_message_queue}).
+
 -record(state, {
     partition :: partition_id(),
     replica_id = undefined :: replica_id() | undefined,
@@ -196,11 +199,13 @@ handle_command(fetch_red_table, _Sender, S0=#state{partition=Partition}) ->
 
 handle_command(init_leader, _Sender, S=#state{synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
+    ok = grb_measurements:create_stat(?leader_queue_length_stat),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
                                      synod_state=grb_paxos_state:leader()})};
 
 handle_command(init_follower, _Sender, S=#state{synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
+    ok = grb_measurements:create_stat(?follower_queue_length_stat),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
                                      synod_state=grb_paxos_state:follower()})};
 
@@ -234,6 +239,8 @@ handle_command({prepare, TxId, RS, WS, SnapshotVC},
                                      synod_state=LeaderState0,
                                      op_log_red_replica=LastRed}) ->
 
+    ok = grb_measurements:log_queue_length(?leader_queue_length_stat),
+
     {Result, LeaderState} = grb_paxos_state:prepare(TxId, RS, WS, SnapshotVC, LastRed, LeaderState0),
     ?LOG_DEBUG("~p: ~p prepared as ~p, reply to coordinator ~p", [Partition, TxId, Result, Coordinator]),
     case Result of
@@ -257,6 +264,8 @@ handle_command({accept, Ballot, TxId, RS, WS, Vote, PrepareVC}, Coordinator, S0=
                                                                                        partition=Partition,
                                                                                        synod_state=FollowerState0,
                                                                                        decision_buffer=DecisionBuffer0}) ->
+
+    ok = grb_measurements:log_queue_length(?follower_queue_length_stat),
 
     ?LOG_DEBUG("~p: ACCEPT(~b, ~p, ~p), reply to coordinator ~p", [Partition, Ballot, TxId, Vote, Coordinator]),
     {ok, FollowerState} = grb_paxos_state:accept(Ballot, TxId, RS, WS, Vote, PrepareVC, FollowerState0),
@@ -437,6 +446,7 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_state=SynodStat
             {ok, S};
 
         not_prepared ->
+            ok = grb_measurements:log_counter({?MODULE, out_of_order_decision}),
             ?LOG_DEBUG("~p: DECIDE(~b, ~p) := not_prepared, buffering", [S#state.partition, Ballot, TxId]),
             %% buffer the decision and reserve our commit spot
             %% until we receive a matching ACCEPT from the leader

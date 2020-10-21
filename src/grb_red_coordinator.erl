@@ -103,6 +103,7 @@ handle_cast({commit_init, Promise, Partition, TxId, SnapshotVC, Prepares}, S0=#s
             init_tx_and_send(Promise, TxId, SnapshotVC, Prepares, S0);
         false ->
             ?LOG_DEBUG("registering barrier for ~w", [TxId]),
+            ok = grb_measurements:log_counter({?MODULE, pre_commit_barrier}),
             grb_propagation_vnode:register_red_uniform_barrier(Partition, Timestamp, Pid, TxId),
             init_tx(Promise, TxId, SnapshotVC, Prepares, S0)
     end,
