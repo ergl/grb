@@ -323,11 +323,11 @@ stop_propagation_processes() ->
 replica_descriptor() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     Id = riak_core_ring:cluster_name(Ring),
-    {NumPartitions, PartitionList} = riak_core_ring:chash(Ring),
-    PartitionsWithInfo = build_remote_addresses(PartitionList),
+    Chash = riak_core_ring:chash(Ring),
+    PartitionsWithInfo = build_remote_addresses(chash:nodes(Chash)),
     #replica_descriptor{
         replica_id=Id,
-        num_partitions=NumPartitions,
+        num_partitions=chash:size(Chash),
         remote_addresses=PartitionsWithInfo
     }.
 
@@ -353,8 +353,8 @@ connect_to_replicas(Descriptors) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     LocalId = riak_core_ring:cluster_name(Ring),
     LocalNodes = riak_core_ring:all_members(Ring),
-    {LocalNumPartitions, _} = riak_core_ring:chash(Ring),
-    connect_to_replicas(Descriptors, LocalId, LocalNodes, LocalNumPartitions).
+    NumPartitions = chash:size(riak_core_ring:chash(Ring)),
+    connect_to_replicas(Descriptors, LocalId, LocalNodes, NumPartitions).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal Functions
