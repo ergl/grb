@@ -83,11 +83,11 @@ red_accept(Coordinator, Ballot, Vote, TxId, RS, WS, PrepareVC) ->
 red_accept_ack(DstNode, Ballot, Vote, TxId, PrepareVC) ->
     encode_msg(#red_accept_ack{target_node=DstNode, ballot=Ballot, decision=Vote, tx_id=TxId, prepare_vc=PrepareVC}).
 
--spec red_decision(ballot(), red_vote(), term(), vclock()) -> ok.
+-spec red_decision(ballot(), red_vote(), term(), vclock()) -> binary().
 red_decision(Ballot, Decision, TxId, CommitVC) ->
     encode_msg(#red_decision{ballot=Ballot, decision=Decision, tx_id=TxId, commit_vc=CommitVC}).
 
--spec red_already_decided(node(), red_vote(), term(), vclock()) -> ok.
+-spec red_already_decided(node(), red_vote(), term(), vclock()) -> binary().
 red_already_decided(DstNode, Decision, TxId, CommitVC) ->
     encode_msg(#red_already_decided{target_node=DstNode, decision=Decision, tx_id=TxId, commit_vc=CommitVC}).
 
