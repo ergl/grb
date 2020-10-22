@@ -85,9 +85,9 @@
     %% as well as the uniformVC entry for the local replica.
     {local_broadcast_interval, ${BCAST_KNOWN_VC_INTERVAL_MS}},
 
-    %% Number of ms to wait before re-checking `wait` statements on OP_REQUEST
+    %% Number of ms to wait before re-checking `wait` statements on GET_KEY_VSN
     %% and COMMIT_BLUE.
-    {op_prepare_wait_ms, ${OP_CHECK_RETRY_MS}},
+    {partition_ready_wait_ms, ${PARTITION_RETRY_MS}},
 
     %% How often to prune the logs of all replicas
     {prune_committed_blue_interval, ${COMMITTED_BLUE_PRUNE_INTERVAL_MS}},

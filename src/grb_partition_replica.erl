@@ -12,7 +12,7 @@
 -export([start_link/2]).
 
 %% protocol api
--export([async_op/5,
+-export([async_key_vsn/4,
          decide_blue/3]).
 
 %% replica management API
@@ -90,10 +90,10 @@ replica_ready(Partition, N) ->
 %% Protocol API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec async_op(grb_promise:t(), partition_id(), key(), vclock(), val()) -> ok.
-async_op(Promise, Partition, Key, VC, Val) ->
+-spec async_key_vsn(grb_promise:t(), partition_id(), key(), vclock()) -> ok.
+async_key_vsn(Promise, Partition, Key, VC) ->
     Target = random_replica(Partition),
-    gen_server:cast(Target, {perform_op, Promise, Key, VC, Val}).
+    gen_server:cast(Target, {key_vsn, Promise, Key, VC}).
 
 -spec decide_blue(partition_id(), _, vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->
@@ -107,11 +107,11 @@ decide_blue(Partition, TxId, VC) ->
 init([Partition, Id]) ->
     Self = generate_replica_name(Partition, Id),
     OpLog = grb_main_vnode:op_log_table(Partition),
-    {ok, OpWait} = application:get_env(grb, op_prepare_wait_ms),
+    {ok, WaitMs} = application:get_env(grb, partition_ready_wait_ms),
     {ok, #state{self=Self,
                 partition=Partition,
                 replica_id=grb_dc_manager:replica_id(),
-                known_barrier_wait_ms=OpWait,
+                known_barrier_wait_ms=WaitMs,
                 oplog_replica = OpLog}}.
 
 handle_call(ready, _From, State) ->
@@ -123,8 +123,8 @@ handle_call(shutdown, _From, State) ->
 handle_call(_Request, _From, _State) ->
     erlang:error(not_implemented).
 
-handle_cast({perform_op, Promise, Key, VC, Val}, State) ->
-    ok = perform_op_wait(Promise, Key, VC, Val, State),
+handle_cast({key_vsn, Promise, Key, VC}, State) ->
+    ok = key_vsn_wait(Promise, Key, VC, State),
     {noreply, State};
 
 handle_cast({decide_blue, TxId, VC}, State=#state{replica_id=ReplicaId, known_barrier_wait_ms=WaitMs}) ->
@@ -134,8 +134,8 @@ handle_cast({decide_blue, TxId, VC}, State=#state{replica_id=ReplicaId, known_ba
 handle_cast(_Request, _State) ->
     erlang:error(not_implemented).
 
-handle_info({retry_op_wait, Promise, Key, VC, Val}, State) ->
-    ok = perform_op_wait(Promise, Key, VC, Val, State),
+handle_info({retry_key_vsn_wait, Promise, Key, VC}, State) ->
+    ok = key_vsn_wait(Promise, Key, VC, State),
     {noreply, State};
 
 handle_info({retry_decide, TxId, VC}, State=#state{replica_id=ReplicaId, known_barrier_wait_ms=WaitMs}) ->
@@ -150,23 +150,22 @@ handle_info(Info, State) ->
 %% Internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec perform_op_wait(Promise :: grb_promise:t(),
-                      Key :: key(),
-                      SnapshotVC :: vclock(),
-                      Val :: val(),
-                      State :: #state{}) -> ok.
+-spec key_vsn_wait(Promise :: grb_promise:t(),
+                   Key :: key(),
+                   SnapshotVC :: vclock(),
+                   State :: #state{}) -> ok.
 
-perform_op_wait(Promise, Key, SnapshotVC, Val, #state{partition=Partition,
-                                                      replica_id=ReplicaId,
-                                                      oplog_replica=OpLogReplica,
-                                                      known_barrier_wait_ms=WaitMs}) ->
+key_vsn_wait(Promise, Key, SnapshotVC, #state{partition=Partition,
+                                              replica_id=ReplicaId,
+                                              oplog_replica=OpLogReplica,
+                                              known_barrier_wait_ms=WaitMs}) ->
 
     case grb_propagation_vnode:partition_ready(Partition, ReplicaId, SnapshotVC) of
         not_ready ->
-            erlang:send_after(WaitMs, self(), {retry_op_wait, Promise, Key, SnapshotVC, Val}),
+            erlang:send_after(WaitMs, self(), {retry_key_vsn_wait, Promise, Key, SnapshotVC}),
             ok;
         ready ->
-            grb_promise:resolve(grb_main_vnode:perform_operation_with_table(OpLogReplica, Key, SnapshotVC, Val),
+            grb_promise:resolve(grb_main_vnode:get_key_version_with_table(OpLogReplica, Key, SnapshotVC),
                                 Promise)
     end.
 

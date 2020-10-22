@@ -11,15 +11,15 @@
          load/1,
          uniform_barrier/3,
          start_transaction/2,
-         try_operation/4,
-         async_operation/5,
+         try_key_vsn/3,
+         async_key_vsn/4,
          prepare_blue/4,
          decide_blue/3,
          commit_red/5]).
 
 -ifdef(TEST).
 -export([sync_uniform_barrier/2,
-         sync_perform_op/4]).
+         sync_key_vsn/3]).
 -endif.
 
 %% Called by rel
@@ -110,19 +110,19 @@ start_transaction(Partition, ClientVC) ->
 -endif.
 -endif.
 
--spec try_operation(partition_id(), key(), vclock(), val()) -> {ok, val()} | not_ready.
-try_operation(Partition, Key, SnapshotVC, Value) ->
+-spec try_key_vsn(partition_id(), key(), vclock()) -> {ok, val()} | not_ready.
+try_key_vsn(Partition, Key, SnapshotVC) ->
     ok = try_operation_prologue(Partition, SnapshotVC),
     case grb_propagation_vnode:partition_ready(Partition, SnapshotVC) of
         not_ready ->
             not_ready;
         ready ->
-            grb_main_vnode:perform_operation(Partition, Key, SnapshotVC, Value)
+            grb_main_vnode:get_key_version(Partition, Key, SnapshotVC)
     end.
 
--spec async_operation(grb_promise:t(), partition_id(), key(), vclock(), val()) -> ok.
-async_operation(Promise, Partition, Key, SnapshotVC, Val) ->
-    grb_partition_replica:async_op(Promise, Partition, Key, SnapshotVC, Val).
+-spec async_key_vsn(grb_promise:t(), partition_id(), key(), vclock()) -> ok.
+async_key_vsn(Promise, Partition, Key, SnapshotVC) ->
+    grb_partition_replica:async_key_vsn(Promise, Partition, Key, SnapshotVC).
 
 -spec prepare_blue(partition_id(), any(), any(), vclock()) -> non_neg_integer().
 prepare_blue(Partition, TxId, WriteSet, VC) ->
@@ -176,14 +176,14 @@ sync_uniform_barrier(Partition, CVC) ->
             Result
     end.
 
--spec sync_perform_op(partition_id(), key(), vclock(), val()) -> {ok, val()}.
-sync_perform_op(Partition, Key, VC, Val) ->
-    case try_operation(Partition, Key, VC, Val) of
+-spec sync_key_vsn(partition_id(), key(), vclock()) -> {ok, val()}.
+sync_key_vsn(Partition, Key, VC) ->
+    case try_key_vsn(Partition, Key, VC) of
         {ok, Return} ->
             {ok, Return};
         not_ready ->
             Ref = make_ref(),
-            async_operation(grb_promise:new(self(), Ref), Partition, Key, VC, Val),
+            async_key_vsn(grb_promise:new(self(), Ref), Partition, Key, VC),
             receive
                 {'$grb_promise_resolve', Result, Ref} ->
                     Result

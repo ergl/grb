@@ -37,8 +37,8 @@ if [ -z "$SELF_HB_INTERVAL_MS" ]; then
   export SELF_HB_INTERVAL_MS=5
 fi
 
-if [ -z "$OP_CHECK_RETRY_MS" ]; then
-  export OP_CHECK_RETRY_MS=5
+if [ -z "$PARTITION_RETRY_MS" ]; then
+  export PARTITION_RETRY_MS=5
 fi
 
 if [ -z "$REPLICATION_INTERVAL_MS" ]; then

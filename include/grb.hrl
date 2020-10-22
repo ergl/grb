@@ -23,8 +23,8 @@
 -define(RED_REPLICA, red).
 
 %% Opaque types
--type key() :: term().
--type val() :: term().
+-type key() :: binary().
+-type val() :: binary().
 
 %% todo(borja, crdt): change operation type when adding crdt lib
 -type readset() :: [key()].

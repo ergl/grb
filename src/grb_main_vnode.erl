@@ -8,8 +8,8 @@
          last_red_table/1]).
 
 %% Public API
--export([perform_operation/4,
-         perform_operation_with_table/4,
+-export([get_key_version/3,
+         get_key_version_with_table/3,
          prepare_blue/4,
          decide_blue_ready/1,
          decide_blue_ready/2,
@@ -89,39 +89,31 @@ last_red_table(Partition) ->
 %%% API
 %%%===================================================================
 
--spec perform_operation(partition_id(), key(), vclock(), val()) -> {ok, val()}.
-perform_operation(Partition, Key, SnapshotVC, Value) ->
-    perform_operation_with_table(op_log_table(Partition), Key, SnapshotVC, Value).
+-spec get_key_version(partition_id(), key(), vclock()) -> {ok, val()}.
+get_key_version(Partition, Key, SnapshotVC) ->
+    get_key_version_with_table(op_log_table(Partition), Key, SnapshotVC).
 
 %% todo(borja, crdts): Should use LWW, aggregate operations on top of given op
 %%
 %% Right now it only reads the last version below SnapshotVC, but it should aggregate
 %% the chosen operations on top of the given value (or operation)
--spec perform_operation_with_table(cache_id(), key(), vclock(), val()) -> {ok, val()}.
-perform_operation_with_table(OpLogTable, Key, SnapshotVC, Value) ->
-    BottomValue = resolve_bottom_value(Value),
+-spec get_key_version_with_table(cache_id(), key(), vclock()) -> {ok, val()}.
+get_key_version_with_table(OpLogTable, Key, SnapshotVC) ->
+    Bottom = grb_dc_utils:get_default_bottom_value(),
     case ets:lookup(OpLogTable, Key) of
         [] ->
-            {ok, BottomValue};
+            {ok, Bottom};
 
         [{Key, VersionLog}] ->
             case grb_version_log:get_first_lower(SnapshotVC, VersionLog) of
                 undefined ->
-                    {ok, BottomValue};
+                    {ok, Bottom};
 
                 {_, LastValue, _LastCommitVC} ->
                     %% todo(borja, efficiency): Remove clock from return if we don't use it
-                    {ok, resolve_value(Value, LastValue)}
+                    {ok, LastValue}
             end
     end.
-
--spec resolve_bottom_value(val()) -> val().
-resolve_bottom_value(<<>>) -> grb_dc_utils:get_default_bottom_value();
-resolve_bottom_value(Other) -> Other.
-
--spec resolve_value(val(), val()) -> val().
-resolve_value(<<>>, Last) -> Last;
-resolve_value(Any, _) -> Any.
 
 -spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
 prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
