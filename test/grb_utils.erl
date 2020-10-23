@@ -17,12 +17,15 @@
 
 log(#{msg := Msg}, _Config) ->
     Master = application:get_env(grb, ct_master, undefined),
-    Args = case Msg of
-        {report, Report} -> ["grb: report ~p", Report];
-        {string, Str} -> ["grb: ~s", Str];
-        {Format, Terms} -> ["grb: " ++ Format, Terms]
+    Arg = case Msg of
+        {report, Report} ->
+            io_lib:format("log report: ~p", [Report]);
+        {string, Str} ->
+            io_lib:format("string: ~s", [Str]);
+        {Format, Terms} ->
+            io_lib:format(Format, Terms)
     end,
-    _ = erpc:call(Master, ct, log, Args).
+    _ = erpc:call(Master, ct, log, [Arg]).
 
 ring_size() -> ?RING_SIZE.
 
