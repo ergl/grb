@@ -3,6 +3,10 @@
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-endif.
+
 %% ETS table API
 -export([op_log_table/1,
          last_red_table/1]).
@@ -45,6 +49,7 @@
 
 -define(OP_LOG_TABLE, op_log_table).
 -define(OP_LOG_LAST_RED, op_log_last_red_table).
+-define(PREPARED_TABLE, prepared_blue_table).
 
 -type op_log() :: cache(key(), grb_version_log:t()).
 -type last_red() :: cache(key(), #last_red_record{}).
@@ -55,7 +60,7 @@
     %% number of gen_servers replicating this vnode state
     replicas_n :: non_neg_integer(),
 
-    prepared_blue :: #{any() => {#{}, vclock()}},
+    prepared_blue :: cache_id(),
 
     blue_tick_interval :: non_neg_integer(),
     blue_tick_timer = undefined :: reference() | undefined,
@@ -67,6 +72,16 @@
 
     %% It doesn't make sense to append it if we're not connected to other clusters
     should_append_commit = true :: boolean()
+}).
+
+%% How a prepared blue transaction is structured,
+%% the key is a tuple of prepare time and transaction id.
+%% Since the ETS table is ordered, lower prepare times will go
+%% at the beggining of the table. A call to ets:first will get us
+%% the lower prepare timestamp in the table.
+-record(prepared_record, {
+    key :: {grb_time:ts(), term()},
+    writeset :: #{}
 }).
 
 -type state() :: #state{}.
@@ -84,6 +99,10 @@ op_log_table(Partition) ->
 -spec last_red_table(partition_id()) -> cache_id().
 last_red_table(Partition) ->
     persistent_term:get({?MODULE, Partition, ?OP_LOG_LAST_RED}).
+
+-spec prepared_blue_table(partition_id()) -> cache_id().
+prepared_blue_table(Partition) ->
+    persistent_term:get({?MODULE, Partition, ?PREPARED_TABLE}).
 
 %%%===================================================================
 %%% API
@@ -118,9 +137,8 @@ get_key_version_with_table(OpLogTable, Key, SnapshotVC) ->
 -spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
 prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
     Ts = grb_time:timestamp(),
-    ok = riak_core_vnode_master:command({Partition, node()},
-                                        {prepare_blue, TxId, WriteSet, SnapshotVC, Ts},
-                                        ?master),
+    ok = update_prepare_clocks(Partition, SnapshotVC),
+    ok = insert_prepared(Partition, TxId, WriteSet, Ts),
     Ts.
 
 -spec decide_blue_ready(vclock()) -> ready | not_ready.
@@ -204,9 +222,12 @@ init([Partition]) ->
     LastRedTable = ets:new(?OP_LOG_LAST_RED, [set, protected, {read_concurrency, true}, {keypos, #last_red_record.key}]),
     ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_LAST_RED}, LastRedTable),
 
+    PreparedBlue = ets:new(?PREPARED_TABLE, [ordered_set, public, {write_concurrency, true}, {keypos, #prepared_record.key}]),
+    ok = persistent_term:put({?MODULE, Partition, ?PREPARED_TABLE}, PreparedBlue),
+
     State = #state{partition = Partition,
                    replicas_n=NumReplicas,
-                   prepared_blue = #{},
+                   prepared_blue=PreparedBlue,
                    blue_tick_interval=BlueTickInterval,
                    op_log_size = KeyLogSize,
                    op_log = OpLogTable,
@@ -260,14 +281,9 @@ handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     Result = grb_partition_replica:replica_ready(P, N),
     {reply, Result, S};
 
-handle_command({prepare_blue, TxId, WS, SnapshotVC, Ts}, _From, S=#state{partition=Partition, prepared_blue=PB}) ->
-    ?LOG_DEBUG("prepare_blue ~p wtih time ~p", [TxId, Ts]),
-    ok = update_prepare_clocks(Partition, SnapshotVC),
-    {noreply, S#state{prepared_blue=PB#{TxId => {WS, Ts}}}};
-
 handle_command({decide_blue, TxId, VC}, _From, State) ->
-    NewState = decide_blue_internal(TxId, VC, State),
-    {reply, ok, NewState};
+    ok = decide_blue_internal(TxId, VC, State),
+    {reply, ok, State};
 
 handle_command({handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC}, _From, State) ->
     ok = handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, State),
@@ -296,6 +312,16 @@ handle_info(Msg, State) ->
     ?LOG_WARNING("~p unhandled_info ~p", [?MODULE, Msg]),
     {ok, State}.
 
+%%%===================================================================
+%%% Internal functions
+%%%===================================================================
+
+-spec insert_prepared(partition_id(), term(), writeset(), grb_time:ts()) -> ok.
+insert_prepared(Partition, TxId, WriteSet, PrepareTime) ->
+    true = ets:insert(prepared_blue_table(Partition),
+                      #prepared_record{key={PrepareTime, TxId}, writeset=WriteSet}),
+    ok.
+
 -spec handle_remote_tx_internal(replica_id(), term(), #{}, grb_time:ts(), vclock(), state()) -> ok.
 -ifdef(NO_REMOTE_APPEND).
 handle_remote_tx_internal(SourceReplica, _, WS, CommitTime, VC, #state{partition=Partition,
@@ -318,26 +344,37 @@ handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partit
 
 -endif.
 
--spec decide_blue_internal(term(), vclock(), state()) -> state().
-decide_blue_internal(TxId, VC, S=#state{partition=SelfPartition,
-                                        op_log=OpLog,
-                                        op_log_size=LogSize,
-                                        op_last_red=LastRed,
-                                        prepared_blue=PreparedBlue,
-                                        should_append_commit=ShouldAppend}) ->
+-spec decide_blue_internal(term(), vclock(), state()) -> ok.
+decide_blue_internal(TxId, VC, #state{partition=SelfPartition,
+                                      op_log=OpLog,
+                                      op_log_size=LogSize,
+                                      op_last_red=LastRed,
+                                      prepared_blue=PreparedBlue,
+                                      should_append_commit=ShouldAppend}) ->
 
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
-    {{WS, _}, PreparedBlue1} = maps:take(TxId, PreparedBlue),
+    {ok, WS} = get_prepared_writeset(PreparedBlue, TxId),
     ok = update_partition_state(WS, VC, OpLog, LogSize, LastRed),
-    KnownTime = compute_new_known_time(PreparedBlue1),
+    KnownTime = compute_new_known_time(PreparedBlue),
     case ShouldAppend of
         true ->
             grb_propagation_vnode:append_blue_commit(SelfPartition, KnownTime, TxId, WS, VC);
         false ->
             grb_propagation_vnode:handle_self_blue_heartbeat(SelfPartition, KnownTime)
     end,
-    S#state{prepared_blue=PreparedBlue1}.
+    ok.
+
+-spec get_prepared_writeset(cache_id(), term()) -> {ok, writeset()} | false.
+get_prepared_writeset(PreparedBlue, TxId) ->
+    case ets:select(PreparedBlue, [{ #prepared_record{key={'$1', TxId}, writeset='$2'}, [], [{{'$1', '$2'}}] }]) of
+        [{PrepareTs, WS}] ->
+            true = ets:delete(PreparedBlue, {PrepareTs, TxId}),
+            {ok, WS};
+        _ ->
+            %% todo(borja): Warn if more than one result?
+            false
+    end.
 
 -spec update_partition_state(WS :: #{},
                              CommitVC :: vclock(),
@@ -474,17 +511,15 @@ append_to_log(Type, Key, Value, CommitVC, OpLog, Size) ->
     end,
     grb_version_log:append({Type, Value, CommitVC}, Log).
 
--spec compute_new_known_time(#{any() => {#{}, vclock()}}) -> grb_time:ts().
-compute_new_known_time(PreparedBlue) when map_size(PreparedBlue) =:= 0 ->
-    grb_time:timestamp();
-
+-spec compute_new_known_time(cache_id()) -> grb_time:ts().
 compute_new_known_time(PreparedBlue) ->
-    MinPrep = maps:fold(fun
-        (_, {_, Ts}, ignore) -> Ts;
-        (_, {_, Ts}, Acc) -> erlang:min(Ts, Acc)
-    end, ignore, PreparedBlue),
-    ?LOG_DEBUG("knownVC[d] = min_prep (~p - 1)", [MinPrep]),
-    MinPrep - 1.
+    case ets:first(PreparedBlue) of
+        '$end_of_table' ->
+            grb_time:timestamp();
+        {Ts, _} ->
+            ?LOG_DEBUG("knownVC[d] = min_prep (~b - 1)", [Ts]),
+            Ts - 1
+    end.
 
 %%%===================================================================
 %%% Util Functions
@@ -538,3 +573,44 @@ handle_overload_command(_, _, _) ->
 
 handle_overload_info(_, _Idx) ->
     ok.
+
+-ifdef(TEST).
+
+grb_main_vnode_compute_new_known_time_test() ->
+    _ = ets:new(?PREPARED_TABLE, [ordered_set, named_table, {keypos, #prepared_record.key}]),
+    true = ets:insert(?PREPARED_TABLE, [
+        #prepared_record{key={1, tx_1}, writeset=#{}},
+        #prepared_record{key={3, tx_2}, writeset=#{}},
+        #prepared_record{key={10, tx_4}, writeset=#{}},
+        #prepared_record{key={50, tx_5}, writeset=#{}},
+        #prepared_record{key={5, tx_3}, writeset=#{}}
+    ]),
+
+    ?assertEqual(0, compute_new_known_time(?PREPARED_TABLE)),
+
+    %% If we remove the lowest, now tx_2 is the lowest tx in the queue
+    ?assertEqual({ok, #{}}, get_prepared_writeset(?PREPARED_TABLE, tx_1)),
+    ?assertEqual(2, compute_new_known_time(?PREPARED_TABLE)),
+
+    %% tx_3 was removed earlier, but it has a higher ts than tx_2, so tx_2 is still the lowest
+    ?assertEqual({ok, #{}}, get_prepared_writeset(?PREPARED_TABLE, tx_3)),
+    ?assertEqual(2, compute_new_known_time(?PREPARED_TABLE)),
+
+    %% now, tx_4 is the next in the queue, at ts 10-1
+    ?assertEqual({ok, #{}}, get_prepared_writeset(?PREPARED_TABLE, tx_2)),
+    ?assertEqual(9, compute_new_known_time(?PREPARED_TABLE)),
+
+    %% same with tx_5
+    ?assertEqual({ok, #{}}, get_prepared_writeset(?PREPARED_TABLE, tx_4)),
+    ?assertEqual(49, compute_new_known_time(?PREPARED_TABLE)),
+
+    ?assertEqual({ok, #{}}, get_prepared_writeset(?PREPARED_TABLE, tx_5)),
+    %% Now that the queue is empty, the time is the current clock
+    Ts = grb_time:timestamp(),
+    Lowest = compute_new_known_time(?PREPARED_TABLE),
+    ?assert(Ts < Lowest),
+
+    ets:delete(?PREPARED_TABLE),
+    ok.
+
+-endif.
