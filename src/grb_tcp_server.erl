@@ -139,6 +139,10 @@ handle_request('GetKeyVersion', Args, Context, State) ->
             reply_to_client(Return, Context, State)
     end;
 
+handle_request('GetKeyVersionAgain', Args, Contents, State) ->
+    #{partition := Partition, key := Key, snapshot_vc := SnapshotVC} = Args,
+    reply_to_client(grb:key_vsn_bypass(Partition, Key, SnapshotVC), Contents, State);
+
 handle_request('PrepareBlueNode', Args, Context, State) ->
     #{transaction_id := TxId, snapshot_vc := VC, prepares := Prepares} = Args,
     Votes = [ {ok, P, grb:prepare_blue(P, TxId, WS, VC)} || #{partition := P, writeset := WS} <- Prepares],

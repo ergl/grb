@@ -13,6 +13,7 @@
          start_transaction/2,
          try_key_vsn/3,
          async_key_vsn/4,
+         key_vsn_bypass/3,
          prepare_blue/4,
          decide_blue/3,
          commit_red/5]).
@@ -123,6 +124,10 @@ try_key_vsn(Partition, Key, SnapshotVC) ->
 -spec async_key_vsn(grb_promise:t(), partition_id(), key(), vclock()) -> ok.
 async_key_vsn(Promise, Partition, Key, SnapshotVC) ->
     grb_partition_replica:async_key_vsn(Promise, Partition, Key, SnapshotVC).
+
+-spec key_vsn_bypass(partition_id(), key(), vclock()) -> {ok, val()}.
+key_vsn_bypass(Partition, Key, SnapshotVC) ->
+    grb_main_vnode:get_key_version(Partition, Key, SnapshotVC).
 
 -spec prepare_blue(partition_id(), any(), any(), vclock()) -> non_neg_integer().
 prepare_blue(Partition, TxId, WriteSet, VC) ->
