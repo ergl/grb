@@ -114,8 +114,8 @@ handle_info(E, S) ->
 handle_request(ConnReplica, Partition, #blue_heartbeat{timestamp=Ts}) ->
     grb_propagation_vnode:handle_blue_heartbeat(Partition, ConnReplica, Ts);
 
-handle_request(ConnReplica, Partition, #replicate_tx{tx_id=TxId, writeset=WS, commit_vc=VC}) ->
-    grb_main_vnode:handle_replicate(Partition, ConnReplica, TxId, WS, VC);
+handle_request(ConnReplica, Partition, #replicate_tx{writeset=WS, commit_vc=VC}) ->
+    grb_main_vnode:handle_replicate(Partition, ConnReplica, WS, VC);
 
 handle_request(ConnReplica, Partition, #update_clocks{known_vc=KnownVC, stable_vc=StableVC}) ->
     grb_propagation_vnode:handle_clock_update(Partition, ConnReplica, KnownVC, StableVC);
@@ -126,8 +126,8 @@ handle_request(ConnReplica, Partition, #update_clocks_heartbeat{known_vc=KnownVC
 handle_request(_, Partition, #forward_heartbeat{replica=SourceReplica, timestamp=Ts}) ->
     grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, Ts);
 
-handle_request(_, Partition, #forward_transaction{replica=SourceReplica, tx_id=TxId, writeset=WS, commit_vc=VC}) ->
-    grb_main_vnode:handle_replicate(Partition, SourceReplica, TxId, WS, VC);
+handle_request(_, Partition, #forward_transaction{replica=SourceReplica, writeset=WS, commit_vc=VC}) ->
+    grb_main_vnode:handle_replicate(Partition, SourceReplica, WS, VC);
 
 handle_request(_, Partition, #red_prepare{coord_location=Coordinator, tx_id=TxId, readset=RS, writeset=WS, snapshot_vc=VC}) ->
     grb_paxos_vnode:prepare({Partition, node()}, TxId, RS, WS, VC, Coordinator);

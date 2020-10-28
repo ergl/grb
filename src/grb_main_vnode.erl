@@ -18,7 +18,7 @@
          decide_blue_ready/1,
          decide_blue_ready/2,
          decide_blue/3,
-         handle_replicate/5,
+         handle_replicate/4,
          handle_red_transaction/3]).
 
 %% riak_core_vnode callbacks
@@ -170,8 +170,8 @@ update_prepare_clocks(Partition, SnapshotVC) ->
     ok.
 -endif.
 
--spec handle_replicate(partition_id(), replica_id(), term(), #{}, vclock()) -> ok.
-handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
+-spec handle_replicate(partition_id(), replica_id(), #{}, vclock()) -> ok.
+handle_replicate(Partition, SourceReplica, WS, VC) ->
     CommitTime = grb_vclock:get_time(SourceReplica, VC),
     KnownTime = grb_propagation_vnode:known_time(Partition, SourceReplica),
     case KnownTime < CommitTime of
@@ -179,7 +179,7 @@ handle_replicate(Partition, SourceReplica, TxId, WS, VC) ->
             ok; %% de-dup, we already received this
         true ->
             riak_core_vnode_master:command({Partition, node()},
-                                           {handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC},
+                                           {handle_remote_tx, SourceReplica, WS, CommitTime, VC},
                                            ?master)
     end.
 
@@ -285,8 +285,8 @@ handle_command({decide_blue, TxId, VC}, _From, State) ->
     ok = decide_blue_internal(TxId, VC, State),
     {reply, ok, State};
 
-handle_command({handle_remote_tx, SourceReplica, TxId, WS, CommitTime, VC}, _From, State) ->
-    ok = handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, State),
+handle_command({handle_remote_tx, SourceReplica, WS, CommitTime, VC}, _From, State) ->
+    ok = handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, State),
     {noreply, State};
 
 handle_command({handle_red_tx, WS, VC}, _From, S=#state{op_log=OperationLog,
@@ -322,9 +322,9 @@ insert_prepared(Partition, TxId, WriteSet, PrepareTime) ->
                       #prepared_record{key={PrepareTime, TxId}, writeset=WriteSet}),
     ok.
 
--spec handle_remote_tx_internal(replica_id(), term(), #{}, grb_time:ts(), vclock(), state()) -> ok.
+-spec handle_remote_tx_internal(replica_id(), #{}, grb_time:ts(), vclock(), state()) -> ok.
 -ifdef(NO_REMOTE_APPEND).
-handle_remote_tx_internal(SourceReplica, _, WS, CommitTime, VC, #state{partition=Partition,
+handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{partition=Partition,
                                                                        op_log=OperationLog,
                                                                        op_log_size=LogSize,
                                                                        op_last_red=LastRed}) ->
@@ -334,12 +334,12 @@ handle_remote_tx_internal(SourceReplica, _, WS, CommitTime, VC, #state{partition
 
 -else.
 
-handle_remote_tx_internal(SourceReplica, TxId, WS, CommitTime, VC, #state{partition=Partition,
+handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{partition=Partition,
                                                                           op_log=OperationLog,
                                                                           op_log_size=LogSize,
                                                                           op_last_red=LastRed}) ->
     ok = update_partition_state(WS, VC, OperationLog, LogSize, LastRed),
-    ok = grb_propagation_vnode:append_remote_blue_commit(SourceReplica, Partition, CommitTime, TxId, WS, VC),
+    ok = grb_propagation_vnode:append_remote_blue_commit(SourceReplica, Partition, CommitTime, WS, VC),
     ok.
 
 -endif.
@@ -359,7 +359,7 @@ decide_blue_internal(TxId, VC, #state{partition=SelfPartition,
     KnownTime = compute_new_known_time(PreparedBlue),
     case ShouldAppend of
         true ->
-            grb_propagation_vnode:append_blue_commit(SelfPartition, KnownTime, TxId, WS, VC);
+            grb_propagation_vnode:append_blue_commit(SelfPartition, KnownTime, WS, VC);
         false ->
             grb_propagation_vnode:handle_self_blue_heartbeat(SelfPartition, KnownTime)
     end,

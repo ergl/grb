@@ -13,8 +13,8 @@
          connected_replicas/0,
          send_heartbeat/3,
          forward_heartbeat/4,
-         send_tx/3,
-         forward_tx/4,
+         send_tx/4,
+         forward_tx/5,
          send_clocks/4,
          send_clocks_heartbeat/4]).
 
@@ -131,19 +131,20 @@ forward_heartbeat(ToId, FromId, Partition, Time) ->
 
 -spec send_tx(ToId :: replica_id(),
               Partition :: partition_id(),
-              Tx :: {term(), #{}, vclock()}) -> ok | {error, term()}.
+              WS :: writeset(),
+              VC :: vclock()) -> ok | {error, term()}.
 
-%% todo(borja): unpack transaction at the callee
-send_tx(ToId, Partition, {TxId, WS, VC}) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:transaction(TxId, WS, VC)).
+send_tx(ToId, Partition, WS, VC) ->
+    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:transaction(WS, VC)).
 
 -spec forward_tx(ToId :: replica_id(),
                  FromId :: replica_id(),
                  Partition :: partition_id(),
-                 Tx :: {term(), #{}, vclock()}) -> ok | {error, term()}.
-%% todo(borja): unpack transaction at the callee
-forward_tx(ToId, FromId, Partition, {TxId, WS, VC}) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:forward_transaction(FromId, TxId, WS, VC)).
+                 WS :: writeset(),
+                 VC :: vclock()) -> ok | {error, term()}.
+
+forward_tx(ToId, FromId, Partition, WS, VC) ->
+    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:forward_transaction(FromId, WS, VC)).
 
 -spec send_clocks(ToId :: replica_id(),
                   Partition :: partition_id(),

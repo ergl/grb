@@ -14,13 +14,13 @@
 }).
 
 -type t() :: #state{}.
--type match() :: {term(), #{}, vclock()}.
+-type match() :: {writeset(), vclock()}.
 
 -export_type([t/0, match/0]).
 
 %% API
 -export([new/1,
-         insert/4,
+         insert/3,
          get_bigger/2,
          remove_leq/2]).
 
@@ -32,11 +32,11 @@
 new(AtId) ->
     #state{at=AtId, entries=orddict:new()}.
 
--spec insert(term(), #{}, vclock(), t()) -> t().
-insert(TxId, WS, CommitVC, S=#state{at=Id, entries=Entries}) ->
+-spec insert(writeset(), vclock(), t()) -> t().
+insert(WS, CommitVC, S=#state{at=Id, entries=Entries}) ->
     Key = grb_vclock:get_time(Id, CommitVC),
     %% todo(borja, warn): Beware of negating timestamps, if we change the type of grb_time:ts()
-    S#state{entries=orddict:store(-Key, {TxId, WS, CommitVC}, Entries)}.
+    S#state{entries=orddict:store(-Key, {WS, CommitVC}, Entries)}.
 
 %% @doc Get all entries with commit time at the created replica bigger than `Timestamp`
 %%
@@ -83,13 +83,13 @@ from_list(At, List) ->
     from_list_inner(List, new(At)).
 
 from_list_inner([], Log) -> Log;
-from_list_inner([{TxId, WS, CommitVC} | Rest], Log) ->
-    from_list_inner(Rest, insert(TxId, WS, CommitVC, Log)).
+from_list_inner([{WS, CommitVC} | Rest], Log) ->
+    from_list_inner(Rest, insert(WS, CommitVC, Log)).
 
 grb_blue_commit_log_get_bigger_ordered_test() ->
     MyReplicaID = '$dc_id',
     Entries = lists:map(fun(V) ->
-        {ignore, #{}, grb_vclock:set_time(MyReplicaID, V, grb_vclock:new())}
+        {#{}, grb_vclock:set_time(MyReplicaID, V, grb_vclock:new())}
     end, lists:seq(1, 50)),
     Log = grb_blue_commit_log:from_list(MyReplicaID, Entries),
 
@@ -107,17 +107,17 @@ grb_blue_commit_log_get_bigger_unordered_test() ->
     VClock = fun(N) -> grb_vclock:set_time(MyReplicaID, N, grb_vclock:new()) end,
 
     Entries = [
-        {ignore, #{}, VClock(2)},
-        {ignore, #{}, VClock(1)},
-        {ignore, #{}, VClock(3)},
-        {ignore, #{}, VClock(4)},
-        {ignore, #{}, VClock(7)},
-        {ignore, #{}, VClock(5)},
-        {ignore, #{}, VClock(6)},
-        {ignore, #{}, VClock(9)},
-        {ignore, #{}, VClock(8)}
+        {#{}, VClock(2)},
+        {#{}, VClock(1)},
+        {#{}, VClock(3)},
+        {#{}, VClock(4)},
+        {#{}, VClock(7)},
+        {#{}, VClock(5)},
+        {#{}, VClock(6)},
+        {#{}, VClock(9)},
+        {#{}, VClock(8)}
     ],
-    SortedList = lists:sort(fun({_, _, LeftVC}, {_, _, RightVC}) ->
+    SortedList = lists:sort(fun({_, LeftVC}, {_, RightVC}) ->
         grb_vclock:get_time(MyReplicaID, LeftVC) =< grb_vclock:get_time(MyReplicaID, RightVC)
     end, Entries),
 
@@ -136,7 +136,7 @@ grb_blue_commit_log_get_bigger_unordered_test() ->
 grb_blue_commit_log_remove_bigger_ordered_test() ->
     MyReplicaID = '$dc_id',
     Entries = lists:map(fun(V) ->
-        {ignore, #{}, grb_vclock:set_time(MyReplicaID, V, grb_vclock:new())}
+        {#{}, grb_vclock:set_time(MyReplicaID, V, grb_vclock:new())}
     end, lists:seq(1, 50)),
     Log = grb_blue_commit_log:from_list(MyReplicaID, Entries),
 
@@ -159,17 +159,17 @@ grb_blue_commit_log_remove_bigger_unordered_test() ->
     VClock = fun(N) -> grb_vclock:set_time(MyReplicaID, N, grb_vclock:new()) end,
 
     Entries = [
-        {ignore, #{}, VClock(2)},
-        {ignore, #{}, VClock(1)},
-        {ignore, #{}, VClock(3)},
-        {ignore, #{}, VClock(4)},
-        {ignore, #{}, VClock(7)},
-        {ignore, #{}, VClock(5)},
-        {ignore, #{}, VClock(6)},
-        {ignore, #{}, VClock(9)},
-        {ignore, #{}, VClock(8)}
+        {#{}, VClock(2)},
+        {#{}, VClock(1)},
+        {#{}, VClock(3)},
+        {#{}, VClock(4)},
+        {#{}, VClock(7)},
+        {#{}, VClock(5)},
+        {#{}, VClock(6)},
+        {#{}, VClock(9)},
+        {#{}, VClock(8)}
     ],
-    SortedList = lists:sort(fun({_, _, LeftVC}, {_, _, RightVC}) ->
+    SortedList = lists:sort(fun({_, LeftVC}, {_, RightVC}) ->
         grb_vclock:get_time(MyReplicaID, LeftVC) =< grb_vclock:get_time(MyReplicaID, RightVC)
     end, Entries),
 
@@ -187,11 +187,11 @@ grb_blue_commit_log_remove_bigger_unordered_test() ->
     ?assertEqual(lists:sublist(SortedList, 6, 9), SomeMatches),
     %% Same as above, in the same order, but removing elements bigger than 5
     Resulting = grb_blue_commit_log:from_list(MyReplicaID, [
-        {ignore, #{}, VClock(2)},
-        {ignore, #{}, VClock(1)},
-        {ignore, #{}, VClock(3)},
-        {ignore, #{}, VClock(4)},
-        {ignore, #{}, VClock(5)}
+        {#{}, VClock(2)},
+        {#{}, VClock(1)},
+        {#{}, VClock(3)},
+        {#{}, VClock(4)},
+        {#{}, VClock(5)}
     ]),
     ?assertEqual(Resulting, Log3).
 -endif.
@@ -199,7 +199,7 @@ grb_blue_commit_log_remove_bigger_unordered_test() ->
 grb_blue_commit_log_remove_leq_ordered_test() ->
     MyReplicaID = '$dc_id',
     Entries = lists:map(fun(V) ->
-        {ignore, #{}, grb_vclock:set_time(MyReplicaID, V, grb_vclock:new())}
+        {#{}, grb_vclock:set_time(MyReplicaID, V, grb_vclock:new())}
     end, lists:seq(1, 50)),
     Log = grb_blue_commit_log:from_list(MyReplicaID, Entries),
 
@@ -219,15 +219,15 @@ grb_blue_commit_log_remove_leq_unordered_test() ->
     VClock = fun(N) -> grb_vclock:set_time(MyReplicaID, N, grb_vclock:new()) end,
 
     Entries = [
-        {ignore, #{}, VClock(2)},
-        {ignore, #{}, VClock(1)},
-        {ignore, #{}, VClock(3)},
-        {ignore, #{}, VClock(4)},
-        {ignore, #{}, VClock(7)},
-        {ignore, #{}, VClock(5)},
-        {ignore, #{}, VClock(6)},
-        {ignore, #{}, VClock(9)},
-        {ignore, #{}, VClock(8)}
+        {#{}, VClock(2)},
+        {#{}, VClock(1)},
+        {#{}, VClock(3)},
+        {#{}, VClock(4)},
+        {#{}, VClock(7)},
+        {#{}, VClock(5)},
+        {#{}, VClock(6)},
+        {#{}, VClock(9)},
+        {#{}, VClock(8)}
     ],
 
     Log = grb_blue_commit_log:from_list(MyReplicaID, Entries),
@@ -241,10 +241,10 @@ grb_blue_commit_log_remove_leq_unordered_test() ->
     Log3 = grb_blue_commit_log:remove_leq(5, Log),
     %% Same as above, in the same order, but removing elements lower or equal than 5
     Resulting = grb_blue_commit_log:from_list(MyReplicaID, [
-        {ignore, #{}, VClock(7)},
-        {ignore, #{}, VClock(6)},
-        {ignore, #{}, VClock(9)},
-        {ignore, #{}, VClock(8)}
+        {#{}, VClock(7)},
+        {#{}, VClock(6)},
+        {#{}, VClock(9)},
+        {#{}, VClock(8)}
     ]),
     ?assertEqual(Resulting, Log3).
 

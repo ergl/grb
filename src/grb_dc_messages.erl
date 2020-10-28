@@ -11,10 +11,10 @@
          blue_heartbeat/1,
          clocks/2,
          clocks_heartbeat/2,
-         transaction/3]).
+         transaction/2]).
 
 -export([forward_heartbeat/2,
-         forward_transaction/4]).
+         forward_transaction/3]).
 
 -export([red_heartbeat/3,
          red_heartbeat_ack/3,
@@ -38,9 +38,9 @@ ping(ReplicaId, Partition) ->
 blue_heartbeat(Time) ->
     encode_msg(#blue_heartbeat{timestamp=Time}).
 
--spec transaction(term(), writeset(), vclock()) -> binary().
-transaction(TxId, Writeset, CommitVC) ->
-    encode_msg(#replicate_tx{tx_id=TxId, writeset=Writeset, commit_vc=CommitVC}).
+-spec transaction(writeset(), vclock()) -> binary().
+transaction(Writeset, CommitVC) ->
+    encode_msg(#replicate_tx{writeset=Writeset, commit_vc=CommitVC}).
 
 -spec clocks(vclock(), vclock()) -> binary().
 clocks(KnownVC, StableVC) ->
@@ -54,9 +54,9 @@ clocks_heartbeat(KnownVC, StableVC) ->
 forward_heartbeat(ReplicaId, Time) ->
     encode_msg(#forward_heartbeat{replica=ReplicaId, timestamp=Time}).
 
--spec forward_transaction(replica_id(), term(), writeset(), vclock()) -> binary().
-forward_transaction(ReplicaId, TxId, Writeset, CommitVC) ->
-    encode_msg(#forward_transaction{replica=ReplicaId, tx_id=TxId, writeset=Writeset, commit_vc=CommitVC}).
+-spec forward_transaction(replica_id(), writeset(), vclock()) -> binary().
+forward_transaction(ReplicaId, Writeset, CommitVC) ->
+    encode_msg(#forward_transaction{replica=ReplicaId, writeset=Writeset, commit_vc=CommitVC}).
 
 -spec red_heartbeat(ballot(), term(), grb_time:ts()) -> binary().
 red_heartbeat(Ballot, Id, Time) ->
@@ -101,8 +101,8 @@ encode_msg(Payload) ->
 encode_payload(#blue_heartbeat{timestamp=Ts}) ->
     {?BLUE_HB_KIND, term_to_binary(Ts)};
 
-encode_payload(#replicate_tx{tx_id=TxId, writeset=WS, commit_vc=CommitVC}) ->
-    {?REPL_TX_KIND, term_to_binary({TxId, WS, CommitVC})};
+encode_payload(#replicate_tx{writeset=WS, commit_vc=CommitVC}) ->
+    {?REPL_TX_KIND, term_to_binary({WS, CommitVC})};
 
 encode_payload(#update_clocks{known_vc=KnownVC, stable_vc=StableVC}) ->
     {?UPDATE_CLOCK_KIND, term_to_binary({KnownVC, StableVC})};
@@ -114,8 +114,8 @@ encode_payload(#update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}) -
 encode_payload(#forward_heartbeat{replica=ReplicaId, timestamp=Ts}) ->
     {?FWD_BLUE_HB_KIND, term_to_binary({ReplicaId, Ts})};
 
-encode_payload(#forward_transaction{replica=ReplicaId, tx_id=TxId, writeset=WS, commit_vc=CommitVC}) ->
-    {?FWD_BLUE_TX_KIND, term_to_binary({ReplicaId, TxId, WS, CommitVC})};
+encode_payload(#forward_transaction{replica=ReplicaId, writeset=WS, commit_vc=CommitVC}) ->
+    {?FWD_BLUE_TX_KIND, term_to_binary({ReplicaId, WS, CommitVC})};
 
 %% red payloads
 
@@ -152,8 +152,8 @@ decode_payload(<<?BLUE_HB_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     #blue_heartbeat{timestamp=binary_to_term(Payload)};
 
 decode_payload(<<?REPL_TX_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {Tx, WS, CommitVC} = binary_to_term(Payload),
-    #replicate_tx{tx_id=Tx, writeset=WS, commit_vc=CommitVC};
+    {WS, CommitVC} = binary_to_term(Payload),
+    #replicate_tx{writeset=WS, commit_vc=CommitVC};
 
 decode_payload(<<?UPDATE_CLOCK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {KnownVC, StableVC} = binary_to_term(Payload),
@@ -168,8 +168,8 @@ decode_payload(<<?FWD_BLUE_HB_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     #forward_heartbeat{replica=FromReplica, timestamp=Ts};
 
 decode_payload(<<?FWD_BLUE_TX_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {FromReplica, Tx, WS, CommitVC} = binary_to_term(Payload),
-    #forward_transaction{replica=FromReplica, tx_id=Tx, writeset=WS, commit_vc=CommitVC};
+    {FromReplica, WS, CommitVC} = binary_to_term(Payload),
+    #forward_transaction{replica=FromReplica, writeset=WS, commit_vc=CommitVC};
 
 decode_payload(<<?RED_PREPARE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {Coordinator, Tx, RS, WS, VC} = binary_to_term(Payload),
@@ -222,11 +222,11 @@ grb_dc_message_utils_test() ->
 
     Payloads = [
         #blue_heartbeat{timestamp=10},
-        #replicate_tx{tx_id=ignore, writeset=#{foo => bar}, commit_vc=VC},
+        #replicate_tx{writeset=#{foo => bar}, commit_vc=VC},
         #update_clocks{known_vc=VC, stable_vc=VC},
         #update_clocks_heartbeat{known_vc=VC, stable_vc=VC},
         #forward_heartbeat{replica=ReplicaId, timestamp=10},
-        #forward_transaction{replica=ReplicaId, tx_id=ignore, writeset=#{foo => bar}, commit_vc=VC},
+        #forward_transaction{replica=ReplicaId, writeset=#{foo => bar}, commit_vc=VC},
 
         #red_prepare{coord_location=Coordinator, tx_id=ignore, readset=[foo], writeset=#{foo => bar}, snapshot_vc=VC},
         #red_accept{coord_location=Coordinator, tx_id=ignore, readset=[foo], writeset=#{foo => bar}, decision=ok, prepare_vc=VC},

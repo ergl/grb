@@ -12,13 +12,13 @@
 
 -type t() :: cache_id().
 -type index() :: ets:continuation().
--type match() :: {term(), #{}, vclock()}.
+-type match() :: {writeset(), vclock()}.
 -export_type([t/0, index/0, match/0]).
 
 %% API
 -export([new/0,
          delete/1,
-         insert/5,
+         insert/4,
          get_bigger/2,
          get_bigger_iterator/3,
          get_bigger_continue/1,
@@ -28,9 +28,9 @@
 new() ->
     ets:new(?TABLE_NAME, ?TABLE_OPTS).
 
--spec insert(grb_time:ts(), term(), #{}, vclock(), t()) -> ok.
-insert(CommitTime, TxId, WS, CommitVC, Table) ->
-    true = ets:insert(Table, {CommitTime, {TxId, WS, CommitVC}}),
+-spec insert(grb_time:ts(), writeset(), vclock(), t()) -> ok.
+insert(CommitTime, WS, CommitVC, Table) ->
+    true = ets:insert(Table, {CommitTime, {WS, CommitVC}}),
     ok.
 
 -spec delete(t()) -> ok.
@@ -73,23 +73,23 @@ to_list(Table) ->
 
 from_list(At, List) ->
     Table = new(),
-    lists:foreach(fun({TxId, WS, CVC}) ->
-        insert(grb_vclock:get_time(At, CVC), TxId, WS, CVC, Table)
+    lists:foreach(fun({WS, CVC}) ->
+        insert(grb_vclock:get_time(At, CVC), WS, CVC, Table)
     end, List),
     Table.
 
 grb_remote_commit_log_insert_test() ->
     Replica = '$dc_id',
     L = grb_remote_commit_log:new(),
-    ok = grb_remote_commit_log:insert(0, tx_1, #{}, #{Replica => 0}, L),
-    ok = grb_remote_commit_log:insert(0, tx_2, #{}, #{Replica => 0}, L),
+    ok = grb_remote_commit_log:insert(0, #{a => b}, #{Replica => 0}, L),
+    ok = grb_remote_commit_log:insert(0, #{a => c}, #{Replica => 0}, L),
     %% Only the last element is kept, but this should be rare
-    ?assertEqual([{tx_2, #{}, #{Replica => 0}}], grb_remote_commit_log:to_list(L)).
+    ?assertEqual([{#{a => c}, #{Replica => 0}}], grb_remote_commit_log:to_list(L)).
 
 grb_remote_commit_log_get_bigger_test() ->
     Replica = '$dc_id',
     Entries = lists:map(fun(V) ->
-        {ignore, #{}, grb_vclock:set_time(Replica, V, grb_vclock:new())}
+        {#{}, grb_vclock:set_time(Replica, V, grb_vclock:new())}
     end, lists:seq(1, 50)),
     Log = grb_remote_commit_log:from_list(Replica, Entries),
 
@@ -106,7 +106,7 @@ grb_remote_commit_log_get_bigger_test() ->
 grb_remote_commit_log_get_bigger_iterator_test() ->
     Replica = '$dc_id',
     Entries = lists:map(fun(V) ->
-        {ignore, #{}, grb_vclock:set_time(Replica, V, grb_vclock:new())}
+        {#{}, grb_vclock:set_time(Replica, V, grb_vclock:new())}
     end, lists:seq(1, 50)),
     Log = grb_remote_commit_log:from_list(Replica, Entries),
 
@@ -123,7 +123,7 @@ grb_remote_commit_log_get_bigger_iterator_test() ->
 grb_remote_commit_log_remove_leq_test() ->
     Replica = '$dc_id',
     Entries = lists:map(fun(V) ->
-        {ignore, #{}, grb_vclock:set_time(Replica, V, grb_vclock:new())}
+        {#{}, grb_vclock:set_time(Replica, V, grb_vclock:new())}
     end, lists:seq(1, 50)),
     Log = grb_remote_commit_log:from_list(Replica, Entries),
 

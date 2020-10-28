@@ -37,7 +37,6 @@
 }).
 
 -record(replicate_tx, {
-    tx_id :: term(),
     writeset :: #{},
     commit_vc :: vclock()
 }).
@@ -59,7 +58,6 @@
 
 -record(forward_transaction, {
     replica :: replica_id(),
-    tx_id :: term(),
     writeset :: #{},
     commit_vc :: vclock()
 }).
