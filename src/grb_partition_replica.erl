@@ -17,7 +17,7 @@
 
 %% replica management API
 -export([start_replicas/2,
-         stop_replicas/2,
+         stop_replicas/1,
          replica_ready/2]).
 
 %% gen_server callbacks
@@ -26,9 +26,9 @@
          handle_cast/2,
          handle_info/2]).
 
+-define(NUM_REPLICAS_KEY, num_replicas).
+
 -record(state, {
-    %% Name of this read replica
-    self :: atom(),
     %% Partition that this server is replicating
     partition :: partition_id(),
     replica_id :: replica_id(),
@@ -58,33 +58,23 @@
                  Id :: non_neg_integer()) -> {ok, pid()} | ignore | {error, term()}.
 
 start_link(Partition, Id) ->
-    Name = {local, generate_replica_name(Partition, Id)},
-    gen_server:start_link(Name, ?MODULE, [Partition, Id], []).
+    gen_server:start_link(?MODULE, [Partition, Id], []).
 
 %% @doc Start `Count` read replicas for the given partition
 -spec start_replicas(partition_id(), non_neg_integer()) -> ok.
 start_replicas(Partition, Count) ->
+    ok = persist_num_replicas(Partition, Count),
     start_replicas_internal(Partition, Count).
-
-%% @doc Stop `Count` read replicas for the given partition
--spec stop_replicas(partition_id(), non_neg_integer()) -> ok.
-stop_replicas(Partition, Count) ->
-    stop_replicas_internal(Partition, Count).
 
 %% @doc Check if all the read replicas at this node and partitions are ready
 -spec replica_ready(partition_id(), non_neg_integer()) -> boolean().
-replica_ready(_Partition, 0) ->
-    true;
-
 replica_ready(Partition, N) ->
-    try
-        case gen_server:call(generate_replica_name(Partition, N), ready) of
-            ready ->
-                replica_ready(Partition, N - 1);
-            _ ->
-                false
-        end
-    catch _:_ -> false end.
+    replica_ready_internal(Partition, N).
+
+%% @doc Stop read replicas for the given partition
+-spec stop_replicas(partition_id()) -> ok.
+stop_replicas(Partition) ->
+    stop_replicas_internal(Partition, num_replicas(Partition)).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Protocol API
@@ -92,24 +82,21 @@ replica_ready(Partition, N) ->
 
 -spec async_key_vsn(grb_promise:t(), partition_id(), key(), vclock()) -> ok.
 async_key_vsn(Promise, Partition, Key, VC) ->
-    Target = random_replica(Partition),
-    gen_server:cast(Target, {key_vsn, Promise, Key, VC}).
+    gen_server:cast(random_replica(Partition), {key_vsn, Promise, Key, VC}).
 
 -spec decide_blue(partition_id(), _, vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->
-    Target = random_replica(Partition),
-    gen_server:cast(Target, {decide_blue, TxId, VC}).
+    gen_server:cast(random_replica(Partition), {decide_blue, TxId, VC}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 init([Partition, Id]) ->
-    Self = generate_replica_name(Partition, Id),
+    ok = persist_replica_pid(Partition, Id, self()),
     OpLog = grb_main_vnode:op_log_table(Partition),
     {ok, WaitMs} = application:get_env(grb, partition_ready_wait_ms),
-    {ok, #state{self=Self,
-                partition=Partition,
+    {ok, #state{partition=Partition,
                 replica_id=grb_dc_manager:replica_id(),
                 known_barrier_wait_ms=WaitMs,
                 oplog_replica = OpLog}}.
@@ -120,8 +107,9 @@ handle_call(ready, _From, State) ->
 handle_call(shutdown, _From, State) ->
     {stop, shutdown, ok, State};
 
-handle_call(_Request, _From, _State) ->
-    erlang:error(not_implemented).
+handle_call(Request, _From, State) ->
+    ?LOG_WARNING("Unhandled call ~p", [Request]),
+    {noreply, State}.
 
 handle_cast({key_vsn, Promise, Key, VC}, State) ->
     ok = key_vsn_wait(Promise, Key, VC, State),
@@ -131,8 +119,9 @@ handle_cast({decide_blue, TxId, VC}, State=#state{replica_id=ReplicaId, known_ba
     ok = decide_blue_internal(State#state.partition, WaitMs, ReplicaId, TxId, VC),
     {noreply, State};
 
-handle_cast(_Request, _State) ->
-    erlang:error(not_implemented).
+handle_cast(Request, State) ->
+    ?LOG_WARNING("Unhandled cast ~p", [Request]),
+    {noreply, State}.
 
 handle_info({retry_key_vsn_wait, Promise, Key, VC}, State) ->
     ok = key_vsn_wait(Promise, Key, VC, State),
@@ -143,7 +132,7 @@ handle_info({retry_decide, TxId, VC}, State=#state{replica_id=ReplicaId, known_b
     {noreply, State};
 
 handle_info(Info, State) ->
-    ?LOG_INFO("Unhandled msg ~p", [Info]),
+    ?LOG_WARNING("Unhandled msg ~p", [Info]),
     {noreply, State}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -179,15 +168,9 @@ decide_blue_internal(Partition, WaitMs, ReplicaId, TxId, VC) ->
             grb_main_vnode:decide_blue(Partition, TxId, VC)
     end.
 
--spec generate_replica_name(partition_id(), non_neg_integer()) -> atom().
-generate_replica_name(Partition, Id) ->
-    BinId = integer_to_binary(Id),
-    BinPart = integer_to_binary(Partition),
-    binary_to_atom(<<BinPart/binary, "_", BinId/binary>>, latin1).
-
--spec random_replica(partition_id()) -> atom().
-random_replica(Partition) ->
-    generate_replica_name(Partition, rand:uniform(?READ_CONCURRENCY)).
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Start / Ready / Stop
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -spec start_replicas_internal(partition_id(), non_neg_integer()) -> ok.
 start_replicas_internal(_Partition, 0) ->
@@ -202,11 +185,26 @@ start_replicas_internal(Partition, N) ->
         _Other ->
             ?LOG_ERROR("Unable to start pvc read replica for ~p, will skip", [Partition]),
             try
-                ok = gen_server:call(generate_replica_name(Partition, N), shutdown)
+                ok = gen_server:call(replica_pid(Partition, N), shutdown)
             catch _:_ ->
                 ok
             end,
             start_replicas_internal(Partition, N - 1)
+    end.
+
+-spec replica_ready_internal(partition_id(), non_neg_integer()) -> boolean().
+replica_ready_internal(_Partition, 0) ->
+    true;
+replica_ready_internal(Partition, N) ->
+    try
+        case gen_server:call(replica_pid(Partition, N), ready) of
+            ready ->
+                replica_ready_internal(Partition, N - 1);
+            _ ->
+                false
+        end
+    catch _:_ ->
+        false
     end.
 
 -spec stop_replicas_internal(partition_id(), non_neg_integer()) -> ok.
@@ -215,8 +213,32 @@ stop_replicas_internal(_Partition, 0) ->
 
 stop_replicas_internal(Partition, N) ->
     try
-        ok = gen_server:call(generate_replica_name(Partition, N), shutdown)
+        ok = gen_server:call(replica_pid(Partition, N), shutdown)
     catch _:_ ->
         ok
     end,
     stop_replicas_internal(Partition, N - 1).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Naming
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+-spec replica_pid(partition_id(), non_neg_integer()) -> pid().
+replica_pid(Partition, Id) ->
+    persistent_term:get({?MODULE, Partition, Id}).
+
+-spec persist_replica_pid(partition_id(), non_neg_integer(), pid()) -> ok.
+persist_replica_pid(Partition, Id, Pid) ->
+    persistent_term:put({?MODULE, Partition, Id}, Pid).
+
+-spec random_replica(partition_id()) -> pid().
+random_replica(Partition) ->
+    replica_pid(Partition, rand:uniform(num_replicas(Partition))).
+
+-spec num_replicas(partition_id()) -> non_neg_integer().
+num_replicas(Partition) ->
+    persistent_term:get({?MODULE, Partition, ?NUM_REPLICAS_KEY}, ?READ_CONCURRENCY).
+
+-spec persist_num_replicas(partition_id(), non_neg_integer()) -> ok.
+persist_num_replicas(Partition, N) ->
+    persistent_term:put({?MODULE, Partition, ?NUM_REPLICAS_KEY}, N).

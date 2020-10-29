@@ -273,8 +273,8 @@ handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_timer=TRef}) ->
     erlang:cancel_timer(TRef),
     {reply, ok, S#state{blue_tick_timer=undefined}};
 
-handle_command(stop_replicas, _From, S = #state{partition=P, replicas_n=N}) ->
-    ok = grb_partition_replica:stop_replicas(P, N),
+handle_command(stop_replicas, _From, S = #state{partition=P}) ->
+    ok = grb_partition_replica:stop_replicas(P),
     {reply, ok, S};
 
 handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
