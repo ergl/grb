@@ -34,6 +34,7 @@
     replica_id :: replica_id(),
 
     known_barrier_wait_ms :: non_neg_integer(),
+    pending_decides = #{} :: #{term() => vclock()},
 
     %% Read replica of the opLog ETS table
     oplog_replica :: atom()
@@ -115,9 +116,21 @@ handle_cast({key_vsn, Promise, Key, VC}, State) ->
     ok = key_vsn_wait(Promise, Key, VC, State),
     {noreply, State};
 
-handle_cast({decide_blue, TxId, VC}, State=#state{replica_id=ReplicaId, known_barrier_wait_ms=WaitMs}) ->
-    ok = decide_blue_internal(State#state.partition, WaitMs, ReplicaId, TxId, VC),
-    {noreply, State};
+handle_cast({decide_blue, TxId, VC}, S0=#state{partition=Partition,
+                                               replica_id=ReplicaId,
+                                               pending_decides=Pending,
+                                               known_barrier_wait_ms=WaitMs}) ->
+
+    S = case grb_main_vnode:decide_blue_ready(ReplicaId, VC) of
+        not_ready ->
+            %% todo(borja, efficiency): can we use hybrid clocks here?
+            erlang:send_after(WaitMs, self(), {retry_decide, TxId}),
+            S0#state{pending_decides=Pending#{TxId => VC}};
+        ready ->
+            grb_main_vnode:decide_blue(Partition, TxId, VC),
+            S0
+    end,
+    {noreply, S};
 
 handle_cast(Request, State) ->
     ?LOG_WARNING("Unhandled cast ~p", [Request]),
@@ -127,9 +140,21 @@ handle_info({retry_key_vsn_wait, Promise, Key, VC}, State) ->
     ok = key_vsn_wait(Promise, Key, VC, State),
     {noreply, State};
 
-handle_info({retry_decide, TxId, VC}, State=#state{replica_id=ReplicaId, known_barrier_wait_ms=WaitMs}) ->
-    ok = decide_blue_internal(State#state.partition, WaitMs, ReplicaId, TxId, VC),
-    {noreply, State};
+handle_info({retry_decide, TxId}, S0=#state{partition=Partition,
+                                            replica_id=ReplicaId,
+                                            pending_decides=Pending,
+                                            known_barrier_wait_ms=WaitMs}) ->
+    #{TxId := VC} = Pending,
+    S = case grb_main_vnode:decide_blue_ready(ReplicaId, VC) of
+        not_ready ->
+            %% todo(borja, efficiency): can we use hybrid clocks here?
+            erlang:send_after(WaitMs, self(), {retry_decide, TxId}),
+            S0;
+        ready ->
+            grb_main_vnode:decide_blue(Partition, TxId, VC),
+            S0#state{pending_decides=maps:remove(TxId, Pending)}
+    end,
+    {noreply, S};
 
 handle_info(Info, State) ->
     ?LOG_WARNING("Unhandled msg ~p", [Info]),
@@ -156,16 +181,6 @@ key_vsn_wait(Promise, Key, SnapshotVC, #state{partition=Partition,
         ready ->
             grb_promise:resolve(grb_main_vnode:get_key_version_with_table(OpLogReplica, Key, SnapshotVC),
                                 Promise)
-    end.
-
--spec decide_blue_internal(partition_id(), non_neg_integer(), replica_id(), _, vclock()) -> ok.
-decide_blue_internal(Partition, WaitMs, ReplicaId, TxId, VC) ->
-    case grb_main_vnode:decide_blue_ready(ReplicaId, VC) of
-        not_ready ->
-            erlang:send_after(WaitMs, self(), {retry_decide, TxId, VC}),
-            ok;
-        ready ->
-            grb_main_vnode:decide_blue(Partition, TxId, VC)
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

@@ -150,7 +150,6 @@ handle_request('PrepareBlueNode', Args, Context, State) ->
 
 handle_request('DecideBlueNode', Args, _Context, _State) ->
     #{transaction_id := TxId, partitions := Ps, commit_vc := CVC} = Args,
-    %% fixme(borja, efficiency): decide is sync, so we should do this in parallel
     _ = [grb:decide_blue(P, TxId, CVC) || P <- Ps],
     ok;
 
