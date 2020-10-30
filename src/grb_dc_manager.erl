@@ -299,17 +299,14 @@ persist_replica_info() ->
 
 -spec stop_background_processes() -> ok.
 stop_background_processes() ->
-    Res0 = grb_dc_utils:bcast_vnode_local_sync(grb_main_vnode_master, stop_blue_hb_timer),
-    ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
-    Res1 = grb_dc_utils:bcast_vnode_local_sync(grb_main_vnode_master, stop_replicas),
-    ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
+    ok = grb_main_vnode:stop_blue_hb_timer_all(),
+    ok = grb_main_vnode:stop_replicas_all(),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
 -spec stop_propagation_processes() -> ok.
 stop_propagation_processes() ->
-    Res = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, stop_propagate_timer),
-    ok = lists:foreach(fun({_, ok}) -> ok end, Res),
+    ok = grb_propagation_vnode:stop_propagate_timer_all(),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 

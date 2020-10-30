@@ -11,6 +11,9 @@
          get_commit_log/2]).
 -endif.
 
+%% Management API
+-export([stop_propagate_timer_all/0]).
+
 %% Common public API
 -export([partition_ready/2,
          partition_ready/3,
@@ -147,6 +150,15 @@ get_commit_log(Replica, Partition) ->
 %%%===================================================================
 %%% common public api
 %%%===================================================================
+
+-spec stop_propagate_timer_all() -> ok.
+stop_propagate_timer_all() ->
+    [try
+        riak_core_vnode_master:command(N, stop_propagate_timer, ?master)
+     catch
+         _:_ -> ok
+     end  || N <- grb_dc_utils:get_index_nodes() ],
+    ok.
 
 -spec partition_ready(partition_id(), vclock()) -> ready | not_ready.
 partition_ready(Partition, SnapshotVC) ->
@@ -404,7 +416,7 @@ handle_command(start_propagate_timer, _From, State) ->
     {reply, ok, start_propagation_timers(State)};
 
 handle_command(stop_propagate_timer, _From, State) ->
-    {reply, ok, stop_propagation_timers(State)};
+    {noreply, stop_propagation_timers(State)};
 
 handle_command({cure_update_svc, StableVC}, _Sender, S=#state{clock_cache=ClockTable}) ->
     OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),

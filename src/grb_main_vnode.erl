@@ -7,6 +7,10 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
+%% Management API
+-export([stop_blue_hb_timer_all/0,
+         stop_replicas_all/0]).
+
 %% ETS table API
 -export([op_log_table/1,
          last_red_table/1]).
@@ -87,6 +91,28 @@
 -type state() :: #state{}.
 
 -export_type([last_red/0]).
+
+%%%===================================================================
+%%% Management API
+%%%===================================================================
+
+-spec stop_blue_hb_timer_all() -> ok.
+stop_blue_hb_timer_all() ->
+    [try
+        riak_core_vnode_master:command(N, stop_blue_hb_timer, ?master)
+     catch
+         _:_ -> ok
+     end  || N <- grb_dc_utils:get_index_nodes() ],
+    ok.
+
+-spec stop_replicas_all() -> ok.
+stop_replicas_all() ->
+    [try
+        riak_core_vnode_master:command(N, stop_replicas, ?master)
+     catch
+         _:_ -> ok
+     end  || N <- grb_dc_utils:get_index_nodes() ],
+    ok.
 
 %%%===================================================================
 %%% ETS API
@@ -267,15 +293,15 @@ handle_command(start_replicas, _From, S = #state{partition=P,
     {reply, Result, S};
 
 handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_timer=undefined}) ->
-    {reply, ok, S};
+    {noreply, S};
 
 handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_timer=TRef}) ->
     erlang:cancel_timer(TRef),
-    {reply, ok, S#state{blue_tick_timer=undefined}};
+    {noreply, S#state{blue_tick_timer=undefined}};
 
 handle_command(stop_replicas, _From, S = #state{partition=P}) ->
     ok = grb_partition_replica:stop_replicas(P),
-    {reply, ok, S};
+    {noreply, S};
 
 handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     Result = grb_partition_replica:replica_ready(P, N),
