@@ -29,6 +29,7 @@
 %% todo(borja, crdt): change operation type when adding crdt lib
 -type readset() :: [key()].
 -type writeset() :: #{key() => val()}.
+-type tx_entry() :: grb_blue_commit_log:entry().
 
 %% Describes the current replica, consumed by other replicas (as a whole)
 -record(replica_descriptor, {
@@ -74,6 +75,7 @@
               effect/0,
               readset/0,
               writeset/0,
+              tx_entry/0,
               transaction_type/0,
               replica_id/0,
               vclock/0,

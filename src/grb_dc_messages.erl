@@ -11,7 +11,9 @@
          blue_heartbeat/1,
          clocks/2,
          clocks_heartbeat/2,
-         transaction/2]).
+         transaction/2,
+         transaction_array/4,
+         transaction_array/8]).
 
 -export([forward_heartbeat/2,
          forward_transaction/3]).
@@ -41,6 +43,17 @@ blue_heartbeat(Time) ->
 -spec transaction(writeset(), vclock()) -> binary().
 transaction(Writeset, CommitVC) ->
     encode_msg(#replicate_tx{writeset=Writeset, commit_vc=CommitVC}).
+
+-spec transaction_array(tx_entry(), tx_entry(),
+                        tx_entry(), tx_entry()) -> binary().
+transaction_array(Tx1, Tx2, Tx3, Tx4) ->
+    encode_msg(#replicate_tx_4{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4}).
+
+-spec transaction_array(tx_entry(), tx_entry(), tx_entry(), tx_entry(),
+                        tx_entry(), tx_entry(), tx_entry(), tx_entry())-> binary().
+transaction_array(Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8) ->
+    encode_msg(#replicate_tx_8{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4,
+                               tx_5=Tx5, tx_6=Tx6, tx_7=Tx7, tx_8=Tx8}).
 
 -spec clocks(vclock(), vclock()) -> binary().
 clocks(KnownVC, StableVC) ->
@@ -104,6 +117,13 @@ encode_payload(#blue_heartbeat{timestamp=Ts}) ->
 encode_payload(#replicate_tx{writeset=WS, commit_vc=CommitVC}) ->
     {?REPL_TX_KIND, term_to_binary({WS, CommitVC})};
 
+encode_payload(#replicate_tx_4{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4}) ->
+    {?REPL_TX_4_KIND, term_to_binary({Tx1, Tx2, Tx3, Tx4})};
+
+encode_payload(#replicate_tx_8{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4,
+                               tx_5=Tx5, tx_6=Tx6, tx_7=Tx7, tx_8=Tx8}) ->
+    {?REPL_TX_8_KIND, term_to_binary({Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8})};
+
 encode_payload(#update_clocks{known_vc=KnownVC, stable_vc=StableVC}) ->
     {?UPDATE_CLOCK_KIND, term_to_binary({KnownVC, StableVC})};
 
@@ -154,6 +174,15 @@ decode_payload(<<?BLUE_HB_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
 decode_payload(<<?REPL_TX_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {WS, CommitVC} = binary_to_term(Payload),
     #replicate_tx{writeset=WS, commit_vc=CommitVC};
+
+decode_payload(<<?REPL_TX_4_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
+    {Tx1, Tx2, Tx3, Tx4} = binary_to_term(Payload),
+    #replicate_tx_4{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4};
+
+decode_payload(<<?REPL_TX_8_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
+    {Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8} = binary_to_term(Payload),
+    #replicate_tx_8{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4,
+                    tx_5=Tx5, tx_6=Tx6, tx_7=Tx7, tx_8=Tx8};
 
 decode_payload(<<?UPDATE_CLOCK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {KnownVC, StableVC} = binary_to_term(Payload),
@@ -223,6 +252,22 @@ grb_dc_message_utils_test() ->
     Payloads = [
         #blue_heartbeat{timestamp=10},
         #replicate_tx{writeset=#{foo => bar}, commit_vc=VC},
+        #replicate_tx_4{
+            tx_1 = {#{foo => bar}, VC},
+            tx_2 = {#{foo => bar}, VC},
+            tx_3 = {#{foo => bar}, VC},
+            tx_4 = {#{foo => bar}, VC}
+        },
+        #replicate_tx_8{
+            tx_1 = {#{foo => bar}, VC},
+            tx_2 = {#{foo => bar}, VC},
+            tx_3 = {#{foo => bar}, VC},
+            tx_4 = {#{foo => bar}, VC},
+            tx_5 = {#{foo => bar}, VC},
+            tx_6 = {#{foo => bar}, VC},
+            tx_7 = {#{foo => bar}, VC},
+            tx_8 = {#{foo => bar}, VC}
+        },
         #update_clocks{known_vc=VC, stable_vc=VC},
         #update_clocks_heartbeat{known_vc=VC, stable_vc=VC},
         #forward_heartbeat{replica=ReplicaId, timestamp=10},

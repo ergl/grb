@@ -32,6 +32,9 @@
 %% Ping
 -define(DC_PING, 14).
 
+-define(REPL_TX_4_KIND, 15).
+-define(REPL_TX_8_KIND, 16).
+
 -record(blue_heartbeat, {
     timestamp :: grb_time:ts()
 }).
@@ -39,6 +42,24 @@
 -record(replicate_tx, {
     writeset :: #{},
     commit_vc :: vclock()
+}).
+
+-record(replicate_tx_4, {
+    tx_1 :: {#{}, vclock()},
+    tx_2 :: {#{}, vclock()},
+    tx_3 :: {#{}, vclock()},
+    tx_4 :: {#{}, vclock()}
+}).
+
+-record(replicate_tx_8, {
+    tx_1 :: {#{}, vclock()},
+    tx_2 :: {#{}, vclock()},
+    tx_3 :: {#{}, vclock()},
+    tx_4 :: {#{}, vclock()},
+    tx_5 :: {#{}, vclock()},
+    tx_6 :: {#{}, vclock()},
+    tx_7 :: {#{}, vclock()},
+    tx_8 :: {#{}, vclock()}
 }).
 
 -record(update_clocks, {
@@ -122,6 +143,8 @@
 
 -type replica_message() :: #blue_heartbeat{}
                          | #replicate_tx{}
+                         | #replicate_tx_4{}
+                         | #replicate_tx_8{}
                          | #update_clocks{}
                          | #update_clocks_heartbeat{}
                          | #forward_heartbeat{}

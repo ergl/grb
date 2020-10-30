@@ -12,8 +12,7 @@
 
 -type t() :: cache_id().
 -type index() :: ets:continuation().
--type match() :: {writeset(), vclock()}.
--export_type([t/0, index/0, match/0]).
+-export_type([t/0, index/0]).
 
 %% API
 -export([new/0,
@@ -41,18 +40,18 @@ delete(Table) ->
 %% @doc Get all entries with commit time at the created replica bigger than `Timestamp`
 %%
 %%      Entries are returned in increasing commit time order
--spec get_bigger(grb_time:ts(), t()) -> [match()].
+-spec get_bigger(grb_time:ts(), t()) -> [tx_entry()].
 get_bigger(Timestamp, Table) ->
     ets:select(Table, [{ {'$1', '$2'}, [{'>', '$1', {const, Timestamp}}], ['$2'] }]).
 
--spec get_bigger_iterator(grb_time:ts(), non_neg_integer(), t()) -> empty | {[match()], index()}.
+-spec get_bigger_iterator(grb_time:ts(), non_neg_integer(), t()) -> empty | {[tx_entry()], index()}.
 get_bigger_iterator(Timestamp, Limit, Table) ->
     case ets:select(Table, [{ {'$1', '$2'}, [{'>', '$1', {const, Timestamp}}], ['$2'] }], Limit) of
         '$end_of_table' -> empty;
         More -> More
     end.
 
--spec get_bigger_continue(index()) -> empty | {[match()], index()}.
+-spec get_bigger_continue(index()) -> empty | {[tx_entry()], index()}.
 get_bigger_continue(Cont) ->
     case ets:select(Cont) of
         '$end_of_table' -> empty;
@@ -67,7 +66,7 @@ remove_leq(Timestamp, Table) ->
 
 -ifdef(TEST).
 
--spec to_list(t()) -> [match()].
+-spec to_list(t()) -> [tx_entry()].
 to_list(Table) ->
     ets:select(Table, [{ {'$1', '$2'}, [], ['$2'] }]).
 

@@ -117,6 +117,13 @@ handle_request(ConnReplica, Partition, #blue_heartbeat{timestamp=Ts}) ->
 handle_request(ConnReplica, Partition, #replicate_tx{writeset=WS, commit_vc=VC}) ->
     grb_main_vnode:handle_replicate(Partition, ConnReplica, WS, VC);
 
+handle_request(ConnReplica, Partition, #replicate_tx_4{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4}) ->
+    grb_main_vnode:handle_replicate_array(Partition, ConnReplica, Tx1, Tx2, Tx3, Tx4);
+
+handle_request(ConnReplica, Partition, #replicate_tx_8{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4,
+                                                       tx_5=Tx5, tx_6=Tx6, tx_7=Tx7, tx_8=Tx8}) ->
+    grb_main_vnode:handle_replicate_array(Partition, ConnReplica, Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8);
+
 handle_request(ConnReplica, Partition, #update_clocks{known_vc=KnownVC, stable_vc=StableVC}) ->
     grb_propagation_vnode:handle_clock_update(Partition, ConnReplica, KnownVC, StableVC);
 

@@ -25,6 +25,7 @@
          update_stable_vc_sync/2,
          append_blue_commit/4,
          append_remote_blue_commit/5,
+         append_remote_blue_commit_no_hb/4,
          handle_blue_heartbeat/3,
          handle_red_heartbeat/2,
          handle_self_blue_heartbeat/2]).
@@ -268,6 +269,13 @@ append_blue_commit(Partition, KnownTime, WS, CommitVC) ->
 append_remote_blue_commit(ReplicaId, Partition, CommitTime, WS, CommitVC) ->
     ok = handle_blue_heartbeat(Partition, ReplicaId, CommitTime),
     ok = grb_remote_commit_log:insert(CommitTime, WS, CommitVC, get_commit_log(ReplicaId, Partition)).
+
+-spec append_remote_blue_commit_no_hb(replica_id(), partition_id(), writeset(), vclock()) -> ok.
+append_remote_blue_commit_no_hb(ReplicaId, Partition, WS, CommitVC) ->
+    ok = grb_remote_commit_log:insert(grb_vclock:get_time(ReplicaId, CommitVC),
+                                      WS,
+                                      CommitVC,
+                                      get_commit_log(ReplicaId, Partition)).
 
 %%%===================================================================
 %%% basic replication api
@@ -771,16 +779,29 @@ replicate_internal(S=#state{self_log=LocalLog,
                 %% we could piggy-back on top of the first tx, but w/ever
                 ClockRes = grb_dc_connection_manager:send_clocks(Target, Partition, KnownVC, StableVC),
                 ?LOG_DEBUG("send clocks to ~p: ~p~n", [Target, ClockRes]),
-                lists:foreach(fun({WS, VC}) ->
-                    TxRes = grb_dc_connection_manager:send_tx(Target, Partition, WS, VC),
-                    ?LOG_DEBUG("send transaction to ~p: ~p~n", [Target, TxRes]),
-                    ok
-                end, Transactions)
+                ok = send_transactions(Target, Partition, Transactions)
         end,
         AccMatrix#{{Target, LocalId} => LocalTime}
     end, Matrix0, grb_dc_connection_manager:connected_replicas()),
 
     S#state{global_known_matrix=Matrix}.
+
+-spec send_transactions(Target :: replica_id(),
+                        Partition :: partition_id(),
+                        Transactions :: [tx_entry()]) -> ok.
+
+send_transactions(_, _, []) ->
+    ok;
+send_transactions(Target, Partition, [Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8 | Rest]) ->
+    ok = grb_dc_connection_manager:send_tx_array(Target, Partition, Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8),
+    send_transactions(Target, Partition, Rest);
+send_transactions(Target, Partition, [Tx1, Tx2, Tx3, Tx4 | Rest]) ->
+    ok = grb_dc_connection_manager:send_tx_array(Target, Partition, Tx1, Tx2, Tx3, Tx4),
+    send_transactions(Target, Partition, Rest);
+send_transactions(Target, Partition, Transactions) ->
+    lists:foreach(fun({WS, VC}) ->
+        ok = grb_dc_connection_manager:send_tx(Target, Partition, WS, VC)
+    end, Transactions).
 
 -endif.
 

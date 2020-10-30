@@ -23,6 +23,8 @@
          decide_blue_ready/2,
          decide_blue/3,
          handle_replicate/4,
+         handle_replicate_array/6,
+         handle_replicate_array/10,
          handle_red_transaction/3]).
 
 %% riak_core_vnode callbacks
@@ -210,6 +212,42 @@ handle_replicate(Partition, SourceReplica, WS, VC) ->
                                            ?master)
     end.
 
+-spec handle_replicate_array(partition_id(), replica_id(),
+                             tx_entry(), tx_entry(),
+                             tx_entry(), tx_entry()) -> ok.
+
+handle_replicate_array(Partition, SourceReplica, Tx1, Tx2, Tx3, Tx4={_, VC}) ->
+    CommitTime = grb_vclock:get_time(SourceReplica, VC),
+    KnownTime = grb_propagation_vnode:known_time(Partition, SourceReplica),
+    case KnownTime < CommitTime of
+        false ->
+            ok; %% de-dup, we already received this
+        true ->
+            riak_core_vnode_master:command({Partition, node()},
+                                           {handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4},
+                                           ?master)
+    end.
+
+-spec handle_replicate_array(partition_id(), replica_id(),
+                             tx_entry(), tx_entry(), tx_entry(), tx_entry(),
+                             tx_entry(), tx_entry(), tx_entry(), tx_entry()) -> ok.
+
+handle_replicate_array(Partition, SourceReplica, Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8={_, VC}) ->
+    CommitTime = grb_vclock:get_time(SourceReplica, VC),
+    KnownTime = grb_propagation_vnode:known_time(Partition, SourceReplica),
+    case KnownTime < CommitTime of
+        false ->
+            ok; %% de-dup, we already received this
+        true ->
+            riak_core_vnode_master:command({Partition, node()},
+                                           {handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4},
+                                           ?master),
+
+            riak_core_vnode_master:command({Partition, node()},
+                                           {handle_remote_tx_array, SourceReplica, Tx5, Tx6, Tx7, Tx8},
+                                           ?master)
+    end.
+
 -spec handle_red_transaction(partition_id(), writeset(), vclock()) -> ok.
 handle_red_transaction(Partition, WS, VC) ->
     riak_core_vnode_master:command({Partition, node()},
@@ -331,6 +369,10 @@ handle_command({handle_remote_tx, SourceReplica, WS, CommitTime, VC}, _From, Sta
     ok = handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, State),
     {noreply, State};
 
+handle_command({handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4}, _From, State) ->
+    ok = handle_remote_tx_array_internal(SourceReplica, Tx1, Tx2, Tx3, Tx4, State),
+    {noreply, State};
+
 handle_command({handle_red_tx, WS, VC}, _From, S=#state{op_log=OperationLog,
                                                         op_log_size=LogSize,
                                                         op_last_red=LastRed}) ->
@@ -373,6 +415,41 @@ handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{partition=Pa
                                                                           op_last_red=LastRed}) ->
     ok = update_partition_state(WS, VC, OperationLog, LogSize, LastRed),
     ok = grb_propagation_vnode:append_remote_blue_commit(SourceReplica, Partition, CommitTime, WS, VC),
+    ok.
+
+-endif.
+
+-spec handle_remote_tx_array_internal(replica_id(), tx_entry(), tx_entry(), tx_entry(), tx_entry(), state()) -> ok.
+-ifdef(NO_REMOTE_APPEND).
+
+handle_remote_tx_array_internal(SourceReplica, {WS1, VC1}, {WS2, VC2}, {WS3, VC3}, {WS4, VC4},
+        #state{partition=Partition, op_log=OperationLog, op_log_size=LogSize, op_last_red=LastRed}) ->
+
+    ok = update_partition_state(WS1, VC1, OperationLog, LogSize, LastRed),
+    ok = update_partition_state(WS2, VC2, OperationLog, LogSize, LastRed),
+    ok = update_partition_state(WS3, VC3, OperationLog, LogSize, LastRed),
+    ok = update_partition_state(WS4, VC4, OperationLog, LogSize, LastRed),
+    ok = grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, grb_vclock:get_time(SourceReplica, VC4)),
+    ok.
+
+-else.
+
+handle_remote_tx_array_internal(SourceReplica, {WS1, VC1}, {WS2, VC2}, {WS3, VC3}, {WS4, VC4},
+        #state{partition=Partition, op_log=OperationLog, op_log_size=LogSize, op_last_red=LastRed}) ->
+
+    ok = update_partition_state(WS1, VC1, OperationLog, LogSize, LastRed),
+    ok = update_partition_state(WS2, VC2, OperationLog, LogSize, LastRed),
+    ok = update_partition_state(WS3, VC3, OperationLog, LogSize, LastRed),
+    ok = update_partition_state(WS4, VC4, OperationLog, LogSize, LastRed),
+
+    ok = grb_propagation_vnode:append_remote_blue_commit_no_hb(SourceReplica, Partition, WS1, VC1),
+    ok = grb_propagation_vnode:append_remote_blue_commit_no_hb(SourceReplica, Partition, WS2, VC2),
+    ok = grb_propagation_vnode:append_remote_blue_commit_no_hb(SourceReplica, Partition, WS3, VC3),
+    ok = grb_propagation_vnode:append_remote_blue_commit(SourceReplica,
+                                                         Partition,
+                                                         grb_vclock:get_time(SourceReplica, VC4),
+                                                         WS4,
+                                                         VC4),
     ok.
 
 -endif.

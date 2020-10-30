@@ -14,6 +14,8 @@
          send_heartbeat/3,
          forward_heartbeat/4,
          send_tx/4,
+         send_tx_array/6,
+         send_tx_array/10,
          forward_tx/5,
          send_clocks/4,
          send_clocks_heartbeat/4]).
@@ -136,6 +138,30 @@ forward_heartbeat(ToId, FromId, Partition, Time) ->
 
 send_tx(ToId, Partition, WS, VC) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:transaction(WS, VC)).
+
+-spec send_tx_array(ToId :: replica_id(),
+                    Partition :: partition_id(),
+                    Tx1 :: tx_entry(),
+                    Tx2 :: tx_entry(),
+                    Tx3 :: tx_entry(),
+                    Tx4 :: tx_entry()) -> ok | {error, term()}.
+
+send_tx_array(ToId, Partition, Tx1, Tx2, Tx3, Tx4) ->
+    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:transaction_array(Tx1, Tx2, Tx3, Tx4)).
+
+-spec send_tx_array(ToId :: replica_id(),
+                    Partition :: partition_id(),
+                    Tx1 :: tx_entry(),
+                    Tx2 :: tx_entry(),
+                    Tx3 :: tx_entry(),
+                    Tx4 :: tx_entry(),
+                    Tx5 :: tx_entry(),
+                    Tx6 :: tx_entry(),
+                    Tx7 :: tx_entry(),
+                    Tx8 :: tx_entry()) -> ok | {error, term()}.
+
+send_tx_array(ToId, Partition, Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8) ->
+    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:transaction_array(Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8)).
 
 -spec forward_tx(ToId :: replica_id(),
                  FromId :: replica_id(),
