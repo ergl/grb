@@ -12,7 +12,8 @@
 -endif.
 
 %% Management API
--export([stop_propagate_timer_all/0]).
+-export([start_propagate_timer_all/0,
+         stop_propagate_timer_all/0]).
 
 %% Common public API
 -export([partition_ready/2,
@@ -154,6 +155,15 @@ get_commit_log(Replica, Partition) ->
 %%%===================================================================
 %%% common public api
 %%%===================================================================
+
+-spec start_propagate_timer_all() -> ok.
+start_propagate_timer_all() ->
+    [try
+        riak_core_vnode_master:command(N, start_propagate_timer, ?master)
+     catch
+         _:_ -> ok
+     end  || N <- grb_dc_utils:get_index_nodes() ],
+    ok.
 
 -spec stop_propagate_timer_all() -> ok.
 stop_propagate_timer_all() ->
@@ -425,7 +435,7 @@ handle_command(populate_logs, _From, State) ->
     {reply, ok, populate_logs_internal(State)};
 
 handle_command(start_propagate_timer, _From, State) ->
-    {reply, ok, start_propagation_timers(State)};
+    {noreply, start_propagation_timers(State)};
 
 handle_command(stop_propagate_timer, _From, State) ->
     {noreply, stop_propagation_timers(State)};
