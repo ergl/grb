@@ -179,17 +179,21 @@ partition_ready(Partition, ReplicaId, SnapshotVC) ->
 -else.
 partition_ready(Partition, ReplicaId, SnapshotVC) ->
     SnapshotTime = grb_vclock:get_time(ReplicaId, SnapshotVC),
-    SnapshotRed = grb_vclock:get_time(?RED_REPLICA, SnapshotVC),
     PartitionTime = known_time(Partition, ReplicaId),
-    PartitionRed = known_time(Partition, ?RED_REPLICA),
-    BlueCheck = PartitionTime >= SnapshotTime,
-    RedCheck = PartitionRed >= SnapshotRed,
-    case (BlueCheck andalso RedCheck) of
-        true ->
-            ready;
+    case PartitionTime >= SnapshotTime of
         false ->
             ok = grb_measurements:log_counter({?MODULE, ?FUNCTION_NAME}),
-            not_ready
+            not_ready;
+        true ->
+            SnapshotRed = grb_vclock:get_time(?RED_REPLICA, SnapshotVC),
+            PartitionRed = known_time(Partition, ?RED_REPLICA),
+            case PartitionRed >= SnapshotRed of
+        false ->
+            ok = grb_measurements:log_counter({?MODULE, ?FUNCTION_NAME}),
+                    not_ready;
+                true ->
+                    ready
+            end
     end.
 -endif.
 
