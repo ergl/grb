@@ -50,6 +50,7 @@
 
 -define(master, grb_main_vnode_master).
 -define(blue_tick_req, blue_tick_event).
+-define(kill_timer_req, kill_timer_event).
 
 -define(OP_LOG_TABLE, op_log_table).
 -define(OP_LOG_LAST_RED, op_log_last_red_table).
@@ -67,7 +68,7 @@
     prepared_blue :: cache_id(),
 
     blue_tick_interval :: non_neg_integer(),
-    blue_tick_timer = undefined :: reference() | undefined,
+    blue_tick_pid = undefined :: pid() | undefined,
 
     %% todo(borja, crdt): change type of op_log when adding crdts
     op_log_size :: non_neg_integer(),
@@ -274,11 +275,26 @@ handle_command(enable_blue_append, _Sender, S) ->
 handle_command(disable_blue_append, _Sender, S) ->
     {reply, ok, S#state{should_append_commit=false}};
 
-handle_command(start_blue_hb_timer, _From, S = #state{blue_tick_interval=Int, blue_tick_timer=undefined}) ->
-    TRef = erlang:send_after(Int, self(), ?blue_tick_req),
-    {reply, ok, S#state{blue_tick_timer=TRef}};
+handle_command(start_blue_hb_timer, _From, S = #state{partition=Partition,
+                                                      blue_tick_interval=Int,
+                                                      blue_tick_pid=undefined}) ->
+    ReplicaId = grb_dc_manager:replica_id(),
+    PrepTable = prepared_blue_table(Partition),
+    RawClockTable = grb_propagation_vnode:clock_table(Partition),
+    TickProcess = erlang:spawn(fun Loop() ->
+        erlang:send_after(Int, self(), ?blue_tick_req),
+        receive
+            ?kill_timer_req ->
+                ok;
+            ?blue_tick_req ->
+                Ts = compute_new_known_time(PrepTable),
+                grb_propagation_vnode:handle_blue_heartbeat_unsafe(ReplicaId, Ts, RawClockTable),
+                Loop()
+        end
+    end),
+    {reply, ok, S#state{blue_tick_pid=TickProcess}};
 
-handle_command(start_blue_hb_timer, _From, S = #state{blue_tick_timer=_Tref}) ->
+handle_command(start_blue_hb_timer, _From, S = #state{blue_tick_pid=Pid}) when is_pid(Pid) ->
     {reply, ok, S};
 
 handle_command(start_replicas, _From, S = #state{partition=P,
@@ -292,12 +308,12 @@ handle_command(start_replicas, _From, S = #state{partition=P,
     end,
     {reply, Result, S};
 
-handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_timer=undefined}) ->
+handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_pid=undefined}) ->
     {noreply, S};
 
-handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_timer=TRef}) ->
-    erlang:cancel_timer(TRef),
-    {noreply, S#state{blue_tick_timer=undefined}};
+handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_pid=Pid}) when is_pid(Pid) ->
+    Pid ! ?kill_timer_req,
+    {noreply, S#state{blue_tick_pid=undefined}};
 
 handle_command(stop_replicas, _From, S = #state{partition=P}) ->
     ok = grb_partition_replica:stop_replicas(P),
@@ -324,15 +340,6 @@ handle_command({handle_red_tx, WS, VC}, _From, S=#state{op_log=OperationLog,
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("~p unhandled_command ~p", [?MODULE, Message]),
     {noreply, State}.
-
-handle_info(?blue_tick_req, State=#state{partition=P,
-                                         blue_tick_timer=Timer,
-                                         blue_tick_interval=Interval,
-                                         prepared_blue=PreparedBlue}) ->
-    erlang:cancel_timer(Timer),
-    KnownTime = compute_new_known_time(PreparedBlue),
-    ok = grb_propagation_vnode:handle_self_blue_heartbeat(P, KnownTime),
-    {ok, State#state{blue_tick_timer=erlang:send_after(Interval, self(), ?blue_tick_req)}};
 
 handle_info(Msg, State) ->
     ?LOG_WARNING("~p unhandled_info ~p", [?MODULE, Msg]),
@@ -380,8 +387,9 @@ decide_blue_internal(TxId, VC, #state{partition=SelfPartition,
 
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
-    {ok, WS} = get_prepared_writeset(PreparedBlue, TxId),
+    {ok, WS, PreparedAt} = get_prepared_writeset(PreparedBlue, TxId),
     ok = update_partition_state(WS, VC, OpLog, LogSize, LastRed),
+    ok = remove_from_prepared(TxId, PreparedAt, PreparedBlue),
     KnownTime = compute_new_known_time(PreparedBlue),
     case ShouldAppend of
         true ->
@@ -391,16 +399,20 @@ decide_blue_internal(TxId, VC, #state{partition=SelfPartition,
     end,
     ok.
 
--spec get_prepared_writeset(cache_id(), term()) -> {ok, writeset()} | false.
+-spec get_prepared_writeset(cache_id(), term()) -> {ok, writeset(), grb_time:ts()} | false.
 get_prepared_writeset(PreparedBlue, TxId) ->
     case ets:select(PreparedBlue, [{ #prepared_record{key={'$1', TxId}, writeset='$2'}, [], [{{'$1', '$2'}}] }]) of
         [{PrepareTs, WS}] ->
-            true = ets:delete(PreparedBlue, {PrepareTs, TxId}),
-            {ok, WS};
+            {ok, WS, PrepareTs};
         _ ->
             %% todo(borja): Warn if more than one result?
             false
     end.
+
+-spec remove_from_prepared(term(), grb_time:ts(), cache_id()) -> ok.
+remove_from_prepared(TxId, PrepareTime, PreparedBlue) ->
+    true = ets:delete(PreparedBlue, {PrepareTime, TxId}),
+    ok.
 
 -spec update_partition_state(WS :: #{},
                              CommitVC :: vclock(),
@@ -602,6 +614,12 @@ handle_overload_info(_, _Idx) ->
 
 -ifdef(TEST).
 
+-spec get_prepared_remove(cache_id(), term()) -> {ok, writeset()}.
+get_prepared_remove(PreparedTable, TxId) ->
+    {ok, WS, Time} = get_prepared_writeset(PreparedTable, TxId),
+    ok = remove_from_prepared(TxId, Time, PreparedTable),
+    {ok, WS}.
+
 grb_main_vnode_compute_new_known_time_test() ->
     _ = ets:new(?PREPARED_TABLE, [ordered_set, named_table, {keypos, #prepared_record.key}]),
     true = ets:insert(?PREPARED_TABLE, [
@@ -615,22 +633,22 @@ grb_main_vnode_compute_new_known_time_test() ->
     ?assertEqual(0, compute_new_known_time(?PREPARED_TABLE)),
 
     %% If we remove the lowest, now tx_2 is the lowest tx in the queue
-    ?assertEqual({ok, #{}}, get_prepared_writeset(?PREPARED_TABLE, tx_1)),
+    ?assertEqual({ok, #{}}, get_prepared_remove(?PREPARED_TABLE, tx_1)),
     ?assertEqual(2, compute_new_known_time(?PREPARED_TABLE)),
 
     %% tx_3 was removed earlier, but it has a higher ts than tx_2, so tx_2 is still the lowest
-    ?assertEqual({ok, #{}}, get_prepared_writeset(?PREPARED_TABLE, tx_3)),
+    ?assertEqual({ok, #{}}, get_prepared_remove(?PREPARED_TABLE, tx_3)),
     ?assertEqual(2, compute_new_known_time(?PREPARED_TABLE)),
 
     %% now, tx_4 is the next in the queue, at ts 10-1
-    ?assertEqual({ok, #{}}, get_prepared_writeset(?PREPARED_TABLE, tx_2)),
+    ?assertEqual({ok, #{}}, get_prepared_remove(?PREPARED_TABLE, tx_2)),
     ?assertEqual(9, compute_new_known_time(?PREPARED_TABLE)),
 
     %% same with tx_5
-    ?assertEqual({ok, #{}}, get_prepared_writeset(?PREPARED_TABLE, tx_4)),
+    ?assertEqual({ok, #{}}, get_prepared_remove(?PREPARED_TABLE, tx_4)),
     ?assertEqual(49, compute_new_known_time(?PREPARED_TABLE)),
 
-    ?assertEqual({ok, #{}}, get_prepared_writeset(?PREPARED_TABLE, tx_5)),
+    ?assertEqual({ok, #{}}, get_prepared_remove(?PREPARED_TABLE, tx_5)),
     %% Now that the queue is empty, the time is the current clock
     Ts = grb_time:timestamp(),
     Lowest = compute_new_known_time(?PREPARED_TABLE),

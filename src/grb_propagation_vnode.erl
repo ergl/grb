@@ -28,6 +28,10 @@
          handle_red_heartbeat/2,
          handle_self_blue_heartbeat/2]).
 
+%% I hope you know what you're doing
+-export([clock_table/1,
+         handle_blue_heartbeat_unsafe/3]).
+
 -ifdef(BASIC_REPLICATION).
 %% Basic Replication API
 -export([merge_remote_stable_vc/2,
@@ -320,7 +324,11 @@ handle_red_heartbeat(Partition, Ts) ->
 handle_self_blue_heartbeat(Partition, Ts) ->
     SelfReplica = grb_dc_manager:replica_id(),
     %% ok to insert directly, we are always called from the same place
-    true = ets:insert(clock_table(Partition), {?known_key(SelfReplica), Ts}),
+    handle_blue_heartbeat_unsafe(SelfReplica, Ts, clock_table(Partition)).
+
+-spec handle_blue_heartbeat_unsafe(replica_id(), grb_time:ts(), cache_id()) -> ok.
+handle_blue_heartbeat_unsafe(ReplicaId, Time, Table) ->
+    true = ets:insert(Table, {?known_key(ReplicaId), Time}),
     ok.
 
 -spec handle_clock_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
