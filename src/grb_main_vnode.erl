@@ -455,6 +455,7 @@ handle_remote_tx_array_internal(SourceReplica, {WS1, VC1}, {WS2, VC2}, {WS3, VC3
 -endif.
 
 -spec decide_blue_internal(term(), vclock(), state()) -> ok.
+-dialyzer({nowarn_function, decide_blue_internal/3}).
 decide_blue_internal(TxId, VC, #state{partition=SelfPartition,
                                       op_log=OpLog,
                                       op_log_size=LogSize,
@@ -477,6 +478,8 @@ decide_blue_internal(TxId, VC, #state{partition=SelfPartition,
     ok.
 
 -spec get_prepared_writeset(cache_id(), term()) -> {ok, writeset(), grb_time:ts()} | false.
+%% Dialyzer and record matches, the return
+-dialyzer({nowarn_function, get_prepared_writeset/2}).
 get_prepared_writeset(PreparedBlue, TxId) ->
     case ets:select(PreparedBlue, [{ #prepared_record{key={'$1', TxId}, writeset='$2'}, [], [{{'$1', '$2'}}] }]) of
         [{PrepareTs, WS}] ->
@@ -487,6 +490,7 @@ get_prepared_writeset(PreparedBlue, TxId) ->
     end.
 
 -spec remove_from_prepared(term(), grb_time:ts(), cache_id()) -> ok.
+-dialyzer({no_unused, remove_from_prepared/3}).
 remove_from_prepared(TxId, PrepareTime, PreparedBlue) ->
     true = ets:delete(PreparedBlue, {PrepareTime, TxId}),
     ok.
@@ -563,6 +567,8 @@ update_last_red(_TxType, Key, Vsn, AtReplicas, CommitVC, LastRed, LogSize) ->
                           CommitVC :: vclock(),
                           LastRed :: last_red(),
                           LogSize :: non_neg_integer()) -> ok.
+
+-dialyzer({no_return, update_last_red_log/6}).
 update_last_red_log(Key, Vsn, AtReplicas, CommitVC, LastRed, LogSize) ->
     case ets:select(LastRed, red_clocks_match(Key)) of
         [{OldRed, ListSize}] when ListSize > LogSize ->
