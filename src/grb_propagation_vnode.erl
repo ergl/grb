@@ -403,6 +403,15 @@ init([Partition]) ->
                 uniform_interval=UniformInterval,
                 clock_cache=ClockTable}}.
 
+terminate(_Reason, #state{clock_cache=ClockCache, remote_logs=RemoteLogs}) ->
+    try
+        ets:delete(ClockCache),
+        [ grb_remote_commit_log:delete(Log) || Log <- maps:values(RemoteLogs)]
+    catch _:_ ->
+        ok
+    end,
+    ok.
+
 handle_command(ping, _Sender, State) ->
     {reply, {pong, node(), State#state.partition}, State};
 
@@ -968,10 +977,6 @@ is_empty(State) ->
 
 handle_exit(_Pid, _Reason, State) ->
     {noreply, State}.
-
-terminate(_Reason, #state{clock_cache=ClockCache}) ->
-    try ets:delete(ClockCache) catch _:_ -> ok end,
-    ok.
 
 delete(State=#state{clock_cache=ClockCache}) ->
     try ets:delete(ClockCache) catch _:_ -> ok end,

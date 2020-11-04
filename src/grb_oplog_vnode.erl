@@ -20,7 +20,6 @@
 -export([get_key_version/3,
          get_key_version_with_table/3,
          prepare_blue/4,
-         decide_blue_ready/1,
          decide_blue_ready/2,
          decide_blue/3,
          handle_replicate/4,
@@ -184,10 +183,6 @@ prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
     ok = update_prepare_clocks(Partition, SnapshotVC),
     ok = insert_prepared(Partition, TxId, WriteSet, Ts),
     Ts.
-
--spec decide_blue_ready(vclock()) -> ready | not_ready.
-decide_blue_ready(CommitVC) ->
-    decide_blue_ready(grb_dc_manager:replica_id(), CommitVC).
 
 -spec decide_blue_ready(replica_id(), vclock()) -> ready | not_ready.
 decide_blue_ready(ReplicaId, CommitVC) ->
