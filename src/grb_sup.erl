@@ -30,18 +30,18 @@ start_link() ->
 
 init(_Args) ->
     RuntimeStats = ?CHILD(grb_measurements, worker, []),
-    ClockVNode = ?VNODE(grb_propagation_vnode_master, grb_propagation_vnode),
-    BlueTxVnode = ?VNODE(grb_oplog_vnode_master, grb_oplog_vnode),
+    PropagationVnode = ?VNODE(grb_propagation_vnode_master, grb_propagation_vnode),
+    OpLogVnode = ?VNODE(grb_oplog_vnode_master, grb_oplog_vnode),
 
-    BlueTxReplicaSup = ?CHILD(grb_partition_replica_sup, supervisor, []),
+    OpLogReaderSup = ?CHILD(grb_oplog_reader_sup, supervisor, []),
     InterDCSenderSup = ?CHILD(grb_dc_connection_sender_sup, supervisor, []),
     InterDCConnManager = ?CHILD(grb_dc_connection_manager, worker, []),
     LocalBroadcast = ?CHILD(grb_local_broadcast, worker, []),
 
     ChildSpecs = add_red_processes([RuntimeStats,
-                                    ClockVNode,
-                                    BlueTxVnode,
-                                    BlueTxReplicaSup,
+                                    PropagationVnode,
+                                    OpLogVnode,
+                                    OpLogReaderSup,
                                     LocalBroadcast,
                                     InterDCSenderSup,
                                     InterDCConnManager]),

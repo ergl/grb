@@ -147,7 +147,7 @@ start_background_processes() ->
     Res2 = grb_dc_utils:bcast_vnode_sync(grb_oplog_vnode_master, start_blue_hb_timer, 1000),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res2),
 
-    Res3 = grb_dc_utils:bcast_vnode_sync(grb_oplog_vnode_master, start_replicas, 1000),
+    Res3 = grb_dc_utils:bcast_vnode_sync(grb_oplog_vnode_master, start_readers, 1000),
     ok = lists:foreach(fun({_, true}) -> ok end, Res3),
 
     %% if we're not in red mode, this won't do anything
@@ -299,7 +299,7 @@ persist_replica_info() ->
 -spec stop_background_processes() -> ok.
 stop_background_processes() ->
     ok = grb_oplog_vnode:stop_blue_hb_timer_all(),
-    ok = grb_oplog_vnode:stop_replicas_all(),
+    ok = grb_oplog_vnode:stop_readers_all(),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 

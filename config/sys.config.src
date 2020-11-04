@@ -49,8 +49,8 @@
     %% The port to send/recv inter-dc communication (default is 8989)
     {inter_dc_port, ${INTER_DC_PORT}},
 
-    %% How many replicas per main vnode (readers)
-    {op_log_replicas, ${OP_LOG_REPLICAS}},
+    %% How many readers per oplog vnode
+    {oplog_readers, ${OP_LOG_READERS}},
 
     %% How many versions to keep per key
     {version_log_size, ${VSN_LOG_SIZE}},

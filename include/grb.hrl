@@ -1,8 +1,4 @@
-%% The read concurrency is the maximum number of concurrent
-%% readers per vnode.  This is so shared memory can be used
-%% in the case of keys that are read frequently.  There is
-%% still only 1 writer per vnode
--define(READ_CONCURRENCY, 20).
+-define(OPLOG_READER_NUM, 20).
 
 %% Wrappers for riak_core
 -type partition_id() :: chash:index_as_int().

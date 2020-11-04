@@ -123,7 +123,7 @@ try_key_vsn(Partition, Key, SnapshotVC) ->
 
 -spec async_key_vsn(grb_promise:t(), partition_id(), key(), vclock()) -> ok.
 async_key_vsn(Promise, Partition, Key, SnapshotVC) ->
-    grb_partition_replica:async_key_vsn(Promise, Partition, Key, SnapshotVC).
+    grb_oplog_reader:async_key_vsn(Promise, Partition, Key, SnapshotVC).
 
 -spec key_vsn_bypass(partition_id(), key(), vclock()) -> {ok, val()}.
 key_vsn_bypass(Partition, Key, SnapshotVC) ->
@@ -135,7 +135,7 @@ prepare_blue(Partition, TxId, WriteSet, VC) ->
 
 -spec decide_blue(partition_id(), any(), vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->
-    grb_partition_replica:decide_blue(Partition, TxId, VC).
+    grb_oplog_reader:decide_blue(Partition, TxId, VC).
 
 -spec commit_red(grb_promise:t(), partition_id(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
 -ifdef(BLUE_KNOWN_VC).

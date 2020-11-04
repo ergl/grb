@@ -23,8 +23,8 @@ if [ -z "$INTER_DC_PORT" ]; then
   export INTER_DC_PORT=8989
 fi
 
-if [ -z "$OP_LOG_REPLICAS" ]; then
-  export OP_LOG_REPLICAS=20
+if [ -z "$OP_LOG_READERS" ]; then
+  export OP_LOG_READERS=20
 fi
 
 if [ -z "$VSN_LOG_SIZE" ]; then

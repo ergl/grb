@@ -382,7 +382,7 @@ check_ready(Node) ->
     ?LOG_INFO("[master ready] Checking ~p~n", [Node]),
 
     VnodesReady = check_vnodes(Node),
-    Res3 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_oplog_vnode_master, replicas_ready]),
+    Res3 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_oplog_vnode_master, readers_ready]),
     ReadReplicasReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res3),
 
     NodeReady = VnodesReady andalso ReadReplicasReady,

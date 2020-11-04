@@ -9,7 +9,7 @@
 
 %% Management API
 -export([stop_blue_hb_timer_all/0,
-         stop_replicas_all/0]).
+         stop_readers_all/0]).
 
 %% ETS table API
 -export([op_log_table/1,
@@ -108,10 +108,10 @@ stop_blue_hb_timer_all() ->
      end  || N <- grb_dc_utils:get_index_nodes() ],
     ok.
 
--spec stop_replicas_all() -> ok.
-stop_replicas_all() ->
+-spec stop_readers_all() -> ok.
+stop_readers_all() ->
     [try
-        riak_core_vnode_master:command(N, stop_replicas, ?master)
+        riak_core_vnode_master:command(N, stop_readers, ?master)
      catch
          _:_ -> ok
      end  || N <- grb_dc_utils:get_index_nodes() ],
@@ -279,7 +279,7 @@ init([Partition]) ->
     %%   in the process queue, and some events will be processed quicker. Since
     %%   we want to control the size of the queue, this allows us to do that.
     {ok, BlueTickInterval} = application:get_env(grb, self_blue_heartbeat_interval),
-    NumReplicas = application:get_env(grb, op_log_replicas, ?READ_CONCURRENCY),
+    NumReaders = application:get_env(grb, oplog_readers, ?OPLOG_READER_NUM),
 
     OpLogTable = ets:new(?OP_LOG_TABLE, [set, protected, {read_concurrency, true}]),
     ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_TABLE}, OpLogTable),
@@ -291,7 +291,7 @@ init([Partition]) ->
     ok = persistent_term:put({?MODULE, Partition, ?PREPARED_TABLE}, PreparedBlue),
 
     State = #state{partition = Partition,
-                   replicas_n=NumReplicas,
+                   replicas_n=NumReaders,
                    prepared_blue=PreparedBlue,
                    blue_tick_interval=BlueTickInterval,
                    op_log_size = KeyLogSize,
@@ -335,14 +335,14 @@ handle_command(start_blue_hb_timer, _From, S = #state{partition=Partition,
 handle_command(start_blue_hb_timer, _From, S = #state{blue_tick_pid=Pid}) when is_pid(Pid) ->
     {reply, ok, S};
 
-handle_command(start_replicas, _From, S = #state{partition=P,
+handle_command(start_readers, _From, S = #state{partition=P,
                                                  replicas_n=N}) ->
 
-    Result = case grb_partition_replica:replica_ready(P, N) of
+    Result = case grb_oplog_reader:readers_ready(P, N) of
         true -> true;
         false ->
-            ok = grb_partition_replica:start_replicas(P, N),
-            grb_partition_replica:replica_ready(P, N)
+            ok = grb_oplog_reader:start_readers(P, N),
+            grb_oplog_reader:readers_ready(P, N)
     end,
     {reply, Result, S};
 
@@ -353,12 +353,12 @@ handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_pid=Pid}) when is
     Pid ! ?kill_timer_req,
     {noreply, S#state{blue_tick_pid=undefined}};
 
-handle_command(stop_replicas, _From, S = #state{partition=P}) ->
-    ok = grb_partition_replica:stop_replicas(P),
+handle_command(stop_readers, _From, S = #state{partition=P}) ->
+    ok = grb_oplog_reader:stop_readers(P),
     {noreply, S};
 
-handle_command(replicas_ready, _From, S = #state{partition=P, replicas_n=N}) ->
-    Result = grb_partition_replica:replica_ready(P, N),
+handle_command(readers_ready, _From, S = #state{partition=P, replicas_n=N}) ->
+    Result = grb_oplog_reader:readers_ready(P, N),
     {reply, Result, S};
 
 handle_command({decide_blue, TxId, VC}, _From, State) ->
