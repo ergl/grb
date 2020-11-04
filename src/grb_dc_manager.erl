@@ -147,8 +147,7 @@ start_background_processes() ->
     Res2 = grb_dc_utils:bcast_vnode_sync(grb_oplog_vnode_master, start_blue_hb_timer, 1000),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res2),
 
-    Res3 = grb_dc_utils:bcast_vnode_sync(grb_oplog_vnode_master, start_readers, 1000),
-    ok = lists:foreach(fun({_, true}) -> ok end, Res3),
+    ok = grb_oplog_vnode:start_readers_all(),
 
     %% if we're not in red mode, this won't do anything
     ok = grb_paxos_vnode:all_fetch_red_table(),

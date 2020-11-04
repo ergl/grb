@@ -9,6 +9,7 @@
 
 %% Management API
 -export([stop_blue_hb_timer_all/0,
+         start_readers_all/0,
          stop_readers_all/0]).
 
 %% ETS table API
@@ -107,6 +108,20 @@ stop_blue_hb_timer_all() ->
          _:_ -> ok
      end  || N <- grb_dc_utils:get_index_nodes() ],
     ok.
+
+-spec start_readers_all() -> ok | error.
+start_readers_all() ->
+    Results = [try
+    riak_core_vnode_master:sync_command(N, start_readers, ?master, 1000)
+    catch
+        _:_ -> false
+    end || N <- grb_dc_utils:get_index_nodes() ],
+    case lists:all(fun(Result) -> Result end, Results) of
+        true ->
+            ok;
+        false ->
+            error
+    end.
 
 -spec stop_readers_all() -> ok.
 stop_readers_all() ->
