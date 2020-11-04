@@ -28,8 +28,8 @@ register_vnodes() ->
     ok = riak_core:register([{vnode_module, grb_propagation_vnode}]),
     ok = riak_core_node_watcher:service_up(grb_propagation, self()),
 
-    ok = riak_core:register([{vnode_module, grb_main_vnode}]),
-    ok = riak_core_node_watcher:service_up(grb_main, self()).
+    ok = riak_core:register([{vnode_module, grb_oplog_vnode}]),
+    ok = riak_core_node_watcher:service_up(grb_oplog, self()).
 -else.
 register_vnodes() ->
     ok = riak_core:register([{vnode_module, grb_paxos_vnode}]),
@@ -38,8 +38,8 @@ register_vnodes() ->
     ok = riak_core:register([{vnode_module, grb_propagation_vnode}]),
     ok = riak_core_node_watcher:service_up(grb_propagation, self()),
 
-    ok = riak_core:register([{vnode_module, grb_main_vnode}]),
-    ok = riak_core_node_watcher:service_up(grb_main, self()).
+    ok = riak_core:register([{vnode_module, grb_oplog_vnode}]),
+    ok = riak_core_node_watcher:service_up(grb_oplog, self()).
 -endif.
 
 -ifdef(debug_log).

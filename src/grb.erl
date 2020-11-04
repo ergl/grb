@@ -118,7 +118,7 @@ try_key_vsn(Partition, Key, SnapshotVC) ->
         not_ready ->
             not_ready;
         ready ->
-            grb_main_vnode:get_key_version(Partition, Key, SnapshotVC)
+            grb_oplog_vnode:get_key_version(Partition, Key, SnapshotVC)
     end.
 
 -spec async_key_vsn(grb_promise:t(), partition_id(), key(), vclock()) -> ok.
@@ -127,11 +127,11 @@ async_key_vsn(Promise, Partition, Key, SnapshotVC) ->
 
 -spec key_vsn_bypass(partition_id(), key(), vclock()) -> {ok, val()}.
 key_vsn_bypass(Partition, Key, SnapshotVC) ->
-    grb_main_vnode:get_key_version(Partition, Key, SnapshotVC).
+    grb_oplog_vnode:get_key_version(Partition, Key, SnapshotVC).
 
 -spec prepare_blue(partition_id(), any(), any(), vclock()) -> non_neg_integer().
 prepare_blue(Partition, TxId, WriteSet, VC) ->
-    grb_main_vnode:prepare_blue(Partition, TxId, WriteSet, VC).
+    grb_oplog_vnode:prepare_blue(Partition, TxId, WriteSet, VC).
 
 -spec decide_blue(partition_id(), any(), vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->

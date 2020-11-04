@@ -1,4 +1,4 @@
--module(grb_main_vnode).
+-module(grb_oplog_vnode).
 -behaviour(riak_core_vnode).
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
@@ -50,7 +50,7 @@
 -ignore_xref([start_vnode/1,
               handle_info/2]).
 
--define(master, grb_main_vnode_master).
+-define(master, grb_oplog_vnode_master).
 -define(blue_tick_req, blue_tick_event).
 -define(kill_timer_req, kill_timer_event).
 
@@ -703,7 +703,7 @@ get_prepared_remove(PreparedTable, TxId) ->
     ok = remove_from_prepared(TxId, Time, PreparedTable),
     {ok, WS}.
 
-grb_main_vnode_compute_new_known_time_test() ->
+grb_oplog_vnode_compute_new_known_time_test() ->
     _ = ets:new(?PREPARED_TABLE, [ordered_set, named_table, {keypos, #prepared_record.key}]),
     true = ets:insert(?PREPARED_TABLE, [
         #prepared_record{key={1, tx_1}, writeset=#{}},

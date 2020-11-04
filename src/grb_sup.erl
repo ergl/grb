@@ -31,7 +31,7 @@ start_link() ->
 init(_Args) ->
     RuntimeStats = ?CHILD(grb_measurements, worker, []),
     ClockVNode = ?VNODE(grb_propagation_vnode_master, grb_propagation_vnode),
-    BlueTxVnode = ?VNODE(grb_main_vnode_master, grb_main_vnode),
+    BlueTxVnode = ?VNODE(grb_oplog_vnode_master, grb_oplog_vnode),
 
     BlueTxReplicaSup = ?CHILD(grb_partition_replica_sup, supervisor, []),
     InterDCSenderSup = ?CHILD(grb_dc_connection_sender_sup, supervisor, []),

@@ -382,7 +382,7 @@ check_ready(Node) ->
     ?LOG_INFO("[master ready] Checking ~p~n", [Node]),
 
     VnodesReady = check_vnodes(Node),
-    Res3 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, replicas_ready]),
+    Res3 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_oplog_vnode_master, replicas_ready]),
     ReadReplicasReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res3),
 
     NodeReady = VnodesReady andalso ReadReplicasReady,
@@ -398,7 +398,7 @@ check_vnodes(Node) ->
     ?LOG_INFO("[vnodes ready] Checking ~p~n", [Node]),
 
     Res0 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_propagation_vnode_master, is_ready]),
-    Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, is_ready]),
+    Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_oplog_vnode_master, is_ready]),
 
     PropServiceReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res0),
     BlueTxServiceReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res1),
@@ -415,7 +415,7 @@ check_vnodes(Node) ->
 
     Res0 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_paxos_vnode_master, is_ready]),
     Res1 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_propagation_vnode_master, is_ready]),
-    Res2 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_main_vnode_master, is_ready]),
+    Res2 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_oplog_vnode_master, is_ready]),
 
     PaxosServiceReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res0),
     PropServiceReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res1),

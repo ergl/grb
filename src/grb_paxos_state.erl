@@ -433,7 +433,7 @@ move_pending_data(Id, RedTs, Vote, RKeys, WKeys, PendingReads, WriteCache) ->
                         RS :: readset(),
                         WS :: writeset(),
                         SnapshotVC :: vclock(),
-                        LastRed :: grb_main_vnode:last_red(),
+                        LastRed :: grb_oplog_vnode:last_red(),
                         PrepReads :: cache_id(),
                         Writes :: cache_id()) -> {red_vote(), vclock()}.
 

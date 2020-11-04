@@ -1,5 +1,5 @@
 %% -------------------------------------------------------------------
-%% This module allows multiple readers on the ETS tables of a grb_main_vnode
+%% This module allows multiple readers on the ETS tables of a grb_oplog_vnode
 %% -------------------------------------------------------------------
 -module(grb_partition_replica).
 -behavior(gen_server).
@@ -95,7 +95,7 @@ decide_blue(Partition, TxId, VC) ->
 
 init([Partition, Id]) ->
     ok = persist_replica_pid(Partition, Id, self()),
-    OpLog = grb_main_vnode:op_log_table(Partition),
+    OpLog = grb_oplog_vnode:op_log_table(Partition),
     {ok, WaitMs} = application:get_env(grb, partition_ready_wait_ms),
     {ok, #state{partition=Partition,
                 replica_id=grb_dc_manager:replica_id(),
@@ -121,13 +121,13 @@ handle_cast({decide_blue, TxId, VC}, S0=#state{partition=Partition,
                                                pending_decides=Pending,
                                                known_barrier_wait_ms=WaitMs}) ->
 
-    S = case grb_main_vnode:decide_blue_ready(ReplicaId, VC) of
+    S = case grb_oplog_vnode:decide_blue_ready(ReplicaId, VC) of
         not_ready ->
             %% todo(borja, efficiency): can we use hybrid clocks here?
             erlang:send_after(WaitMs, self(), {retry_decide, TxId}),
             S0#state{pending_decides=Pending#{TxId => VC}};
         ready ->
-            grb_main_vnode:decide_blue(Partition, TxId, VC),
+            grb_oplog_vnode:decide_blue(Partition, TxId, VC),
             S0
     end,
     {noreply, S};
@@ -145,13 +145,13 @@ handle_info({retry_decide, TxId}, S0=#state{partition=Partition,
                                             pending_decides=Pending,
                                             known_barrier_wait_ms=WaitMs}) ->
     #{TxId := VC} = Pending,
-    S = case grb_main_vnode:decide_blue_ready(ReplicaId, VC) of
+    S = case grb_oplog_vnode:decide_blue_ready(ReplicaId, VC) of
         not_ready ->
             %% todo(borja, efficiency): can we use hybrid clocks here?
             erlang:send_after(WaitMs, self(), {retry_decide, TxId}),
             S0;
         ready ->
-            grb_main_vnode:decide_blue(Partition, TxId, VC),
+            grb_oplog_vnode:decide_blue(Partition, TxId, VC),
             S0#state{pending_decides=maps:remove(TxId, Pending)}
     end,
     {noreply, S};
@@ -179,7 +179,7 @@ key_vsn_wait(Promise, Key, SnapshotVC, #state{partition=Partition,
             erlang:send_after(WaitMs, self(), {retry_key_vsn_wait, Promise, Key, SnapshotVC}),
             ok;
         ready ->
-            grb_promise:resolve(grb_main_vnode:get_key_version_with_table(OpLogReplica, Key, SnapshotVC),
+            grb_promise:resolve(grb_oplog_vnode:get_key_version_with_table(OpLogReplica, Key, SnapshotVC),
                                 Promise)
     end.
 

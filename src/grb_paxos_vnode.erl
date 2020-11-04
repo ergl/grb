@@ -63,7 +63,7 @@
     prune_timer = undefined :: reference() | undefined,
     prune_interval :: non_neg_integer(),
 
-    %% read replica of the last version cache by grb_main_vnode
+    %% read replica of the last version cache by grb_oplog_vnode
     op_log_red_replica :: cache_id() | undefined,
     synod_state = undefined :: grb_paxos_state:t() | undefined,
 
@@ -190,7 +190,7 @@ handle_command(is_ready, _Sender, State) ->
 
 handle_command(fetch_red_table, _Sender, S0=#state{partition=Partition}) ->
     {Result, S} = try
-        Table = grb_main_vnode:last_red_table(Partition),
+        Table = grb_oplog_vnode:last_red_table(Partition),
         {ok, S0#state{op_log_red_replica=Table}}
     catch _:_  ->
         {error, S0}
@@ -465,7 +465,7 @@ deliver_updates(Partition, From, SynodState) ->
             lists:foreach(fun
                 ({WriteSet, CommitVC}) when is_map(WriteSet) andalso map_size(WriteSet) =/= 0->
                     ?LOG_DEBUG("~p DELIVER(~p, ~p)", [Partition, NextFrom, WriteSet]),
-                    ok = grb_main_vnode:handle_red_transaction(Partition, WriteSet, CommitVC);
+                    ok = grb_oplog_vnode:handle_red_transaction(Partition, WriteSet, CommitVC);
                 (_) ->
                     ok
             end, Entries),
