@@ -14,7 +14,7 @@
 
 %% ETS table API
 -export([op_log_table/1,
-         last_red_table/1]).
+         last_vc_table/1]).
 
 %% Public API
 -export([get_key_version/3,
@@ -56,11 +56,11 @@
 -define(kill_timer_req, kill_timer_event).
 
 -define(OP_LOG_TABLE, op_log_table).
--define(OP_LOG_LAST_RED, op_log_last_red_table).
+-define(OP_LOG_LAST_VC, op_log_last_vc_table).
 -define(PREPARED_TABLE, prepared_blue_table).
 
 -type op_log() :: cache(key(), grb_version_log:t()).
--type last_red() :: cache(key(), #last_red_record{}).
+-type last_vc() :: cache(key(), vclock()).
 
 -record(state, {
     partition :: partition_id(),
@@ -76,7 +76,7 @@
     %% todo(borja, crdt): change type of op_log when adding crdts
     op_log_size :: non_neg_integer(),
     op_log :: op_log(),
-    op_last_red :: last_red(),
+    op_last_vc :: last_vc(),
 
     %% It doesn't make sense to append it if we're not connected to other clusters
     should_append_commit = true :: boolean()
@@ -94,7 +94,7 @@
 
 -type state() :: #state{}.
 
--export_type([last_red/0]).
+-export_type([last_vc/0]).
 
 %%%===================================================================
 %%% Management API
@@ -140,9 +140,9 @@ stop_readers_all() ->
 op_log_table(Partition) ->
     persistent_term:get({?MODULE, Partition, ?OP_LOG_TABLE}).
 
--spec last_red_table(partition_id()) -> cache_id().
-last_red_table(Partition) ->
-    persistent_term:get({?MODULE, Partition, ?OP_LOG_LAST_RED}).
+-spec last_vc_table(partition_id()) -> last_vc().
+last_vc_table(Partition) ->
+    persistent_term:get({?MODULE, Partition, ?OP_LOG_LAST_VC}).
 
 -spec prepared_blue_table(partition_id()) -> cache_id().
 prepared_blue_table(Partition) ->
@@ -299,8 +299,8 @@ init([Partition]) ->
     OpLogTable = ets:new(?OP_LOG_TABLE, [set, protected, {read_concurrency, true}]),
     ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_TABLE}, OpLogTable),
 
-    LastRedTable = ets:new(?OP_LOG_LAST_RED, [set, protected, {read_concurrency, true}, {keypos, #last_red_record.key}]),
-    ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_LAST_RED}, LastRedTable),
+    LastKeyVC = ets:new(?OP_LOG_LAST_VC, [set, protected, {read_concurrency, true}]),
+    ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_LAST_VC}, LastKeyVC),
 
     PreparedBlue = ets:new(?PREPARED_TABLE, [ordered_set, public, {write_concurrency, true}, {keypos, #prepared_record.key}]),
     ok = persistent_term:put({?MODULE, Partition, ?PREPARED_TABLE}, PreparedBlue),
@@ -311,7 +311,7 @@ init([Partition]) ->
                    blue_tick_interval=BlueTickInterval,
                    op_log_size = KeyLogSize,
                    op_log = OpLogTable,
-                   op_last_red = LastRedTable},
+                   op_last_vc= LastKeyVC},
 
     {ok, State}.
 
@@ -390,8 +390,8 @@ handle_command({handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4}, _Fro
 
 handle_command({handle_red_tx, WS, VC}, _From, S=#state{op_log=OperationLog,
                                                         op_log_size=LogSize,
-                                                        op_last_red=LastRed}) ->
-    ok = update_partition_state(?RED_REPLICA, WS, VC, OperationLog, LogSize, LastRed),
+                                                        op_last_vc=LastVC}) ->
+    ok = update_partition_state(?RED_REPLICA, WS, VC, OperationLog, LogSize, LastVC),
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->
@@ -417,8 +417,8 @@ insert_prepared(Partition, TxId, WriteSet, PrepareTime) ->
 handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{partition=Partition,
                                                                        op_log=OperationLog,
                                                                        op_log_size=LogSize,
-                                                                       op_last_red=LastRed}) ->
-    ok = update_partition_state(WS, VC, OperationLog, LogSize, LastRed),
+                                                                       op_last_vc=LastVC}) ->
+    ok = update_partition_state(WS, VC, OperationLog, LogSize, LastVC),
     ok = grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, CommitTime),
     ok.
 
@@ -427,8 +427,8 @@ handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{partition=Pa
 handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{partition=Partition,
                                                                           op_log=OperationLog,
                                                                           op_log_size=LogSize,
-                                                                          op_last_red=LastRed}) ->
-    ok = update_partition_state(WS, VC, OperationLog, LogSize, LastRed),
+                                                                          op_last_vc=LastVC}) ->
+    ok = update_partition_state(WS, VC, OperationLog, LogSize, LastVC),
     ok = grb_propagation_vnode:append_remote_blue_commit(SourceReplica, Partition, CommitTime, WS, VC),
     ok.
 
@@ -438,24 +438,24 @@ handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{partition=Pa
 -ifdef(NO_REMOTE_APPEND).
 
 handle_remote_tx_array_internal(SourceReplica, {WS1, VC1}, {WS2, VC2}, {WS3, VC3}, {WS4, VC4},
-        #state{partition=Partition, op_log=OperationLog, op_log_size=LogSize, op_last_red=LastRed}) ->
+        #state{partition=Partition, op_log=OperationLog, op_log_size=LogSize, op_last_vc=LastVC}) ->
 
-    ok = update_partition_state(WS1, VC1, OperationLog, LogSize, LastRed),
-    ok = update_partition_state(WS2, VC2, OperationLog, LogSize, LastRed),
-    ok = update_partition_state(WS3, VC3, OperationLog, LogSize, LastRed),
-    ok = update_partition_state(WS4, VC4, OperationLog, LogSize, LastRed),
+    ok = update_partition_state(WS1, VC1, OperationLog, LogSize, LastVC),
+    ok = update_partition_state(WS2, VC2, OperationLog, LogSize, LastVC),
+    ok = update_partition_state(WS3, VC3, OperationLog, LogSize, LastVC),
+    ok = update_partition_state(WS4, VC4, OperationLog, LogSize, LastVC),
     ok = grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, grb_vclock:get_time(SourceReplica, VC4)),
     ok.
 
 -else.
 
 handle_remote_tx_array_internal(SourceReplica, {WS1, VC1}, {WS2, VC2}, {WS3, VC3}, {WS4, VC4},
-        #state{partition=Partition, op_log=OperationLog, op_log_size=LogSize, op_last_red=LastRed}) ->
+        #state{partition=Partition, op_log=OperationLog, op_log_size=LogSize, op_last_vc=LastVC}) ->
 
-    ok = update_partition_state(WS1, VC1, OperationLog, LogSize, LastRed),
-    ok = update_partition_state(WS2, VC2, OperationLog, LogSize, LastRed),
-    ok = update_partition_state(WS3, VC3, OperationLog, LogSize, LastRed),
-    ok = update_partition_state(WS4, VC4, OperationLog, LogSize, LastRed),
+    ok = update_partition_state(WS1, VC1, OperationLog, LogSize, LastVC),
+    ok = update_partition_state(WS2, VC2, OperationLog, LogSize, LastVC),
+    ok = update_partition_state(WS3, VC3, OperationLog, LogSize, LastVC),
+    ok = update_partition_state(WS4, VC4, OperationLog, LogSize, LastVC),
 
     ok = grb_propagation_vnode:append_remote_blue_commit_no_hb(SourceReplica, Partition, WS1, VC1),
     ok = grb_propagation_vnode:append_remote_blue_commit_no_hb(SourceReplica, Partition, WS2, VC2),
@@ -470,18 +470,19 @@ handle_remote_tx_array_internal(SourceReplica, {WS1, VC1}, {WS2, VC2}, {WS3, VC3
 -endif.
 
 -spec decide_blue_internal(term(), vclock(), state()) -> ok.
--dialyzer({nowarn_function, decide_blue_internal/3}).
+%% Caused by get_prepared_writeset/2
+-dialyzer({no_return, decide_blue_internal/3}).
 decide_blue_internal(TxId, VC, #state{partition=SelfPartition,
                                       op_log=OpLog,
                                       op_log_size=LogSize,
-                                      op_last_red=LastRed,
+                                      op_last_vc=LastVC,
                                       prepared_blue=PreparedBlue,
                                       should_append_commit=ShouldAppend}) ->
 
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
     {ok, WS, PreparedAt} = get_prepared_writeset(PreparedBlue, TxId),
-    ok = update_partition_state(WS, VC, OpLog, LogSize, LastRed),
+    ok = update_partition_state(WS, VC, OpLog, LogSize, LastVC),
     ok = remove_from_prepared(TxId, PreparedAt, PreparedBlue),
     KnownTime = compute_new_known_time(PreparedBlue),
     case ShouldAppend of
@@ -505,6 +506,7 @@ get_prepared_writeset(PreparedBlue, TxId) ->
     end.
 
 -spec remove_from_prepared(term(), grb_time:ts(), cache_id()) -> ok.
+%% Caused by get_prepared_writeset/2 on decide_internal
 -dialyzer({no_unused, remove_from_prepared/3}).
 remove_from_prepared(TxId, PrepareTime, PreparedBlue) ->
     true = ets:delete(PreparedBlue, {PrepareTime, TxId}),
@@ -514,20 +516,20 @@ remove_from_prepared(TxId, PrepareTime, PreparedBlue) ->
                              CommitVC :: vclock(),
                              OpLog :: op_log(),
                              DefaultSize :: non_neg_integer(),
-                             LastRed :: last_red()) -> ok.
+                             LastVC :: last_vc()) -> ok.
 
-update_partition_state(WS, CommitVC, OpLog, DefaultSize, LastRed) ->
-    update_partition_state(blue, WS, CommitVC, OpLog, DefaultSize, LastRed).
+update_partition_state(WS, CommitVC, OpLog, DefaultSize, LastVC) ->
+    update_partition_state(blue, WS, CommitVC, OpLog, DefaultSize, LastVC).
 
 -spec update_partition_state(TxType :: transaction_type(),
                              WS :: #{},
                              CommitVC :: vclock(),
                              OpLog :: op_log(),
                              DefaultSize :: non_neg_integer(),
-                             LastRed :: last_red()) -> ok.
+                             LastVC :: last_vc()) -> ok.
 
 -ifdef(BLUE_KNOWN_VC).
-update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, _LastRed) ->
+update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, _LastVC) ->
     Objects = maps:fold(fun(Key, Value, Acc) ->
         Log = append_to_log(TxType, Key, Value, CommitVC, OpLog, DefaultSize),
         [{Key, Log} | Acc]
@@ -535,101 +537,50 @@ update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, _LastRed) ->
     true = ets:insert(OpLog, Objects),
     ok.
 -else.
-%% Dialyzer really doesn't like what's happening inside update_last_red/7, so it bottles upwards to this
-%% function.
--dialyzer({no_return, update_partition_state/6}).
-update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, LastRed) ->
-    Vsn = grb_vclock:get_time(?RED_REPLICA, CommitVC),
+update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, LastVC) ->
     AllReplicas = [?RED_REPLICA | grb_dc_manager:all_replicas()],
     Objects = maps:fold(fun(Key, Value, Acc) ->
         Log = append_to_log(TxType, Key, Value, CommitVC, OpLog, DefaultSize),
-        ok = update_last_red(TxType, Key, Vsn, AllReplicas, CommitVC, LastRed, DefaultSize),
+        ok = update_last_vc(TxType, Key, AllReplicas, CommitVC, LastVC),
         [{Key, Log} | Acc]
     end, [], WS),
     true = ets:insert(OpLog, Objects),
     ok.
 
-%% LastRed contains, for each key, its max red version and (small) list of commit vectors
-%% We could have only one clock, and max it with the one we have on each transaction, but this
-%% would slow the commit of each transaction. Instead, normally a transaction will either insert
-%% a new entry (if there was no info about it before), or append a new commit vector to the list.
-%%
-%% Once the list hits a certain size, we can fetch it, prune it, and add it again. This should
-%% only happen from time to time, if we tune the size correctly (25 clocks by default).
--spec update_last_red(TxType :: transaction_type(),
+%% LastVC contains, for each key, its max commit vector.
+%% Although maxing two vectors on each transaction could be slow, this only happens on red transactions,
+%% which are already slow due to cross-dc 2PC. Adding a little bit of time doing this max shouldn't add
+%% too much overhead on top.
+-spec update_last_vc(TxType :: transaction_type(),
                       Key :: key(),
-                      Vsn :: grb_time:ts(),
                       AtReplicas :: [replica_id()],
                       CommitVC :: vclock(),
-                      LastRed :: last_red(),
-                      LogSize :: non_neg_integer()) -> ok.
+                      LastVC :: last_vc()) -> ok.
 
-%% dialyzer doesn't like the calls to red_clocks_match/1 / append_clocks_match/4
--dialyzer({nowarn_function, update_last_red/7}).
 -ifndef('RED_BLUE_CONFLICT').
-update_last_red(blue, _, _, _, _, _, _) ->
+update_last_vc(blue, _, _, _, _) ->
     ok;
-update_last_red(red, Key, Vsn, AtReplicas, CommitVC, LastRed, LogSize) ->
-    update_last_red_log(Key, Vsn, AtReplicas, CommitVC, LastRed, LogSize).
+update_last_vc(red, Key, AtReplicas, CommitVC, LastVC) ->
+    update_last_vc_log(Key, AtReplicas, CommitVC, LastVC).
 -else.
-update_last_red(_TxType, Key, Vsn, AtReplicas, CommitVC, LastRed, LogSize) ->
-    update_last_red_log(Key, Vsn, AtReplicas, CommitVC, LastRed, LogSize).
+update_last_vc(_TxType, Key, AtReplicas, CommitVC, LastVC) ->
+    update_last_vc_log(Key, AtReplicas, CommitVC, LastVC).
 -endif.
 
--spec update_last_red_log(Key :: key(),
-                          Vsn :: grb_time:ts(),
-                          AtReplicas :: [replica_id()],
-                          CommitVC :: vclock(),
-                          LastRed :: last_red(),
-                          LogSize :: non_neg_integer()) -> ok.
+-spec update_last_vc_log(Key :: key(),
+                         AtReplicas :: [replica_id()],
+                         CommitVC :: vclock(),
+                         LastVC :: last_vc()) -> ok.
 
--dialyzer({no_return, update_last_red_log/6}).
-update_last_red_log(Key, Vsn, AtReplicas, CommitVC, LastRed, LogSize) ->
-    case ets:select(LastRed, red_clocks_match(Key)) of
-        [{OldRed, ListSize}] when ListSize > LogSize ->
-            %% Compact the list of vector clocks when we reach the limit
-            Reduced = compact_clocks(AtReplicas,
-                                     CommitVC,
-                                     ets:lookup_element(LastRed, Key, #last_red_record.clocks)),
-
-            Record = #last_red_record{key=Key, red=max(Vsn, OldRed), length=1, clocks=[Reduced]},
-            true = ets:insert(LastRed, Record);
-
-        [{OldRed, ListSize}] ->
-            %% if we're under the limit, simply append the clock
-            1 = ets:select_replace(LastRed,
-                                   append_clocks_match(Key, max(OldRed, Vsn), ListSize + 1, CommitVC));
-
+update_last_vc_log(Key, AtReplicas, CommitVC, LastVC) ->
+    case ets:lookup(LastVC, Key) of
+        [{Key, LastCommitVC}] ->
+            true = ets:update_element(LastVC, Key,
+                                      {2, grb_vclock:max_at_keys(AtReplicas, LastCommitVC, CommitVC)});
         [] ->
-            %% otherwise, simply insert a new recor
-            true = ets:insert(LastRed, #last_red_record{key=Key, red=Vsn, length=1, clocks=[CommitVC]})
+            true = ets:insert(LastVC, {Key, CommitVC})
     end,
     ok.
-
-%% dialyzer doesn't like constructing a record like this
--dialyzer({nowarn_function, red_clocks_match/1}).
--spec red_clocks_match(key()) -> ets:match_spec().
-red_clocks_match(Key) ->
-    [{ #last_red_record{key=Key, red='$1', length='$2', _='_'}, [], [{{'$1', '$2'}}] }].
-
-%% dialyzer thinks this will never be called from update_last_red, since it thinks the match_specs are
-%% wrong
--dialyzer({no_unused, compact_clocks/3}).
--spec compact_clocks([replica_id()], vclock(), [vclock()]) -> vclock().
-compact_clocks(AtReplicas, Init, Clocks) ->
-    lists:foldl(fun(VC, Acc) ->
-        grb_vclock:max_at_keys(AtReplicas, VC, Acc)
-    end, Init, Clocks).
-
-%% dialyzer doesn't like appending to '$1' even if it's correct
--dialyzer({nowarn_function, append_clocks_match/4}).
--spec append_clocks_match(key(), grb_time:ts(), non_neg_integer(), vclock()) -> ets:match_spec().
-append_clocks_match(Key, Time, Length, VC) ->
-    [{
-        #last_red_record{key=Key, clocks='$1', _='_'},
-        [],
-        [{ #last_red_record{key=Key, red={const, Time}, length={const, Length}, clocks=[ VC | '$1' ]} }]
-    }].
 
 -endif.
 

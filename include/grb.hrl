@@ -56,13 +56,6 @@
                          | {remote, replica_id()}
                          | {proxy, node(), replica_id()}.
 
--record(last_red_record, {
-    key :: key(),
-    red :: grb_time:ts(),
-    length :: non_neg_integer(),
-    clocks :: [vclock()]
-}).
-
 -export_type([partition_id/0,
               index_node/0,
               cache_id/0,

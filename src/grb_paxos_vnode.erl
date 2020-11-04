@@ -4,7 +4,7 @@
 -include_lib("kernel/include/logger.hrl").
 
 %% init api
--export([all_fetch_red_table/0,
+-export([all_fetch_lastvc_table/0,
          init_leader_state/0,
          init_follower_state/0]).
 
@@ -63,8 +63,8 @@
     prune_timer = undefined :: reference() | undefined,
     prune_interval :: non_neg_integer(),
 
-    %% read replica of the last version cache by grb_oplog_vnode
-    op_log_red_replica :: cache_id() | undefined,
+    %% read replica of the last commit vc cache by grb_oplog_vnode
+    op_log_last_vc_replica :: grb_oplog_vnode:last_vc() | undefined,
     synod_state = undefined :: grb_paxos_state:t() | undefined,
 
     %% a buffer of outstanding decision messages
@@ -74,13 +74,13 @@
     decision_buffer = #{} :: #{{term(), ballot()} => {red_vote(), vclock()} | grb_time:ts()}
 }).
 
--spec all_fetch_red_table() -> ok.
+-spec all_fetch_lastvc_table() -> ok.
 -ifdef(BLUE_KNOWN_VC).
-all_fetch_red_table() ->
+all_fetch_lastvc_table() ->
     ok.
 -else.
-all_fetch_red_table() ->
-    Res = grb_dc_utils:bcast_vnode_sync(?master, fetch_red_table, 1000),
+all_fetch_lastvc_table() ->
+    Res = grb_dc_utils:bcast_vnode_sync(?master, fetch_lastvc_table, 1000),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res).
 -endif.
 
@@ -178,9 +178,13 @@ init([Partition]) ->
                    deliver_interval=DeliverInterval,
                    decision_retry_interval=RetryInterval,
                    prune_interval=PruningInterval,
-                   op_log_red_replica=undefined,
+                   op_log_last_vc_replica=undefined,
                    synod_state=undefined},
     {ok, State}.
+
+terminate(_Reason, #state{synod_state=SynodState}) ->
+    ok = grb_paxos_state:delete(SynodState),
+    ok.
 
 handle_command(ping, _Sender, State) ->
     {reply, {pong, node(), State#state.partition}, State};
@@ -188,10 +192,10 @@ handle_command(ping, _Sender, State) ->
 handle_command(is_ready, _Sender, State) ->
     {reply, true, State};
 
-handle_command(fetch_red_table, _Sender, S0=#state{partition=Partition}) ->
+handle_command(fetch_lastvc_table, _Sender, S0=#state{partition=Partition}) ->
     {Result, S} = try
-        Table = grb_oplog_vnode:last_red_table(Partition),
-        {ok, S0#state{op_log_red_replica=Table}}
+        Table = grb_oplog_vnode:last_vc_table(Partition),
+        {ok, S0#state{op_log_last_vc_replica=Table}}
     catch _:_  ->
         {error, S0}
     end,
@@ -237,7 +241,7 @@ handle_command({prepare, TxId, RS, WS, SnapshotVC},
                Coordinator, S=#state{replica_id=LocalId,
                                      partition=Partition,
                                      synod_state=LeaderState0,
-                                     op_log_red_replica=LastRed}) ->
+                                     op_log_last_vc_replica=LastRed}) ->
 
     ok = grb_measurements:log_queue_length(?leader_queue_length_stat),
 
@@ -504,9 +508,6 @@ is_empty(State) ->
 
 handle_exit(_Pid, _Reason, State) ->
     {noreply, State}.
-
-terminate(_Reason, _State) ->
-    ok.
 
 delete(State) ->
     {ok, State}.

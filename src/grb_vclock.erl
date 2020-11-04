@@ -7,6 +7,7 @@
          set_max_time/3,
          eq/2,
          leq/2,
+         leq_at_keys/3,
          min/2,
          max/2,
          min_at/3,
@@ -90,6 +91,12 @@ leq(Left, Right) ->
         get_time(Key, Left) =< get_time(Key, Right)
     end,
     lists:all(F, maps:keys(maps:merge(Left, Right))).
+
+-spec leq_at_keys([T], vc(T), vc(T)) -> boolean().
+leq_at_keys(Keys, Left, Right) ->
+    lists:all(fun(Key) ->
+        get_time(Key, Left) =< get_time(Key, Right)
+    end, Keys).
 
 -spec to_list(vc(T)) -> [{T, grb_time:ts()}].
 to_list(VC) -> maps:to_list(VC).

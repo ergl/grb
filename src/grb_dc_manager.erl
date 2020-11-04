@@ -150,7 +150,7 @@ start_background_processes() ->
     ok = grb_oplog_vnode:start_readers_all(),
 
     %% if we're not in red mode, this won't do anything
-    ok = grb_paxos_vnode:all_fetch_red_table(),
+    ok = grb_paxos_vnode:all_fetch_lastvc_table(),
 
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
