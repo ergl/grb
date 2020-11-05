@@ -404,18 +404,24 @@ handle_command(start_blue_hb_timer, _From, S = #state{blue_tick_pid=Pid}) when i
     {reply, ok, S};
 
 handle_command(start_readers, _From, S = #state{partition=P,
-                                                 replicas_n=N}) ->
-
-    Result = case grb_oplog_reader:readers_ready(P, N) of
+                                                replicas_n=N}) ->
+    Result = case worker_ready(P, grb_oplog_reader, N) of
         true -> true;
         false ->
-            ok = grb_oplog_reader:start_readers(P, N),
-            grb_oplog_reader:readers_ready(P, N)
+            ok = start_worker(P, grb_oplog_reader, N),
+            worker_ready(P, grb_oplog_reader, N)
     end,
     {reply, Result, S};
 
 handle_command(start_writers, _From, S = #state{partition=P,
                                                 writers_n=N}) ->
+    Result = case worker_ready(P, grb_oplog_writer, N) of
+        true -> true;
+        false ->
+            ok = start_worker(P, grb_oplog_writer, N),
+            worker_ready(P, grb_oplog_writer, N)
+    end,
+    {reply, Result, S};
 
     Result = case grb_oplog_writer:writers_ready(P, N) of
         true -> true;
@@ -433,20 +439,18 @@ handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_pid=Pid}) when is
     {noreply, S#state{blue_tick_pid=undefined}};
 
 handle_command(stop_readers, _From, S = #state{partition=P}) ->
-    ok = grb_oplog_reader:stop_readers(P),
+    ok = stop_worker(P, grb_oplog_reader),
     {noreply, S};
 
 handle_command(stop_writers, _From, S = #state{partition=P}) ->
-    ok = grb_oplog_writer:stop_writers(P),
+    ok = stop_worker(P, grb_oplog_writer),
     {noreply, S};
 
 handle_command(readers_ready, _From, S = #state{partition=P, replicas_n=N}) ->
-    Result = grb_oplog_reader:readers_ready(P, N),
-    {reply, Result, S};
+    {reply, worker_ready(P, grb_oplog_reader, N), S};
 
 handle_command(writers_ready, _From, S = #state{partition=P, writers_n=N}) ->
-    Result = grb_oplog_writer:writers_ready(P, N),
-    {reply, Result, S};
+    {reply, worker_ready(P, grb_oplog_writer, N), S};
 
 handle_command({decide_blue, TxId, VC}, _From, State) ->
     ok = decide_blue_internal(TxId, VC, State),
@@ -679,6 +683,65 @@ compute_new_known_time(PreparedBlue) ->
             ?LOG_DEBUG("knownVC[d] = min_prep (~b - 1)", [Ts]),
             Ts - 1
     end.
+
+%%%===================================================================
+%%% Associated worker Functions
+%%%===================================================================
+
+-spec start_worker(partition_id(), module(), non_neg_integer()) -> ok.
+start_worker(Partition, Module, Count) ->
+    ok = Module:persist_worker_num(Partition, Count),
+    start_worker_internal(Partition, Module, Count).
+
+start_worker_internal(_, _, 0) ->
+    ok;
+start_worker_internal(Partition, Module, N) ->
+    case Module:start_worker(Partition, N) of
+        {ok, _} ->
+            start_worker_internal(Partition, Module, N - 1);
+        {error, {already_started, _}} ->
+            start_worker_internal(Partition, Module, N - 1);
+        _Other ->
+            ?LOG_ERROR("Unable to start worker ~p for ~p, will skip", [Module, Partition]),
+            try
+                Module:terminate_worker(Partition, N)
+            catch _:_ ->
+                ok
+            end,
+            start_worker_internal(Partition, Module, N - 1)
+    end.
+
+-spec worker_ready(partition_id(), module(), non_neg_integer()) -> boolean().
+worker_ready(Partition, Module, Count) ->
+    worker_ready_internal(Partition, Module, Count).
+
+worker_ready_internal(_, _, 0) ->
+    true;
+worker_ready_internal(Partition, Module, N) ->
+    try
+        case Module:is_ready(Partition, N) of
+            true ->
+                worker_ready_internal(Partition, Module, N - 1);
+            _ ->
+                false
+        end
+    catch _:_ ->
+        false
+    end.
+
+-spec stop_worker(partition_id(), module()) -> ok.
+stop_worker(Partition, Module) ->
+    stop_worker_internal(Partition, Module, Module:worker_num(Partition)).
+
+stop_worker_internal(_, _, 0) ->
+    ok;
+stop_worker_internal(Partition, Module, N) ->
+    try
+        Module:terminate_worker(Partition, N)
+    catch _:_ ->
+        ok
+    end,
+    stop_worker_internal(Partition, Module, N - 1).
 
 %%%===================================================================
 %%% Util Functions

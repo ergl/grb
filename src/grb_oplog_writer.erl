@@ -1,5 +1,6 @@
 -module(grb_oplog_writer).
 -behavior(gen_server).
+-behavior(grb_vnode_worker).
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
@@ -11,10 +12,11 @@
 %% protocol api
 -export([async_append/6]).
 
-%% replica management API
--export([start_writers/2,
-         stop_writers/1,
-         writers_ready/2]).
+%% vnode_worker callbacks
+-export([persist_worker_num/2,
+         start_worker/2,
+         is_ready/2,
+         terminate_worker/2]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -43,21 +45,18 @@
 start_link(Partition, Id) ->
     gen_server:start_link(?MODULE, [Partition, Id], []).
 
-%% @doc Start `Count` readers for the given partition
--spec start_writers(partition_id(), non_neg_integer()) -> ok.
-start_writers(Partition, Count) ->
-    ok = persist_num_writers(Partition, Count),
-    start_writers_internal(Partition, Count).
+-spec persist_worker_num(partition_id(), non_neg_integer()) -> ok.
+persist_worker_num(Partition, N) ->
+    persistent_term:put({?MODULE, Partition, ?NUM_WRITERS_KEY}, N).
 
-%% @doc Check if all writers at this node and partition are ready
--spec writers_ready(partition_id(), non_neg_integer()) -> boolean().
-writers_ready(Partition, N) ->
-    reader_ready_internal(Partition, N).
+start_worker(Partition, Id) ->
+    grb_oplog_writer_sup:start_writer(Partition, Id).
 
-%% @doc Stop writers for the given partition
--spec stop_writers(partition_id()) -> ok.
-stop_writers(Partition) ->
-    stop_writers_internal(Partition, num_writers(Partition)).
+is_ready(Partition, Id) ->
+    gen_server:call(writer_pid(Partition, Id), ready).
+
+terminate_worker(Partition, Id) ->
+    gen_server:call(writer_pid(Partition, Id), shutdown).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Protocol API
@@ -84,7 +83,7 @@ init([Partition, Id]) ->
                 last_vc_reference=LastVCTable}}.
 
 handle_call(ready, _From, State) ->
-    {reply, ready, State};
+    {reply, true, State};
 
 handle_call(shutdown, _From, State) ->
     {stop, shutdown, ok, State};
@@ -119,57 +118,6 @@ handle_info(Info, State) ->
     {noreply, State}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Start / Ready / Stop
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
--spec start_writers_internal(partition_id(), non_neg_integer()) -> ok.
-start_writers_internal(_Partition, 0) ->
-    ok;
-
-start_writers_internal(Partition, N) ->
-    case grb_oplog_writer_sup:start_writer(Partition, N) of
-        {ok, _} ->
-            start_writers_internal(Partition, N - 1);
-        {error, {already_started, _}} ->
-            start_writers_internal(Partition, N - 1);
-        _Other ->
-            ?LOG_ERROR("Unable to start oplog reader for ~p, will skip", [Partition]),
-            try
-                ok = gen_server:call(writer_pid(Partition, N), shutdown)
-            catch _:_ ->
-                ok
-            end,
-            start_writers_internal(Partition, N - 1)
-    end.
-
--spec reader_ready_internal(partition_id(), non_neg_integer()) -> boolean().
-reader_ready_internal(_Partition, 0) ->
-    true;
-reader_ready_internal(Partition, N) ->
-    try
-        case gen_server:call(writer_pid(Partition, N), ready) of
-            ready ->
-                reader_ready_internal(Partition, N - 1);
-            _ ->
-                false
-        end
-    catch _:_ ->
-        false
-    end.
-
--spec stop_writers_internal(partition_id(), non_neg_integer()) -> ok.
-stop_writers_internal(_Partition, 0) ->
-    ok;
-
-stop_writers_internal(Partition, N) ->
-    try
-        ok = gen_server:call(writer_pid(Partition, N), shutdown)
-    catch _:_ ->
-        ok
-    end,
-    stop_writers_internal(Partition, N - 1).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Naming
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -189,7 +137,3 @@ writer_for_key(Partition, Key) ->
 -spec num_writers(partition_id()) -> non_neg_integer().
 num_writers(Partition) ->
     persistent_term:get({?MODULE, Partition, ?NUM_WRITERS_KEY}, ?OPLOG_WRITER_NUM).
-
--spec persist_num_writers(partition_id(), non_neg_integer()) -> ok.
-persist_num_writers(Partition, N) ->
-    persistent_term:put({?MODULE, Partition, ?NUM_WRITERS_KEY}, N).

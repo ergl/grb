@@ -1,8 +1,6 @@
-%% -------------------------------------------------------------------
-%% This module allows multiple readers on the ETS tables of a grb_oplog_vnode
-%% -------------------------------------------------------------------
 -module(grb_oplog_reader).
 -behavior(gen_server).
+-behavior(grb_vnode_worker).
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
@@ -15,10 +13,11 @@
 -export([async_key_vsn/4,
          decide_blue/3]).
 
-%% replica management API
--export([start_readers/2,
-         stop_readers/1,
-         readers_ready/2]).
+%% vnode_worker callbacks
+-export([persist_worker_num/2,
+         start_worker/2,
+         is_ready/2,
+         terminate_worker/2]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -40,7 +39,7 @@
 }).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Reader management API
+%% Reader Management API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% @doc Start a reader responsible for serving reads to this partion
@@ -60,21 +59,18 @@
 start_link(Partition, Id) ->
     gen_server:start_link(?MODULE, [Partition, Id], []).
 
-%% @doc Start `Count` readers for the given partition
--spec start_readers(partition_id(), non_neg_integer()) -> ok.
-start_readers(Partition, Count) ->
-    ok = persist_num_readers(Partition, Count),
-    start_readers_internal(Partition, Count).
+-spec persist_worker_num(partition_id(), non_neg_integer()) -> ok.
+persist_worker_num(Partition, N) ->
+    persistent_term:put({?MODULE, Partition, ?NUM_READERS_KEY}, N).
 
-%% @doc Check if all readers at this node and partition are ready
--spec readers_ready(partition_id(), non_neg_integer()) -> boolean().
-readers_ready(Partition, N) ->
-    reader_ready_internal(Partition, N).
+start_worker(Partition, Id) ->
+    grb_oplog_reader_sup:start_reader(Partition, Id).
 
-%% @doc Stop readers for the given partition
--spec stop_readers(partition_id()) -> ok.
-stop_readers(Partition) ->
-    stop_readers_internal(Partition, num_readers(Partition)).
+is_ready(Partition, Id) ->
+    gen_server:call(reader_pid(Partition, Id), ready).
+
+terminate_worker(Partition, Id) ->
+    gen_server:call(reader_pid(Partition, Id), shutdown).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Protocol API
@@ -102,7 +98,7 @@ init([Partition, Id]) ->
                 op_log_reference=OpLog}}.
 
 handle_call(ready, _From, State) ->
-    {reply, ready, State};
+    {reply, true, State};
 
 handle_call(shutdown, _From, State) ->
     {stop, shutdown, ok, State};
@@ -183,57 +179,6 @@ key_vsn_wait(Promise, Key, SnapshotVC, #state{partition=Partition,
     end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Start / Ready / Stop
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
--spec start_readers_internal(partition_id(), non_neg_integer()) -> ok.
-start_readers_internal(_Partition, 0) ->
-    ok;
-
-start_readers_internal(Partition, N) ->
-    case grb_oplog_reader_sup:start_reader(Partition, N) of
-        {ok, _} ->
-            start_readers_internal(Partition, N - 1);
-        {error, {already_started, _}} ->
-            start_readers_internal(Partition, N - 1);
-        _Other ->
-            ?LOG_ERROR("Unable to start oplog reader for ~p, will skip", [Partition]),
-            try
-                ok = gen_server:call(reader_pid(Partition, N), shutdown)
-            catch _:_ ->
-                ok
-            end,
-            start_readers_internal(Partition, N - 1)
-    end.
-
--spec reader_ready_internal(partition_id(), non_neg_integer()) -> boolean().
-reader_ready_internal(_Partition, 0) ->
-    true;
-reader_ready_internal(Partition, N) ->
-    try
-        case gen_server:call(reader_pid(Partition, N), ready) of
-            ready ->
-                reader_ready_internal(Partition, N - 1);
-            _ ->
-                false
-        end
-    catch _:_ ->
-        false
-    end.
-
--spec stop_readers_internal(partition_id(), non_neg_integer()) -> ok.
-stop_readers_internal(_Partition, 0) ->
-    ok;
-
-stop_readers_internal(Partition, N) ->
-    try
-        ok = gen_server:call(reader_pid(Partition, N), shutdown)
-    catch _:_ ->
-        ok
-    end,
-    stop_readers_internal(Partition, N - 1).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Naming
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -252,7 +197,3 @@ random_reader(Partition) ->
 -spec num_readers(partition_id()) -> non_neg_integer().
 num_readers(Partition) ->
     persistent_term:get({?MODULE, Partition, ?NUM_READERS_KEY}, ?OPLOG_READER_NUM).
-
--spec persist_num_readers(partition_id(), non_neg_integer()) -> ok.
-persist_num_readers(Partition, N) ->
-    persistent_term:put({?MODULE, Partition, ?NUM_READERS_KEY}, N).
