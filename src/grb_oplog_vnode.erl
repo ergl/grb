@@ -120,7 +120,7 @@ stop_blue_hb_timer_all() ->
 -spec start_readers_all() -> ok | error.
 start_readers_all() ->
     Results = [try
-    riak_core_vnode_master:sync_command(N, start_readers, ?master, 1000)
+        riak_core_vnode_master:sync_command(N, start_readers, ?master, 1000)
     catch
         _:_ -> false
     end || N <- grb_dc_utils:get_index_nodes() ],
@@ -486,7 +486,7 @@ handle_command(readers_ready, _From, S = #state{partition=P, replicas_n=N}) ->
 handle_command(writers_ready, _From, S = #state{partition=P, writers_n=N}) ->
     {reply, worker_ready(P, grb_oplog_writer, N), S};
 
-handle_command(write_coords_ready, _From, S = #state{partition=P, writers_n=N}) ->
+handle_command(write_coords_ready, _From, S = #state{partition=P, write_coords_n=N}) ->
     {reply, worker_ready(P, grb_writer_coordinator, N), S};
 
 handle_command({decide_blue, TxId, VC}, _From, State) ->
