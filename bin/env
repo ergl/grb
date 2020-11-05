@@ -27,6 +27,10 @@ if [ -z "$OP_LOG_READERS" ]; then
   export OP_LOG_READERS=20
 fi
 
+if [ -z "$OP_LOG_WRITERS" ]; then
+  export OP_LOG_WRITERS=64
+fi
+
 if [ -z "$VSN_LOG_SIZE" ]; then
   export VSN_LOG_SIZE=25
 fi

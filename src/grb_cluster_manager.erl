@@ -382,10 +382,12 @@ check_ready(Node) ->
     ?LOG_INFO("[master ready] Checking ~p~n", [Node]),
 
     VnodesReady = check_vnodes(Node),
-    Res3 = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_oplog_vnode_master, readers_ready]),
-    ReadReplicasReady = lists:all(fun({_, true}) -> true; (_) -> false end, Res3),
+    ReadRes = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_oplog_vnode_master, readers_ready]),
+    ReadersReady = lists:all(fun({_, true}) -> true; (_) -> false end, ReadRes),
+    WriteRes = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_oplog_vnode_master, writers_ready]),
+    WritersReady = lists:all(fun({_, true}) -> true; (_) -> false end, WriteRes),
 
-    NodeReady = VnodesReady andalso ReadReplicasReady,
+    NodeReady = VnodesReady andalso ReadersReady andalso WritersReady,
     case NodeReady of
         true -> ?LOG_INFO("Node ~w is ready! ~n~n", [Node]);
         false -> ?LOG_INFO("Node ~w is not ready ~n~n", [Node])

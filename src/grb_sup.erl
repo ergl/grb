@@ -34,6 +34,7 @@ init(_Args) ->
     OpLogVnode = ?VNODE(grb_oplog_vnode_master, grb_oplog_vnode),
 
     OpLogReaderSup = ?CHILD(grb_oplog_reader_sup, supervisor, []),
+    OpLogWriterSup = ?CHILD(grb_oplog_writer_sup, supervisor, []),
     InterDCSenderSup = ?CHILD(grb_dc_connection_sender_sup, supervisor, []),
     InterDCConnManager = ?CHILD(grb_dc_connection_manager, worker, []),
     LocalBroadcast = ?CHILD(grb_local_broadcast, worker, []),
@@ -42,6 +43,7 @@ init(_Args) ->
                                     PropagationVnode,
                                     OpLogVnode,
                                     OpLogReaderSup,
+                                    OpLogWriterSup,
                                     LocalBroadcast,
                                     InterDCSenderSup,
                                     InterDCConnManager]),

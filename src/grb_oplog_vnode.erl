@@ -10,11 +10,15 @@
 %% Management API
 -export([stop_blue_hb_timer_all/0,
          start_readers_all/0,
-         stop_readers_all/0]).
+         stop_readers_all/0,
+         start_writers_all/0,
+         stop_writers_all/0]).
 
 %% ETS table API
 -export([op_log_table/1,
-         last_vc_table/1]).
+         op_log_table_size/1,
+         last_vc_table/1,
+         append_key_update_with_table/8]).
 
 %% Public API
 -export([get_key_version/3,
@@ -55,6 +59,7 @@
 -define(kill_timer_req, kill_timer_event).
 
 -define(OP_LOG_TABLE, op_log_table).
+-define(OP_LOG_TABLE_SIZE, op_log_table_size).
 -define(OP_LOG_LAST_VC, op_log_last_vc_table).
 -define(PREPARED_TABLE, prepared_blue_table).
 
@@ -66,6 +71,7 @@
 
     %% number of gen_servers replicating this vnode state
     replicas_n :: non_neg_integer(),
+    writers_n :: non_neg_integer(),
 
     prepared_blue :: cache_id(),
 
@@ -131,6 +137,29 @@ stop_readers_all() ->
      end  || N <- grb_dc_utils:get_index_nodes() ],
     ok.
 
+-spec start_writers_all() -> ok | error.
+start_writers_all() ->
+    Results = [try
+    riak_core_vnode_master:sync_command(N, start_writers, ?master, 1000)
+    catch
+        _:_ -> false
+    end || N <- grb_dc_utils:get_index_nodes() ],
+    case lists:all(fun(Result) -> Result end, Results) of
+        true ->
+            ok;
+        false ->
+            error
+    end.
+
+-spec stop_writers_all() -> ok.
+stop_writers_all() ->
+    [try
+        riak_core_vnode_master:command(N, stop_writers, ?master)
+     catch
+         _:_ -> ok
+     end  || N <- grb_dc_utils:get_index_nodes() ],
+    ok.
+
 %%%===================================================================
 %%% ETS API
 %%%===================================================================
@@ -139,6 +168,10 @@ stop_readers_all() ->
 op_log_table(Partition) ->
     persistent_term:get({?MODULE, Partition, ?OP_LOG_TABLE}).
 
+-spec op_log_table_size(partition_id()) -> non_neg_integer().
+op_log_table_size(Partition) ->
+    persistent_term:get({?MODULE, Partition, ?OP_LOG_TABLE_SIZE}).
+
 -spec last_vc_table(partition_id()) -> last_vc().
 last_vc_table(Partition) ->
     persistent_term:get({?MODULE, Partition, ?OP_LOG_LAST_VC}).
@@ -146,6 +179,28 @@ last_vc_table(Partition) ->
 -spec prepared_blue_table(partition_id()) -> cache_id().
 prepared_blue_table(Partition) ->
     persistent_term:get({?MODULE, Partition, ?PREPARED_TABLE}).
+
+-spec append_key_update_with_table(TxType :: transaction_type(),
+                                   Key :: key(),
+                                   Value :: val(),
+                                   CommitVC :: vclock(),
+                                   OpLog :: cache_id(),
+                                   LogSize :: non_neg_integer(),
+                                   LastVC :: cache_id(),
+                                   Replicas :: [replica_id()]) -> ok.
+
+-ifdef(BLUE_KNOWN_VC).
+append_key_update_with_table(TxType, Key, Value, CommitVC, OpLog, LogSize, _LastVC, _ActiveReplicas) ->
+    NewLog = append_to_log(TxType, Key, Value, CommitVC, OpLog, LogSize),
+    true = ets:insert(OpLog, {Key, NewLog}),
+    ok.
+-else.
+append_key_update_with_table(TxType, Key, Value, CommitVC, OpLog, LogSize, LastVC, ActiveReplicas) ->
+    NewLog = append_to_log(TxType, Key, Value, CommitVC, OpLog, LogSize),
+    true = ets:insert(OpLog, {Key, NewLog}),
+    ok = update_last_vc(TxType, Key, ActiveReplicas, CommitVC, LastVC),
+    ok.
+-endif.
 
 %%%===================================================================
 %%% API
@@ -274,6 +329,7 @@ start_vnode(I) ->
 
 init([Partition]) ->
     {ok, KeyLogSize} = application:get_env(grb, version_log_size),
+    ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_TABLE_SIZE}, KeyLogSize),
     %% We're not using the timer:send_interval/2 or timer:send_after/2 functions for
     %% two reasons:
     %%
@@ -290,6 +346,7 @@ init([Partition]) ->
     %%   we want to control the size of the queue, this allows us to do that.
     {ok, BlueTickInterval} = application:get_env(grb, self_blue_heartbeat_interval),
     NumReaders = application:get_env(grb, oplog_readers, ?OPLOG_READER_NUM),
+    NumWriters = application:get_env(grb, oplog_writers, ?OPLOG_WRITER_NUM),
 
     OpLogTable = ets:new(?OP_LOG_TABLE, [set, protected, {read_concurrency, true}]),
     ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_TABLE}, OpLogTable),
@@ -302,6 +359,7 @@ init([Partition]) ->
 
     State = #state{partition = Partition,
                    replicas_n=NumReaders,
+                   writers_n=NumWriters,
                    prepared_blue=PreparedBlue,
                    blue_tick_interval=BlueTickInterval,
                    op_log_size = KeyLogSize,
@@ -356,6 +414,17 @@ handle_command(start_readers, _From, S = #state{partition=P,
     end,
     {reply, Result, S};
 
+handle_command(start_writers, _From, S = #state{partition=P,
+                                                writers_n=N}) ->
+
+    Result = case grb_oplog_writer:writers_ready(P, N) of
+        true -> true;
+        false ->
+            ok = grb_oplog_writer:start_writers(P, N),
+            grb_oplog_writer:writers_ready(P, N)
+    end,
+    {reply, Result, S};
+
 handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_pid=undefined}) ->
     {noreply, S};
 
@@ -367,8 +436,16 @@ handle_command(stop_readers, _From, S = #state{partition=P}) ->
     ok = grb_oplog_reader:stop_readers(P),
     {noreply, S};
 
+handle_command(stop_writers, _From, S = #state{partition=P}) ->
+    ok = grb_oplog_writer:stop_writers(P),
+    {noreply, S};
+
 handle_command(readers_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     Result = grb_oplog_reader:readers_ready(P, N),
+    {reply, Result, S};
+
+handle_command(writers_ready, _From, S = #state{partition=P, writers_n=N}) ->
+    Result = grb_oplog_writer:writers_ready(P, N),
     {reply, Result, S};
 
 handle_command({decide_blue, TxId, VC}, _From, State) ->

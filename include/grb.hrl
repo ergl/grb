@@ -1,4 +1,6 @@
 -define(OPLOG_READER_NUM, 20).
+%% Defined to match the number of locks for set ETS when write_concurrency is enabled
+-define(OPLOG_WRITER_NUM, 64).
 
 %% Wrappers for riak_core
 -type partition_id() :: chash:index_as_int().
