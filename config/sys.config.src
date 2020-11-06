@@ -52,6 +52,7 @@
     %% How many readers / writers per oplog vnode
     {oplog_readers, ${OP_LOG_READERS}},
     {oplog_writers, ${OP_LOG_WRITERS}},
+    {oplog_write_coords, ${OP_LOG_WRITE_COORDS}},
 
     %% How many versions to keep per key
     {version_log_size, ${VSN_LOG_SIZE}},

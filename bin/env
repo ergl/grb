@@ -31,6 +31,10 @@ if [ -z "$OP_LOG_WRITERS" ]; then
   export OP_LOG_WRITERS=64
 fi
 
+if [ -z "$OP_LOG_WRITE_COORDS" ]; then
+  export OP_LOG_WRITE_COORDS=8
+fi
+
 if [ -z "$VSN_LOG_SIZE" ]; then
   export VSN_LOG_SIZE=25
 fi

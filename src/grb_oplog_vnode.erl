@@ -12,7 +12,9 @@
          start_readers_all/0,
          stop_readers_all/0,
          start_writers_all/0,
-         stop_writers_all/0]).
+         stop_writers_all/0,
+         start_write_coords_all/0,
+         stop_write_coords_all/0]).
 
 %% ETS table API
 -export([op_log_table/1,
@@ -72,6 +74,7 @@
     %% number of gen_servers replicating this vnode state
     replicas_n :: non_neg_integer(),
     writers_n :: non_neg_integer(),
+    write_coords_n :: non_neg_integer(),
 
     prepared_blue :: cache_id(),
 
@@ -155,6 +158,29 @@ start_writers_all() ->
 stop_writers_all() ->
     [try
         riak_core_vnode_master:command(N, stop_writers, ?master)
+     catch
+         _:_ -> ok
+     end  || N <- grb_dc_utils:get_index_nodes() ],
+    ok.
+
+-spec start_write_coords_all() -> ok | error.
+start_write_coords_all() ->
+    Results = [try
+    riak_core_vnode_master:sync_command(N, start_write_coords, ?master, 1000)
+    catch
+        _:_ -> false
+    end || N <- grb_dc_utils:get_index_nodes() ],
+    case lists:all(fun(Result) -> Result end, Results) of
+        true ->
+            ok;
+        false ->
+            error
+    end.
+
+-spec stop_write_coords_all() -> ok.
+stop_write_coords_all() ->
+    [try
+        riak_core_vnode_master:command(N, stop_write_coords, ?master)
      catch
          _:_ -> ok
      end  || N <- grb_dc_utils:get_index_nodes() ],
@@ -347,6 +373,7 @@ init([Partition]) ->
     {ok, BlueTickInterval} = application:get_env(grb, self_blue_heartbeat_interval),
     NumReaders = application:get_env(grb, oplog_readers, ?OPLOG_READER_NUM),
     NumWriters = application:get_env(grb, oplog_writers, ?OPLOG_WRITER_NUM),
+    NumWriteCoords = application:get_env(grb, oplog_write_coords, ?OPLOG_COORDS_NUM),
 
     OpLogTable = ets:new(?OP_LOG_TABLE, [set, protected, {read_concurrency, true}]),
     ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_TABLE}, OpLogTable),
@@ -360,6 +387,7 @@ init([Partition]) ->
     State = #state{partition = Partition,
                    replicas_n=NumReaders,
                    writers_n=NumWriters,
+                   write_coords_n=NumWriteCoords,
                    prepared_blue=PreparedBlue,
                    blue_tick_interval=BlueTickInterval,
                    op_log_size = KeyLogSize,
@@ -423,11 +451,13 @@ handle_command(start_writers, _From, S = #state{partition=P,
     end,
     {reply, Result, S};
 
-    Result = case grb_oplog_writer:writers_ready(P, N) of
+handle_command(start_write_coords, _From, S = #state{partition=P,
+                                                     write_coords_n=N}) ->
+    Result = case worker_ready(P, grb_writer_coordinator, N) of
         true -> true;
         false ->
-            ok = grb_oplog_writer:start_writers(P, N),
-            grb_oplog_writer:writers_ready(P, N)
+            ok = start_worker(P, grb_writer_coordinator, N),
+            worker_ready(P, grb_writer_coordinator, N)
     end,
     {reply, Result, S};
 
@@ -446,11 +476,18 @@ handle_command(stop_writers, _From, S = #state{partition=P}) ->
     ok = stop_worker(P, grb_oplog_writer),
     {noreply, S};
 
+handle_command(stop_write_coords, _From, S = #state{partition=P}) ->
+    ok = stop_worker(P, grb_writer_coordinator),
+    {noreply, S};
+
 handle_command(readers_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     {reply, worker_ready(P, grb_oplog_reader, N), S};
 
 handle_command(writers_ready, _From, S = #state{partition=P, writers_n=N}) ->
     {reply, worker_ready(P, grb_oplog_writer, N), S};
+
+handle_command(write_coords_ready, _From, S = #state{partition=P, writers_n=N}) ->
+    {reply, worker_ready(P, grb_writer_coordinator, N), S};
 
 handle_command({decide_blue, TxId, VC}, _From, State) ->
     ok = decide_blue_internal(TxId, VC, State),

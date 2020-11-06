@@ -386,8 +386,10 @@ check_ready(Node) ->
     ReadersReady = lists:all(fun({_, true}) -> true; (_) -> false end, ReadRes),
     WriteRes = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_oplog_vnode_master, writers_ready]),
     WritersReady = lists:all(fun({_, true}) -> true; (_) -> false end, WriteRes),
+    CoordRes = erpc:call(Node, grb_dc_utils, bcast_vnode_sync, [grb_oplog_vnode_master, write_coords_ready]),
+    WriteCoordReady = lists:all(fun({_, true}) -> true; (_) -> false end, CoordRes),
 
-    NodeReady = VnodesReady andalso ReadersReady andalso WritersReady,
+    NodeReady = VnodesReady andalso ReadersReady andalso WritersReady andalso WriteCoordReady,
     case NodeReady of
         true -> ?LOG_INFO("Node ~w is ready! ~n~n", [Node]);
         false -> ?LOG_INFO("Node ~w is not ready ~n~n", [Node])

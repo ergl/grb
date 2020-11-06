@@ -35,6 +35,7 @@ init(_Args) ->
 
     OpLogReaderSup = ?CHILD(grb_oplog_reader_sup, supervisor, []),
     OpLogWriterSup = ?CHILD(grb_oplog_writer_sup, supervisor, []),
+    OpLogWriterCoordSup = ?CHILD(grb_writer_coordinator_sup, supervisor, []),
     InterDCSenderSup = ?CHILD(grb_dc_connection_sender_sup, supervisor, []),
     InterDCConnManager = ?CHILD(grb_dc_connection_manager, worker, []),
     LocalBroadcast = ?CHILD(grb_local_broadcast, worker, []),
@@ -44,6 +45,7 @@ init(_Args) ->
                                     OpLogVnode,
                                     OpLogReaderSup,
                                     OpLogWriterSup,
+                                    OpLogWriterCoordSup,
                                     LocalBroadcast,
                                     InterDCSenderSup,
                                     InterDCConnManager]),

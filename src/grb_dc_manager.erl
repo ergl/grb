@@ -149,6 +149,7 @@ start_background_processes() ->
 
     ok = grb_oplog_vnode:start_readers_all(),
     ok = grb_oplog_vnode:start_writers_all(),
+    ok = grb_oplog_vnode:start_write_coords_all(),
 
     %% if we're not in red mode, this won't do anything
     ok = grb_paxos_vnode:all_fetch_lastvc_table(),
@@ -301,6 +302,7 @@ stop_background_processes() ->
     ok = grb_oplog_vnode:stop_blue_hb_timer_all(),
     ok = grb_oplog_vnode:stop_readers_all(),
     ok = grb_oplog_vnode:stop_writers_all(),
+    ok = grb_oplog_vnode:stop_write_coords_all(),
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
