@@ -182,6 +182,9 @@ init([Partition]) ->
                    synod_state=undefined},
     {ok, State}.
 
+terminate(_Reason, #state{synod_state=undefined}) ->
+    ok;
+
 terminate(_Reason, #state{synod_state=SynodState}) ->
     ok = grb_paxos_state:delete(SynodState),
     ok.
