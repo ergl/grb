@@ -130,6 +130,15 @@ handle_request('ConnectRequest', _, Context, State) ->
 handle_request('StartReq', #{client_vc := CVC, partition := Partition}, Context, State) ->
     reply_to_client(grb:start_transaction(Partition, CVC), Context, State);
 
+handle_request('StartAndRead', #{partition := Partition, key := Key, client_vc := CVC}, Context, State) ->
+    SnapshotVC = grb:start_transaction(Partition, CVC),
+    case grb:try_key_vsn(Partition, Key, SnapshotVC) of
+        not_ready ->
+            grb:async_key_vsn_vc(grb_promise:new(self(), Context), Partition, Key, SnapshotVC);
+        {ok, Value} ->
+            reply_to_client({ok, Value, SnapshotVC}, Context, State)
+    end;
+
 handle_request('GetKeyVersion', Args, Context, State) ->
     #{partition := Partition, key := Key, snapshot_vc := SnapshotVC} = Args,
     case grb:try_key_vsn(Partition, Key, SnapshotVC) of
