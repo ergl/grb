@@ -135,7 +135,7 @@ prepare_blue(Partition, TxId, WriteSet, VC) ->
 
 -spec decide_blue(partition_id(), any(), vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->
-    grb_oplog_reader:decide_blue(Partition, TxId, VC).
+    grb_writer_coordinator:decide_blue(Partition, TxId, VC).
 
 -spec commit_red(grb_promise:t(), partition_id(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
 -ifdef(BLUE_KNOWN_VC).

@@ -20,7 +20,10 @@
 -export([op_log_table/1,
          op_log_table_size/1,
          last_vc_table/1,
-         append_key_update_with_table/8]).
+         get_transaction_writeset/2,
+         append_key_update_with_table/8,
+         remove_prepared/3,
+         compute_known_time/1]).
 
 %% Public API
 -export([get_key_version/3,
@@ -228,6 +231,19 @@ append_key_update_with_table(TxType, Key, Value, CommitVC, OpLog, LogSize, LastV
     ok.
 -endif.
 
+-spec get_transaction_writeset(partition_id(), term()) -> writeset().
+get_transaction_writeset(Partition, TxId) ->
+    get_prepared_writeset(prepared_blue_table(Partition), TxId).
+
+-spec remove_prepared(partition_id(), term(), grb_time:ts()) -> ok.
+remove_prepared(Partition, TxId, PreparedTs) ->
+    true = ets:delete(prepared_blue_table(Partition), {PreparedTs, TxId}),
+    ok.
+
+-spec compute_known_time(partition_id()) -> grb_time:ts().
+compute_known_time(Partition) ->
+    compute_new_known_time(prepared_blue_table(Partition)).
+
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -375,7 +391,7 @@ init([Partition]) ->
     NumWriters = application:get_env(grb, oplog_writers, ?OPLOG_WRITER_NUM),
     NumWriteCoords = application:get_env(grb, oplog_write_coords, ?OPLOG_COORDS_NUM),
 
-    OpLogTable = ets:new(?OP_LOG_TABLE, [set, protected, {read_concurrency, true}]),
+    OpLogTable = ets:new(?OP_LOG_TABLE, [set, public, {read_concurrency, true}, {write_concurrency, true}]),
     ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_TABLE}, OpLogTable),
 
     LastKeyVC = ets:new(?OP_LOG_LAST_VC, [set, protected, {read_concurrency, true}]),
@@ -403,10 +419,12 @@ handle_command(is_ready, _Sender, State) ->
     Ready = lists:all(fun is_ready/1, [State#state.op_log]),
     {reply, Ready, State};
 
-handle_command(enable_blue_append, _Sender, S) ->
+handle_command(enable_blue_append, _Sender, S=#state{partition=P, write_coords_n=N}) ->
+    ok = grb_writer_coordinator:enable_append(P, N),
     {reply, ok, S#state{should_append_commit=true}};
 
-handle_command(disable_blue_append, _Sender, S) ->
+handle_command(disable_blue_append, _Sender, S=#state{partition=P, write_coords_n=N}) ->
+    ok = grb_writer_coordinator:disable_append(P, N),
     {reply, ok, S#state{should_append_commit=false}};
 
 handle_command(start_blue_hb_timer, _From, S = #state{partition=Partition,
