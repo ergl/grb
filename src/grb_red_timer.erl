@@ -21,21 +21,23 @@
          handle_info/2]).
 
 -define(red_hb, red_heartbeat).
--define(no_active_timer, #state{current_hb_id=undefined,
-                                current_hb_timestamp=undefined}).
 
 -type heartbeat_id() :: {heartbeat, non_neg_integer()}.
+-record(active_hb, {
+    timestamp = undefined :: grb_time:ts() | undefined,
+    ballots = #{} :: #{partition_id() => ballot()},
+    quorums_to_ack :: #{partition_id() := pos_integer()}
+}).
+-type active_heartbeats() :: #{heartbeat_id() := #active_hb{}}.
+
 -record(state, {
     replica :: replica_id(),
     partitions :: [partition_id()],
     quorum_size :: non_neg_integer(),
     next_hb_id = {heartbeat, 0} :: heartbeat_id(),
 
-    %% Active timer accumulator
-    current_hb_id = undefined :: heartbeat_id() | undefined,
-    current_hb_timestamp = undefined :: grb_time:ts() | undefined,
-    ballots = #{} :: #{partition_id() => ballot()},
-    quorums_to_ack = #{} :: #{partition_id() => pos_integer()},
+    %% Active heartbeats accumulator
+    active_heartbeats = #{} :: active_heartbeats(),
 
     interval :: non_neg_integer(),
     timer :: reference() | undefined
@@ -76,10 +78,59 @@ handle_call(E, _From, S) ->
     {reply, ok, S}.
 
 handle_cast({accept_ack, From, InBallot, Id, InTimestamp}, S0=#state{partitions=Partitions,
-                                                                     current_hb_id=Id,
-                                                                     current_hb_timestamp=Timestamp0,
-                                                                     ballots=Ballots0,
-                                                                     quorums_to_ack=Quorums0}) ->
+                                                                     active_heartbeats=ActiveHeartbeats}) ->
+    S = case maps:get(Id, ActiveHeartbeats, undefined) of
+        undefined ->
+            %% ignore ACCEPT_ACK from past heartbeats
+            S0;
+        HeartBeatState ->
+            S0#state{active_heartbeats=handle_ack(Partitions,
+                                                  Id,
+                                                  From,
+                                                  InBallot,
+                                                  InTimestamp,
+                                                  HeartBeatState,
+                                                  ActiveHeartbeats)}
+    end,
+    {noreply, S};
+
+handle_cast(E, S) ->
+    ?LOG_WARNING("~p unexpected cast: ~p~n", [?MODULE, E]),
+    {noreply, S}.
+
+handle_info(?red_hb, State=#state{partitions=Partitions,
+                                  quorum_size=QSize,
+                                  next_hb_id=Id,
+                                  active_heartbeats=Heartbeats,
+                                  timer=Timer,
+                                  interval=Interval}) ->
+    erlang:cancel_timer(Timer),
+    FoldFun = fun(P, Acc) ->
+        ok = grb_paxos_vnode:prepare_heartbeat(P, Id),
+        Acc#{P => QSize}
+    end,
+    Quorums = lists:foldl(FoldFun, #{}, Partitions),
+    {noreply, State#state{next_hb_id=next_heartbeat_id(Id),
+                          active_heartbeats=Heartbeats#{Id => #active_hb{quorums_to_ack=Quorums}},
+                          timer=erlang:send_after(Interval, self(), ?red_hb)}};
+
+handle_info(E, S) ->
+    ?LOG_WARNING("~p unexpected info: ~p~n", [?MODULE, E]),
+    {noreply, S}.
+
+-spec next_heartbeat_id(heartbeat_id()) -> heartbeat_id().
+next_heartbeat_id({heartbeat, N}) -> {heartbeat, N + 1}.
+
+-spec handle_ack(Partitions :: [partition_id()],
+                 Id :: heartbeat_id(),
+                 From :: partition_id(),
+                 InBallot :: ballot(),
+                 InTimestamp :: grb_time:ts(),
+                 HeartbeatState :: #active_hb{},
+                 ActiveHeartbeats :: active_heartbeats()) -> active_heartbeats().
+
+handle_ack(Partitions, Id, From, InBallot, InTimestamp, HeartbeatState, ActiveHeartbeats) ->
+    #active_hb{timestamp=Timestamp0, ballots=Ballots0, quorums_to_ack=Quorums0} = HeartbeatState,
 
     %% todo(borja, red): handle bad ballot / timestamp?
     {ok, Ballots} = check_ballot(From, InBallot, Ballots0),
@@ -91,45 +142,18 @@ handle_cast({accept_ack, From, InBallot, Id, InTimestamp}, S0=#state{partitions=
         1 -> maps:remove(From, Quorums0);
         ToAck when is_integer(ToAck) -> Quorums0#{From => ToAck - 1}
     end,
-    S = case map_size(Quorums) of
+    case map_size(Quorums) of
         N when N > 0 ->
-            S0#state{ballots=Ballots, quorums_to_ack=Quorums, current_hb_timestamp=Timestamp};
+            ActiveHeartbeats#{Id =>
+                HeartbeatState#active_hb{ballots=Ballots, quorums_to_ack=Quorums, timestamp=Timestamp}};
         0 ->
             ?LOG_DEBUG("decided heartbeat ~w with timestamp ~b", [Id, Timestamp]),
             lists:foreach(fun(P) ->
                 Ballot = maps:get(P, Ballots),
                 ok = grb_paxos_vnode:broadcast_hb_decision(P, Ballot, Id, Timestamp)
             end, Partitions),
-            rearm_heartbeat_timer(S0)
-    end,
-    {noreply, S};
-
-handle_cast({accept_ack, _, _, _, _}, S) ->
-    %% ignore any ACCEPT_ACK from past heartbeats
-    {noreply, S};
-
-handle_cast(E, S) ->
-    ?LOG_WARNING("~p unexpected cast: ~p~n", [?MODULE, E]),
-    {noreply, S}.
-
-handle_info(?red_hb, State=?no_active_timer) ->
-    #state{timer=Timer, partitions=Partitions, quorum_size=QSize, next_hb_id=Id} = State,
-    erlang:cancel_timer(Timer),
-    ?LOG_DEBUG("starting heartbeat timer ~p", [Id]),
-    FoldFun = fun(P, Acc) ->
-        ok = grb_paxos_vnode:prepare_heartbeat(P, Id),
-        Acc#{P => QSize}
-    end,
-    Quorums = lists:foldl(FoldFun, #{}, Partitions),
-    {noreply, State#state{timer=undefined, ballots=#{}, quorums_to_ack=Quorums,
-                          current_hb_id=Id, next_hb_id=next_heartbeat_id(Id)}};
-
-handle_info(E, S) ->
-    ?LOG_WARNING("~p unexpected info: ~p~n", [?MODULE, E]),
-    {noreply, S}.
-
--spec next_heartbeat_id(heartbeat_id()) -> heartbeat_id().
-next_heartbeat_id({heartbeat, N}) -> {heartbeat, N + 1}.
+            maps:remove(Id, ActiveHeartbeats)
+    end.
 
 -spec check_ballot(From :: partition_id(),
                    Ballot :: ballot(),
@@ -145,9 +169,3 @@ check_ballot(From, Ballot, Ballots) ->
 -spec max_timestamp(grb_time:ts(), grb_time:ts() | undefined) -> grb_time:ts().
 max_timestamp(Ts, undefined) -> Ts;
 max_timestamp(Ts, AccTs) -> max(Ts, AccTs).
-
--spec rearm_heartbeat_timer(#state{}) -> #state{}.
-rearm_heartbeat_timer(S=#state{interval=Int}) ->
-    S#state{timer=erlang:send_after(Int, self(), ?red_hb),
-            current_hb_id=undefined,
-            current_hb_timestamp=undefined}.
