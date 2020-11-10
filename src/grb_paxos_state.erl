@@ -122,27 +122,14 @@ delete(#state{index=Index, pending_reads=PendingReads, writes_cache=Writes, pend
 -spec get_next_ready(grb_time:ts(), t()) -> false | {grb_time:ts(), [ ?heartbeat | {#{}, vclock()} ]}.
 -dialyzer({nowarn_function, get_next_ready/2}).
 get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx, pending_commit_ts=PendingData}) ->
-    extract_next_ready(ets:next(Idx, {LastDelivered, ''}), LastDelivered, EntryMap, Idx, PendingData).
-
--spec extract_next_ready(Key :: {grb_time:ts(), record_id()} | '$end_of_table',
-                         LastDelivered :: grb_time:ts(),
-                         EntryMap :: #{record_id() => tx_data()},
-                         Idx :: cache_id(),
-                         PendingData :: cache_id()) -> false | {grb_time:ts(), [ ?heartbeat | {#{}, vclock()} ]}.
-
--dialyzer({nowarn_function, extract_next_ready/5}).
-extract_next_ready('$end_of_table', _LastDelivered, _EntryMap, _Idx, _PendingData) ->
-    false;
-extract_next_ready({LastDelivered, _}=Seen, LastDelivered, EntryMap, Idx, PendingData) ->
-    extract_next_ready(ets:next(Idx, Seen), LastDelivered, EntryMap, Idx, PendingData);
-extract_next_ready(Key={CommitTime, FirstId}, LastDelivered, EntryMap, Idx, PendingData) ->
-    [{State, Decision}] = ets:select(Idx, [{ #index_entry{key=Key, state='$1', vote='$2'},
-                                             [],
-                                             [{{'$1', '$2'}}] }]),
-    if
-        State =:= decided andalso Decision =:= ok ->
+    Res = ets:select(Idx, [{ #index_entry{key={'$1', '$2'}, state=decided, vote=ok},
+                                  [{'>', '$1', LastDelivered}],
+                                  [{{'$1', '$2'}}] }],
+                               1),
+    case Res of
+        {[{CommitTime, FirstCommitId}], _} ->
             IsBlocked = buffered_between(LastDelivered, CommitTime, PendingData)
-                    orelse prep_committed_between(LastDelivered, CommitTime, Idx),
+                orelse prep_committed_between(LastDelivered, CommitTime, Idx),
             case IsBlocked of
                 true ->
                     false;
@@ -150,19 +137,19 @@ extract_next_ready(Key={CommitTime, FirstId}, LastDelivered, EntryMap, Idx, Pend
                     %% get the rest of committed transactions with this commit time
                     %% since they have the same committed time, they all pass the check above
                     MoreIds = ets:select(Idx, [{ #index_entry{key={CommitTime, '$1'}, state=decided, vote=ok},
-                                                 [{'=/=', '$1', {const, FirstId}}],
+                                                 [{'=/=', '$1', {const, FirstCommitId}}],
                                                  ['$1'] }]),
-                    Ready = lists:map(fun(Id) -> data_for_id(Id, EntryMap) end, [FirstId | MoreIds]),
+                    Ready = lists:map(fun(Id) -> data_for_id(Id, EntryMap) end, [FirstCommitId | MoreIds]),
                     {CommitTime, Ready}
             end;
-        true ->
-            extract_next_ready(ets:next(Idx, Key), LastDelivered, EntryMap, Idx, PendingData)
+        _Other ->
+            false
     end.
 
 -spec buffered_between(grb_time:ts(), grb_time:ts(), cache_id()) -> boolean().
 -dialyzer({no_unused, buffered_between/3}).
 buffered_between(From, To, Table) ->
-    case ets:next(Table, {{From, ''}}) of
+    case ets:next(Table, {{From, 0}}) of
         '$end_of_table' -> false;
         {MarkerTime, _} -> MarkerTime < To
     end.
