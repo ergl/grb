@@ -53,6 +53,8 @@
 -record(state, {
     partition :: partition_id(),
     replica_id = undefined :: replica_id() | undefined,
+    %% only at leader
+    heartbeat_process = undefined :: pid() | undefined,
 
     last_delivered = 0 :: grb_time:ts(),
 
@@ -206,10 +208,12 @@ handle_command(fetch_lastvc_table, _Sender, S0=#state{partition=Partition}) ->
     end,
     {reply, Result, S};
 
-handle_command(init_leader, _Sender, S=#state{synod_state=undefined}) ->
+handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
+    {ok, Pid} = grb_red_timer:start_timer(ReplicaId, Partition),
     ok = grb_measurements:create_stat(?leader_queue_length_stat),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
+                                     heartbeat_process=Pid,
                                      synod_state=grb_paxos_state:leader()})};
 
 handle_command(init_follower, _Sender, S=#state{synod_state=undefined}) ->

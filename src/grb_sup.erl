@@ -56,6 +56,5 @@ add_red_processes(ChildSpecs) ->
     RedCoordManager = ?CHILD(grb_red_manager, worker, []),
     RedCoordSup = ?CHILD(grb_red_coordinator_sup, supervisor, []),
     PaxosVnode = ?VNODE(grb_paxos_vnode_master, grb_paxos_vnode),
-    RedTimer = ?CHILD(grb_red_timer, worker, []),
-    [RedCoordManager, RedCoordSup, PaxosVnode, RedTimer | ChildSpecs].
+    [RedCoordManager, RedCoordSup, PaxosVnode | ChildSpecs].
 -endif.
