@@ -102,8 +102,22 @@ follower() -> fresh_state(?follower).
 -spec fresh_state(status()) -> t().
 fresh_state(Status) ->
     #state{status=Status,
+           %% A tree table maintains an ordered queue of prepare/commit records. This allows
+           %% simple computation of the precondition of get_next_ready/2, which delivers transactions
+           %% in commitVC[red] order, but checks against prepared transactions with prepareVC[red]
+           %% lower than commitVC[red]
            index=ets:new(state_entries_index, [ordered_set, {keypos, #index_entry.key}]),
+           %% pending_reads is a bag, since we want to store {Key, TxId} without clashes.
+           %% we could also do a set / ordered_set with a compound key {{Key, TxId}}.
+           %% However, we want two operations over this table:
+           %% 1. Is this Key in the table? (don't care which TxId is associated with it)
+           %% 2. Given a TxId and a Key, delete {Key, TxId} as fast as possible
+           %% If we went the set / ordered_set route, we would have to use select_count
+           %% to perform (1), whereas by using a `bag`, we can simply use member/2
            pending_reads=ets:new(state_pending_reads, [bag]),
+           %% For writes_cache, we store tuples {{Key, TxId}, prepared/decided, VC}, so that
+           %% we can re-use the table for certification_check against prepared and decided
+           %% transactions.
            writes_cache=ets:new(state_pending_writes, [ordered_set]),
            pending_commit_ts=ets:new(state_pending_decisions, [ordered_set])}.
 
