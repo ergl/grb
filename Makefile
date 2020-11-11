@@ -17,7 +17,7 @@ SHELL = /bin/bash
 all: compile
 
 compile:
-	$(REBAR) compile
+	$(REBAR) as $(BASIC_PROFILE) compile
 
 check_binaries:
 	$(REBAR) as debug_bin compile
@@ -47,7 +47,7 @@ clean:
 	$(REBAR) clean --all
 
 rel: compile
-	$(REBAR) release -n grb
+	$(REBAR) as $(BASIC_PROFILE) release -n grb
 
 debugrel:
 	$(REBAR) as debug_log release -n grb
