@@ -29,12 +29,14 @@
 -define(random_key, crypto:strong_rand_bytes(64)).
 -define(random_val, crypto:strong_rand_bytes(256)).
 
+-define(repeat_test_limit, 100).
+
 all() -> [{group, all_tests}].
 
 groups() ->
     [
         {pure_operations,
-            [parallel, {repeat_until_ok, 100}],
+            [parallel],
             [sanity_check_test, empty_read_test, known_replicas_test, advance_clocks_test]},
 
         {basic_operations,
@@ -205,36 +207,39 @@ known_replicas_test(C) ->
 advance_clocks_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     Replicas = lists:sort(maps:keys(ClusterMap)),
-    ?foreach_node(ClusterMap, fun(_, Node) ->
+    TestFun = fun(_, Node) ->
         Partitions = erpc:call(Node, grb_dc_utils, my_partitions, []),
         Replicas = lists:sort(erpc:call(Node, grb_dc_manager, all_replicas, [])),
         ok = advance_clock(Node, Partitions, Replicas, known_vc),
         ok = advance_clock(Node, Partitions, Replicas, stable_vc)
-    end).
+    end,
+    advance_clocks_test(ClusterMap, TestFun, ?repeat_test_limit).
 -else.
 -ifdef(UNIFORM_BLUE).
 advance_clocks_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     Replicas = lists:sort(maps:keys(ClusterMap)),
-    ?foreach_node(ClusterMap, fun(_, Node) ->
+    TestFun = fun(_, Node) ->
         Partitions = erpc:call(Node, grb_dc_utils, my_partitions, []),
         Replicas = lists:sort(erpc:call(Node, grb_dc_manager, all_replicas, [])),
         ok = advance_clock(Node, Partitions, Replicas, known_vc),
         ok = advance_clock(Node, Partitions, Replicas, stable_vc),
         ok = advance_clock(Node, Partitions, Replicas, uniform_vc)
-    end).
+    end,
+    advance_clocks_test(ClusterMap, TestFun, ?repeat_test_limit).
 -else.
 advance_clocks_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     Replicas = lists:sort(maps:keys(ClusterMap)),
-    ?foreach_node(ClusterMap, fun(_, Node) ->
+    TestFun = fun(_, Node) ->
         Partitions = erpc:call(Node, grb_dc_utils, my_partitions, []),
         Replicas = lists:sort(erpc:call(Node, grb_dc_manager, all_replicas, [])),
         ok = advance_clock(Node, Partitions, [?RED_REPLICA | Replicas], known_vc),
         ok = advance_clock(Node, Partitions, Replicas, stable_vc),
         ok = advance_stable_red_entry(Node, Partitions),
         ok = advance_clock(Node, Partitions, Replicas, uniform_vc)
-    end).
+    end,
+    advance_clocks_test(ClusterMap, TestFun, ?repeat_test_limit).
 
 advance_stable_red_entry(Node, Partitions) ->
     lists:foreach(fun(P) ->
@@ -246,6 +251,15 @@ advance_stable_red_entry(Node, Partitions) ->
 
 -endif.
 -endif.
+
+advance_clocks_test(_ClusterMap, _TestFun, 0) ->
+    error;
+advance_clocks_test(ClusterMap, TestFun, Attempt) ->
+    try
+        ok = ?foreach_node(ClusterMap, TestFun)
+    catch _:_ ->
+        advance_clocks_test(ClusterMap, TestFun, Attempt - 1)
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Util
