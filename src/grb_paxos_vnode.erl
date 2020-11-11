@@ -372,16 +372,9 @@ handle_info(Msg, State) ->
 %%%===================================================================
 
 -spec start_timers(#state{}) -> #state{}.
-start_timers(S=#state{deliver_interval=Deliver, prune_interval=0}) ->
-    S#state{
-        prune_timer=undefined,
-        deliver_timer=erlang:send_after(Deliver, self(), ?deliver)
-    };
-start_timers(S=#state{deliver_interval=Deliver, prune_interval=Prune}) ->
-    S#state{
-        prune_timer=erlang:send_after(Prune, self(), ?prune),
-        deliver_timer=erlang:send_after(Deliver, self(), ?deliver)
-    }.
+start_timers(S=#state{deliver_interval=DeliverInt, prune_interval=PruneInt}) ->
+    S#state{prune_timer=grb_dc_utils:maybe_send_after(PruneInt, ?prune),
+            deliver_timer=grb_dc_utils:maybe_send_after(DeliverInt, ?deliver)}.
 
 -spec reply_accept_ack(red_coord_location(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
 reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC) ->

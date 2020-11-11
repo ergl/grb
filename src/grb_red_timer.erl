@@ -68,8 +68,7 @@ handle_call(start_timer, _From, undefined) ->
                    partitions=Partitions,
                    quorum_size=QuorumSize,
                    interval=Interval,
-                   timer=start_heartbeat_timer(Interval)},
-
+                   timer=grb_dc_utils:maybe_send_after(Interval, ?red_hb)},
     {reply, ok, State};
 
 handle_call(E, _From, S) ->
@@ -128,10 +127,6 @@ handle_info(?red_hb, State=?no_active_timer) ->
 handle_info(E, S) ->
     ?LOG_WARNING("~p unexpected info: ~p~n", [?MODULE, E]),
     {noreply, S}.
-
--spec start_heartbeat_timer(non_neg_integer()) -> undefined | reference().
-start_heartbeat_timer(0) -> undefined;
-start_heartbeat_timer(Interval) -> erlang:send_after(Interval, self(), ?red_hb).
 
 -spec next_heartbeat_id(heartbeat_id()) -> heartbeat_id().
 next_heartbeat_id({heartbeat, N}) -> {heartbeat, N + 1}.

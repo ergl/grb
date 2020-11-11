@@ -16,6 +16,9 @@
 %% Managing ETS tables
 -export([safe_bin_to_atom/1]).
 
+%% Starting timers
+-export([maybe_send_after/2]).
+
 %% For external script
 -export([is_ring_owner/0,
          pending_ring_changes/0,
@@ -122,6 +125,12 @@ safe_bin_to_atom(Bin) ->
         {'EXIT', _} -> binary_to_atom(Bin, latin1);
         Atom -> Atom
     end.
+
+-spec maybe_send_after(non_neg_integer(), term()) -> reference() | undefined.
+maybe_send_after(0, _) ->
+    undefined;
+maybe_send_after(Time, Msg) ->
+    erlang:send_after(Time, self(), Msg).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal
