@@ -83,7 +83,8 @@ start_node(Name, Config) ->
 
     CodePath = lists:filter(fun filelib:is_dir/1, code:get_path()),
     NodeConfig = [{monitor_master, true},
-                  {startup_functions, [ {code, set_path, [CodePath]}]}],
+                  {startup_functions, [ {code, set_path, [CodePath]}]},
+                  {boot_timeout, 5}],
 
     case ct_slave:start(Name, NodeConfig) of
         {error, already_started, Node} ->
