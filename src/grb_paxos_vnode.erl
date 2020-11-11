@@ -58,6 +58,8 @@
 
     deliver_timer = undefined :: reference() | undefined,
     deliver_interval :: non_neg_integer(),
+    %% How often do we re-check the clock at the leader to insert a decision
+    %% We insert directly at the followers
     decision_retry_interval :: non_neg_integer(),
 
     prune_timer = undefined :: reference() | undefined,
@@ -169,7 +171,7 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
-    {ok, RetryInterval} = application:get_env(grb, red_heartbeat_interval),
+    {ok, RetryInterval} = application:get_env(grb, red_leader_check_clock_interval),
     {ok, DeliverInterval} = application:get_env(grb, red_delivery_interval),
     PruningInterval = application:get_env(grb, red_prune_interval, 0),
 
