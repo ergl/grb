@@ -313,17 +313,19 @@ handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{pa
 %%% leader / follower protocol messages
 %%%===================================================================
 
-handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S0=#state{partition=P}) ->
+handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S0=#state{partition=P,
+                                                               last_delivered=LastDelivered}) ->
 
     ?LOG_DEBUG("~p: HEARTBEAT_DECIDE(~b, ~p, ~b)", [P, Ballot, Id, Ts]),
     {ok, S} = decide_hb_internal(Ballot, Id, Ts, S0),
-    {noreply, S};
+    {noreply, S#state{last_delivered=deliver_updates(P, LastDelivered, S#state.synod_state)}};
 
-handle_command({decision, Ballot, TxId, RS, WS, Decision, CommitVC}, _Sender, S0=#state{partition=P}) ->
 
+handle_command({decision, Ballot, TxId, RS, WS, Decision, CommitVC}, _Sender, S0=#state{partition=P,
+                                                                                        last_delivered=LastDelivered}) ->
     ?LOG_DEBUG("~p DECIDE(~b, ~p, ~p)", [P, Ballot, TxId, Decision]),
     {ok, S} = decide_internal(Ballot, TxId, RS, WS, Decision, CommitVC, S0),
-    {noreply, S};
+    {noreply, S#state{last_delivered=deliver_updates(P, LastDelivered, S#state.synod_state)}};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("~p unhandled_command ~p", [?MODULE, Message]),
