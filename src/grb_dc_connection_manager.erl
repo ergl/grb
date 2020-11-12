@@ -25,7 +25,7 @@
          send_red_accept/7,
          send_red_accept_ack/7,
          send_red_already_decided/6,
-         send_red_decision/6]).
+         send_red_decision/8]).
 
 %% Red heartbeats
 -export([send_red_heartbeat/5,
@@ -223,10 +223,10 @@ send_red_already_decided(ToId, ToNode, Partition, TxId, Decision, CommitVC) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition,
              grb_dc_messages:red_already_decided(ToNode, Decision, TxId, CommitVC)).
 
--spec send_red_decision(replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-send_red_decision(ToId, Partition, Ballot, TxId, Decision, CommitVC) ->
+-spec send_red_decision(replica_id(), partition_id(), ballot(), term(), readset(), writeset(), red_vote(), vclock()) -> ok.
+send_red_decision(ToId, Partition, Ballot, TxId, RS, WS, Decision, CommitVC) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition,
-             grb_dc_messages:red_decision(Ballot, Decision, TxId, CommitVC)).
+             grb_dc_messages:red_decision(Ballot, Decision, TxId, RS, WS, CommitVC)).
 
 -spec send_red_heartbeat(ToId :: replica_id(),
                          Partition :: partition_id(),

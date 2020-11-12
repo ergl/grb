@@ -22,10 +22,14 @@
 
 -type partition_ballots() :: #{partition_id() => ballot()}.
 -record(tx_acc, {
-    promise :: grb_promise:t(),
-    %% used to hold the data while we wait for the uniform barrier to lift
+    %% holding state until uniform barrier is lifted
     prepares = undefined :: [{partition_id(), readset(), writeset()}] | undefined,
     snapshot_vc = undefined :: vclock() | undefined,
+
+    %% promise associated with the transaction client
+    promise :: grb_promise:t(),
+    %% readset/writeset, to be sent on prepare / accept / decide
+    tx_payload = #{} :: #{partition_id() := {readset(), writeset()}},
     locations = [] :: [{partition_id(), leader_location()}],
     quorums_to_ack = #{} :: #{partition_id() => pos_integer()},
     ballots = #{} :: partition_ballots(),
@@ -157,15 +161,17 @@ init_tx_and_send(Promise, TxId, SnapshotVC, Prepares, S=#state{self_location=Sel
                                                                quorum_size=QuorumSize,
                                                                accumulators=Acc}) ->
 
-    SendFun = fun({Partition, Readset, Writeset}, {LeaderAcc, QuorumAcc}) ->
+    SendFun = fun({Partition, Readset, Writeset}, {LeaderAcc, QuorumAcc, PayloadAcc}) ->
         Location = send_prepare(SelfCoord, Partition, TxId, Readset, Writeset, SnapshotVC),
         {
             [{Partition, Location} | LeaderAcc],
-            QuorumAcc#{Partition => QuorumSize }
+            QuorumAcc#{Partition => QuorumSize},
+            PayloadAcc#{Partition => {Readset, Writeset}}
         }
     end,
-    {LeaderLocations, QuorumsToAck} = lists:foldl(SendFun, {[], #{}}, Prepares),
+    {LeaderLocations, QuorumsToAck, Payload} = lists:foldl(SendFun, {[], #{}, #{}}, Prepares),
     S#state{accumulators=Acc#{TxId => #tx_acc{promise=Promise,
+                                              tx_payload=Payload,
                                               locations=LeaderLocations,
                                               quorums_to_ack=QuorumsToAck}}}.
 
@@ -174,15 +180,17 @@ send_tx_prepares(TxId, S=#state{self_location=SelfCoord,
                                 accumulators=Acc}) ->
 
     TxData = #tx_acc{prepares=Prepares, snapshot_vc=SnapshotVC} = maps:get(TxId, Acc),
-    SendFun = fun({Partition, Readset, Writeset}, {LeaderAcc, QuorumAcc}) ->
+    SendFun = fun({Partition, Readset, Writeset}, {LeaderAcc, QuorumAcc, PayloadAcc}) ->
         Location = send_prepare(SelfCoord, Partition, TxId, Readset, Writeset, SnapshotVC),
         {
             [{Partition, Location} | LeaderAcc],
-            QuorumAcc#{Partition => QuorumSize}
+            QuorumAcc#{Partition => QuorumSize},
+            PayloadAcc#{Partition => {Readset, Writeset}}
         }
     end,
-    {LeaderLocations, QuorumsToAck} = lists:foldl(SendFun, {[], #{}}, Prepares),
+    {LeaderLocations, QuorumsToAck, Payload} = lists:foldl(SendFun, {[], #{}, #{}}, Prepares),
     S#state{accumulators=Acc#{TxId => TxData#tx_acc{prepares=undefined, snapshot_vc=undefined,
+                                                    tx_payload=Payload,
                                                     locations=LeaderLocations, quorums_to_ack=QuorumsToAck}}}.
 
 -spec check_ballot(partition_id(), ballot(), partition_ballots()) -> {ok, partition_ballots()} | error.
@@ -249,9 +257,11 @@ handle_ack(SelfPid, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0, TxState
             Outcome={Decision, CommitVC} = decide_transaction(Acc),
             reply_to_client(Outcome, TxState#tx_acc.promise),
 
+            Payload = TxState#tx_acc.tx_payload,
             lists:foreach(fun({Partition, Location}) ->
                 Ballot = maps:get(Partition, Ballots),
-                send_decision(Partition, Location, Ballot, TxId, Decision, CommitVC)
+                {RS, WS} = maps:get(Partition, Payload),
+                send_decision(Partition, Location, Ballot, TxId, RS, WS, Decision, CommitVC)
             end, TxState#tx_acc.locations),
 
             ok = grb_red_manager:unregister_coordinator(TxId, SelfPid),
@@ -265,27 +275,27 @@ decide_transaction(VoteMap) ->
         (_, {Vote, VC}, VoteAcc) -> reduce_vote(Vote, VC, VoteAcc)
     end, undefined, VoteMap).
 
--spec send_decision(partition_id(), leader_location(), ballot(), term(), red_vote(), vclock()) -> ok.
-send_decision(Partition, {proxy, LocalNode, _}, Ballot, TxId, Decision, CommitVC) ->
-    remote_broadcast(LocalNode, Partition, Ballot, TxId, Decision, CommitVC);
+-spec send_decision(partition_id(), leader_location(), ballot(), term(), readset(), writeset(), red_vote(), vclock()) -> ok.
+send_decision(Partition, {proxy, LocalNode, _}, Ballot, TxId, RS, WS, Decision, CommitVC) ->
+    remote_broadcast(LocalNode, Partition, Ballot, TxId, RS, WS, Decision, CommitVC);
 
-send_decision(Partition, {local, {_, LocalNode}}, Ballot, TxId, Decision, CommitVC) ->
+send_decision(Partition, {local, {_, LocalNode}}, Ballot, TxId, RS, WS, Decision, CommitVC) ->
     MyNode = node(),
     case LocalNode of
-        MyNode -> local_broadcast(Partition, Ballot, TxId, Decision, CommitVC);
-        _ -> remote_broadcast(LocalNode, Partition, Ballot, TxId, Decision, CommitVC)
+        MyNode -> local_broadcast(Partition, Ballot, TxId, RS, WS, Decision, CommitVC);
+        _ -> remote_broadcast(LocalNode, Partition, Ballot, TxId, RS, WS, Decision, CommitVC)
     end;
 
-send_decision(Partition, {remote, _}, Ballot, TxId, Decision, CommitVC) ->
-    local_broadcast(Partition, Ballot, TxId, Decision, CommitVC).
+send_decision(Partition, {remote, _}, Ballot, TxId, RS, WS, Decision, CommitVC) ->
+    local_broadcast(Partition, Ballot, TxId, RS, WS, Decision, CommitVC).
 
--spec local_broadcast(partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-local_broadcast(Partition, Ballot, TxId, Decision, CommitVC) ->
-    grb_paxos_vnode:broadcast_decision(Partition, Ballot, TxId, Decision, CommitVC).
+-spec local_broadcast(partition_id(), ballot(), term(), readset(), writeset(), red_vote(), vclock()) -> ok.
+local_broadcast(Partition, Ballot, TxId, RS, WS, Decision, CommitVC) ->
+    grb_paxos_vnode:broadcast_decision(Partition, Ballot, TxId, RS, WS, Decision, CommitVC).
 
--spec remote_broadcast(node(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-remote_broadcast(Node, Partition, Ballot, TxId, Decision, CommitVC) ->
-    erpc:cast(Node, grb_paxos_vnode, broadcast_decision, [Partition, Ballot, TxId, Decision, CommitVC]).
+-spec remote_broadcast(node(), partition_id(), ballot(), term(), readset(), writeset(), red_vote(), vclock()) -> ok.
+remote_broadcast(Node, Partition, Ballot, TxId, RS, WS, Decision, CommitVC) ->
+    erpc:cast(Node, grb_paxos_vnode, broadcast_decision, [Partition, Ballot, TxId, RS, WS, Decision, CommitVC]).
 
 -spec reduce_vote(red_vote(), vclock(), {red_vote(), vclock()}) -> {red_vote(), vclock()}.
 reduce_vote(_, _, {{abort, _}, _}=Err) -> Err;

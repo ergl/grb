@@ -152,8 +152,8 @@ handle_request(_, Partition, #red_accept_ack{target_node=Node, ballot=Ballot, tx
         _ -> erpc:cast(Node, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC])
     end;
 
-handle_request(_, Partition, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->
-    grb_paxos_vnode:decide(Partition, Ballot, TxId, Decision, CommitVC);
+handle_request(_, Partition, #red_decision{ballot=Ballot, tx_id=TxId, readset=RS, writeset=WS, decision=Decision, commit_vc=CommitVC}) ->
+    grb_paxos_vnode:decide(Partition, Ballot, TxId, RS, WS, Decision, CommitVC);
 
 handle_request(_, _, #red_already_decided{target_node=Node, tx_id=TxId, decision=Vote, commit_vc=CommitVC}) ->
     MyNode = node(),

@@ -112,6 +112,8 @@
 -record(red_decision, {
     ballot :: ballot(),
     tx_id :: term(),
+    readset :: [term()],
+    writeset :: #{},
     decision :: term(),
     commit_vc :: vclock()
 }).
