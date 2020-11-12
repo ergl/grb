@@ -427,9 +427,7 @@ decide_hb_internal(Ballot, Id, Ts, S=#state{synod_state=SynodState0,
 
         not_prepared ->
             ?LOG_DEBUG("~p: DECIDE_HEARTBEAT(~b, ~p) := not_prepared, buffering", [S#state.partition, Ballot, Id]),
-            %% buffer the decision and reserve our commit spot
-            %% until we receive a matching ACCEPT from the leader
-            ok = grb_paxos_state:reserve_decision(Id, ok, Ts, SynodState0),
+            %% buffer the decision until we receive a matching ACCEPT from the leader
             {ok, S#state{decision_buffer=Buffer#{{Id, Ballot} => Ts}}}
     end.
 
@@ -454,9 +452,7 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_state=SynodStat
         not_prepared ->
             ok = grb_measurements:log_counter({?MODULE, out_of_order_decision}),
             ?LOG_DEBUG("~p: DECIDE(~b, ~p) := not_prepared, buffering", [S#state.partition, Ballot, TxId]),
-            %% buffer the decision and reserve our commit spot
-            %% until we receive a matching ACCEPT from the leader
-            ok = grb_paxos_state:reserve_decision(TxId, Decision, CommitVC, SynodState0),
+            %% buffer the decision until we receive a matching ACCEPT from the leader
             {ok, S#state{decision_buffer=Buffer#{{TxId, Ballot} => {Decision, CommitVC}}}}
     end.
 

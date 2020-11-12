@@ -54,11 +54,7 @@
     %% A pair of inverted indices over the transactions read/write sets
     %% Used to compute write-write and read-write conflicts in a quick way
     pending_reads :: cache_id(),
-    writes_cache :: cache_id(),
-
-    %% An ETS table for buffered DECISION messages
-    %% The client can "reserve" a spot in the commit order using `reserve_decision/4`
-    pending_commit_ts :: cache_id()
+    writes_cache :: cache_id()
 }).
 
 -type prepare_hb_result() :: {red_vote(), ballot(), grb_time:ts()}| {already_decided, red_vote(), grb_time:ts()}.
@@ -86,9 +82,6 @@
 -export([prepare/6,
          accept/7,
          decision/5]).
-
-%% Buffer decision spot
--export([reserve_decision/4]).
 
 %%%===================================================================
 %%% constructors
@@ -119,15 +112,13 @@ fresh_state(Status) ->
            %% For writes_cache, we store tuples {{Key, TxId}, prepared/decided, VC}, so that
            %% we can re-use the table for certification_check against prepared and decided
            %% transactions.
-           writes_cache=ets:new(state_pending_writes, [ordered_set]),
-           pending_commit_ts=ets:new(state_pending_decisions, [ordered_set])}.
+           writes_cache=ets:new(state_pending_writes, [ordered_set])}.
 
 -spec delete(t()) -> ok.
-delete(#state{index=Index, pending_reads=PendingReads, writes_cache=Writes, pending_commit_ts=PendingData}) ->
+delete(#state{index=Index, pending_reads=PendingReads, writes_cache=Writes}) ->
     true = ets:delete(Index),
     true = ets:delete(PendingReads),
     true = ets:delete(Writes),
-    true = ets:delete(PendingData),
     ok.
 
 %%%===================================================================
@@ -135,14 +126,13 @@ delete(#state{index=Index, pending_reads=PendingReads, writes_cache=Writes, pend
 %%%===================================================================
 
 -spec get_next_ready(grb_time:ts(), t()) -> false | {grb_time:ts(), [ ?heartbeat | {#{}, vclock()} ]}.
-get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx, pending_commit_ts=PendingData}) ->
+get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx}) ->
     case get_first_committed(LastDelivered, Idx) of
         false ->
             false;
 
         {CommitTime, FirstCommitId} ->
-            IsBlocked = buffered_between(LastDelivered, CommitTime, PendingData)
-                orelse prep_committed_between(LastDelivered, CommitTime, Idx),
+            IsBlocked = prep_committed_between(LastDelivered, CommitTime, Idx),
             case IsBlocked of
                 true ->
                     false;
@@ -171,13 +161,6 @@ get_first_committed(LastDelivered, Table) ->
     case Res of
         {[{CommitTime, TxId}], _} -> {CommitTime, TxId};
         _Other -> false
-    end.
-
--spec buffered_between(grb_time:ts(), grb_time:ts(), cache_id()) -> boolean().
-buffered_between(From, To, Table) ->
-    case ets:next(Table, {{From, 0}}) of
-        '$end_of_table' -> false;
-        {MarkerTime, _} -> MarkerTime < To
     end.
 
 -spec prep_committed_between(grb_time:ts(), grb_time:ts(), cache_id()) -> boolean().
@@ -377,8 +360,7 @@ decision_pre(_, Id, CommitRed, ClockTime, #state{status=?leader, entries=EntryMa
 
 -spec decision(ballot(), record_id(), red_vote(), vclock(), t()) -> {ok, t()} | decision_error().
 decision(Ballot, Id, Vote, CommitVC, S=#state{entries=EntryMap, index=Idx,
-                                              pending_reads=PrepReads, writes_cache=WriteCache,
-                                              pending_commit_ts=PendingData}) ->
+                                              pending_reads=PrepReads, writes_cache=WriteCache}) ->
 
     RedTs = get_timestamp(Id, CommitVC),
     case decision_pre(Ballot, Id, RedTs, grb_time:timestamp(), S) of
@@ -391,7 +373,6 @@ decision(Ballot, Id, Vote, CommitVC, S=#state{entries=EntryMap, index=Idx,
             %% if we voted abort, we didn't store anything
             case OldVote of
                 ok ->
-                    true = ets:delete(PendingData, {RedTs, Id}),
                     move_pending_data(Id, CommitVC, Vote, ReadKeys, WriteKeys, PrepReads, WriteCache);
                 _ ->
                     ok
@@ -402,13 +383,6 @@ decision(Ballot, Id, Vote, CommitVC, S=#state{entries=EntryMap, index=Idx,
 
         Other -> Other
     end.
-
--spec reserve_decision(record_id(), red_vote(), vclock(), t()) -> ok.
-reserve_decision(_, {abort, _}, _, _) -> ok;
-reserve_decision(Id, ok, CommitVC, #state{pending_commit_ts=PendingDataIdx})  ->
-    Marker = get_timestamp(Id, CommitVC),
-    true = ets:insert(PendingDataIdx, {{Marker, Id}}),
-    ok.
 
 -spec move_pending_data(Id :: record_id(),
                         CommitVC :: vclock(),
@@ -778,43 +752,5 @@ grb_paxos_state_prune_decided_before_test() ->
 
     true = ets:delete(LastVC),
     true = persistent_term:erase({grb_dc_manager, my_replica}).
-
-grb_paxos_state_decision_reserve_test() ->
-    with_states(grb_paxos_state:follower(), fun(F0) ->
-        TxId1 = tx_1, RS1 = [a], WS1 = #{a => <<"hello">>}, CVC1 = #{?RED_REPLICA => 1},
-        HB = {?heartbeat, 0}, Ts = 2,
-        TxId2 = tx_2, RS2 = [b], WS2 = #{b => <<"another update">>}, CVC2 = #{?RED_REPLICA => 5},
-
-        %% If we get a commit decision for a transaction that hasn't been accepted,
-        %% it should "reserve its spot" in the commit order, or another transaction could be
-        %% decided and delivered while we wait for the corresponding ACCEPT
-        ?assertMatch(not_prepared, grb_paxos_state:decision(0, TxId1, ok, CVC1, F0)),
-        ok = grb_paxos_state:reserve_decision(TxId1, ok, CVC1, F0),
-
-        %% Same with a heartbeat
-        ?assertMatch(not_prepared, grb_paxos_state:decision_hb(0, HB, Ts, F0)),
-        ok = grb_paxos_state:reserve_decision(HB, ok, Ts, F0),
-
-        {ok, F1} = grb_paxos_state:accept(0, TxId2, RS2, WS2, ok, CVC2, F0),
-        {ok, F2} = grb_paxos_state:decision(0, TxId2, ok, CVC2, F1),
-
-        %% Although we tx_2 is ready to deliver, we have a pending ACCEPT for tx_1
-        ?assertMatch(false, grb_paxos_state:get_next_ready(0, F2)),
-
-        {ok, F3} = grb_paxos_state:accept(0, TxId1, RS1, WS1, ok, CVC1, F2),
-        {ok, F4} = grb_paxos_state:decision(0, TxId1, ok, CVC1, F3),
-
-        %% Now that tx_1 is complete, it can be delivered
-        ?assertMatch({1, [{WS1, CVC1}]}, grb_paxos_state:get_next_ready(0, F4)),
-        %% but trying to deliver tx_2 will fail as we still have the heartbeat in the queue
-        ?assertMatch(false, grb_paxos_state:get_next_ready(1, F4)),
-
-        {ok, F5} = grb_paxos_state:accept_hb(0, HB, Ts, F4),
-        {ok, F6} = grb_paxos_state:decision_hb(0, HB, Ts, F5),
-
-        %% Finally, we can deliver the heartbeat and tx_2
-        ?assertMatch({2, [?heartbeat]}, grb_paxos_state:get_next_ready(1, F6)),
-        ?assertMatch({5, [{WS2, CVC2}]}, grb_paxos_state:get_next_ready(2, F6))
-    end).
 
 -endif.
