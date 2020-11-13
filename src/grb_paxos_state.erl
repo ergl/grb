@@ -133,12 +133,14 @@ get_next_ready(LastDelivered, #state{partition=Partition, entries=EntryMap, inde
     ok = grb_measurements:log_counter({?MODULE, Partition, ?FUNCTION_NAME}),
     case get_first_committed(LastDelivered, Idx) of
         false ->
+            ok = grb_measurements:log_counter({?MODULE, Partition, no_commits}),
             false;
 
         {CommitTime, FirstCommitId} ->
             IsBlocked = prep_committed_between(Partition, LastDelivered, CommitTime, Idx),
             case IsBlocked of
                 true ->
+                    ok = grb_measurements:log_counter({?MODULE, Partition, blocked_transaction}),
                     false;
                 false ->
                     %% get the rest of committed transactions with this commit time
