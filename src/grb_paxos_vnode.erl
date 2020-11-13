@@ -461,8 +461,6 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_state=SynodStat
     end.
 
 -spec deliver_updates(partition_id(), grb_time:ts(), grb_paxos_state:t()) -> grb_time:ts().
-%% dialyzer doesn't like grb_paxos_state:get_next_ready/2 due to ets:select and records
--dialyzer({no_return, deliver_updates/3}).
 deliver_updates(Partition, From, SynodState) ->
     case grb_paxos_state:get_next_ready(From, SynodState) of
         false ->

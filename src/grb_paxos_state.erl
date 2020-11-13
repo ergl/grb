@@ -1,6 +1,7 @@
 -module(grb_paxos_state).
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
+-include_lib("stdlib/include/ms_transform.hrl").
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -134,14 +135,12 @@ delete(#state{index=Index, pending_reads=PendingReads, writes_cache=Writes, pend
 %%%===================================================================
 
 -spec get_next_ready(grb_time:ts(), t()) -> false | {grb_time:ts(), [ ?heartbeat | {#{}, vclock()} ]}.
--dialyzer({nowarn_function, get_next_ready/2}).
 get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx, pending_commit_ts=PendingData}) ->
-    Res = ets:select(Idx, [{ #index_entry{key={'$1', '$2'}, state=decided, vote=ok},
-                                  [{'>', '$1', LastDelivered}],
-                                  [{{'$1', '$2'}}] }],
-                               1),
-    case Res of
-        {[{CommitTime, FirstCommitId}], _} ->
+    case get_first_committed(LastDelivered, Idx) of
+        false ->
+            false;
+
+        {CommitTime, FirstCommitId} ->
             IsBlocked = buffered_between(LastDelivered, CommitTime, PendingData)
                 orelse prep_committed_between(LastDelivered, CommitTime, Idx),
             case IsBlocked of
@@ -150,18 +149,31 @@ get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx, pending_commit
                 false ->
                     %% get the rest of committed transactions with this commit time
                     %% since they have the same committed time, they all pass the check above
+                    %%
+                    %% Can't use ets:fun2ms/1 here, since it can't bind CommitTime as the key prefix
                     MoreIds = ets:select(Idx, [{ #index_entry{key={CommitTime, '$1'}, state=decided, vote=ok},
                                                  [{'=/=', '$1', {const, FirstCommitId}}],
                                                  ['$1'] }]),
                     Ready = lists:map(fun(Id) -> data_for_id(Id, EntryMap) end, [FirstCommitId | MoreIds]),
                     {CommitTime, Ready}
-            end;
-        _Other ->
-            false
+            end
+    end.
+
+-spec get_first_committed(grb_time:ts(), cache_id()) -> {grb_time:ts(), record_id()} | false.
+get_first_committed(LastDelivered, Table) ->
+    Res = ets:select(Table, ets:fun2ms(
+        fun(#index_entry{key={Ts, TxId}, state=decided, vote=ok})
+            when Ts > LastDelivered ->
+                {Ts, TxId}
+        end),
+        1
+    ),
+    case Res of
+        {[{CommitTime, TxId}], _} -> {CommitTime, TxId};
+        _Other -> false
     end.
 
 -spec buffered_between(grb_time:ts(), grb_time:ts(), cache_id()) -> boolean().
--dialyzer({no_unused, buffered_between/3}).
 buffered_between(From, To, Table) ->
     case ets:next(Table, {{From, 0}}) of
         '$end_of_table' -> false;
@@ -169,16 +181,15 @@ buffered_between(From, To, Table) ->
     end.
 
 -spec prep_committed_between(grb_time:ts(), grb_time:ts(), cache_id()) -> boolean().
--dialyzer({no_unused, prep_committed_between/3}).
 prep_committed_between(From, To, Table) ->
-    0 =/= ets:select_count(Table,
-                          [{ #index_entry{key={'$1', '_'}, state=prepared, vote=ok, _='_'},
-                             [{'andalso', {'>', '$1', {const, From}},
-                              {'<', '$1', {const, To}}}],
-                             [true]  }]).
+    0 =/= ets:select_count(Table, ets:fun2ms(
+        fun(#index_entry{key={Ts, _}, state=prepared, vote=ok})
+            when Ts > From andalso Ts < To ->
+            true
+        end)
+    ).
 
 -spec data_for_id(record_id(), #{record_id() => tx_data()}) -> ?heartbeat | {#{}, vclock()}.
--dialyzer({no_unused, data_for_id/2}).
 data_for_id({?heartbeat, _}, _) -> ?heartbeat;
 data_for_id(Id, EntryMap) ->
     #tx_data{writeset=WS, clock=CommitVC} = maps:get(Id, EntryMap),
@@ -193,21 +204,20 @@ data_for_id(Id, EntryMap) ->
 %%      transaction with the same transaction identifier.
 %%
 -spec prune_decided_before(grb_time:ts(), t()) -> t().
--dialyzer({nowarn_function, prune_decided_before/2}).
 prune_decided_before(MinLastDelivered, State=#state{index=Idx}) ->
-    Result = ets:select(Idx,
-                        [{ #index_entry{key={'$1', '$2'}, state=decided, vote='$3', _='_'},
-                           [{'<', '$1', {const, MinLastDelivered}}],
-                           [{{'$1', '$2', '$3'}}] }],
-                        ?PRUNE_LIMIT),
-
+    Result = ets:select(Idx, ets:fun2ms(
+        fun(#index_entry{key={Ts, Id}, state=decided, vote=Decision})
+            when Ts < MinLastDelivered ->
+                {Ts, Id, Decision}
+        end),
+        ?PRUNE_LIMIT
+    ),
     prune_decided_before_continue(State, Result).
 
 -spec prune_decided_before_continue(State :: t(),
                                     Match :: ( {[{grb_time:ts(), record_id()}], ets:continuation()}
                                                | '$end_of_table') ) -> t().
 
--dialyzer({no_unused, prune_decided_before_continue/2}).
 prune_decided_before_continue(S, '$end_of_table') -> S;
 prune_decided_before_continue(S=#state{index=Idx, entries=EntryMap0, writes_cache=Writes}, {Objects, Cont}) ->
     EntryMap = lists:foldl(fun({Time, Id, Decision}, AccMap) ->
@@ -219,7 +229,6 @@ prune_decided_before_continue(S=#state{index=Idx, entries=EntryMap0, writes_cach
     prune_decided_before_continue(S#state{entries=EntryMap}, ets:select(Cont)).
 
 -spec clear_pending(record_id(), red_vote(), [key()] | undefined, cache_id()) -> ok.
--dialyzer({no_unused, clear_pending/4}).
 clear_pending(_Id, {abort, _}, _WrittenKeys, _Writes) -> ok;
 clear_pending({?heartbeat, _}, ok, _WrittenKeys, _Writes) -> ok;
 clear_pending(Id, ok, Keys, Writes) ->
