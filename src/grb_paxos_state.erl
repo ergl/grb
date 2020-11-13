@@ -95,6 +95,7 @@ follower() -> fresh_state(?follower).
 
 -spec fresh_state(status()) -> t().
 fresh_state(Status) ->
+    ok = grb_measurements:create_stat({?MODULE, Status}),
     #state{status=Status,
            %% A tree table maintains an ordered queue of prepare/commit records. This allows
            %% simple computation of the precondition of get_next_ready/2, which delivers transactions
@@ -126,13 +127,13 @@ delete(#state{index=Index, pending_reads=PendingReads, writes_cache=Writes}) ->
 %%%===================================================================
 
 -spec get_next_ready(grb_time:ts(), t()) -> false | {grb_time:ts(), [ ?heartbeat | {#{}, vclock()} ]}.
-get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx}) ->
+get_next_ready(LastDelivered, #state{status=Status, entries=EntryMap, index=Idx}) ->
     case get_first_committed(LastDelivered, Idx) of
         false ->
             false;
 
         {CommitTime, FirstCommitId} ->
-            IsBlocked = prep_committed_between(LastDelivered, CommitTime, Idx),
+            IsBlocked = prep_committed_between(Status, LastDelivered, CommitTime, Idx),
             case IsBlocked of
                 true ->
                     false;
@@ -163,14 +164,16 @@ get_first_committed(LastDelivered, Table) ->
         _Other -> false
     end.
 
--spec prep_committed_between(grb_time:ts(), grb_time:ts(), cache_id()) -> boolean().
-prep_committed_between(From, To, Table) ->
-    0 =/= ets:select_count(Table, ets:fun2ms(
+-spec prep_committed_between(status(), grb_time:ts(), grb_time:ts(), cache_id()) -> boolean().
+prep_committed_between(Status, From, To, Table) ->
+    PrepBefore = ets:select_count(Table, ets:fun2ms(
         fun(#index_entry{key={Ts, _}, state=prepared, vote=ok})
             when Ts > From andalso Ts < To ->
             true
         end)
-    ).
+    ),
+    ok = grb_measurements:log_stat({?MODULE, Status}, PrepBefore),
+    PrepBefore =/= 0.
 
 -spec data_for_id(record_id(), #{record_id() => tx_data()}) -> ?heartbeat | {#{}, vclock()}.
 data_for_id({?heartbeat, _}, _) -> ?heartbeat;
@@ -353,8 +356,11 @@ decision_pre(_, Id, CommitRed, ClockTime, #state{status=?leader, entries=EntryMa
 
         Data=#tx_data{state=prepared} ->
             case ClockTime >= CommitRed of
-                true -> {ok, Data};
-                false -> not_ready
+                true ->
+                    {ok, Data};
+                false ->
+                    ok = grb_measurements:log_counter({?MODULE, ?FUNCTION_NAME, leader_not_ready}),
+                    not_ready
             end
     end.
 
