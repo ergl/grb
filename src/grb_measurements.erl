@@ -110,11 +110,11 @@ report_stats() ->
             || Stat <- ets:tab2list(persistent_term:get({?MODULE, ?AGGREGATE_TABLE}))],
     L1 = [ {counter, K, C}
             || #counter_entry{key=K, data=C} <- ets:tab2list(persistent_term:get({?MODULE, ?COUNTER_TABLE}))],
-    L0 ++ L1.
+    lists:sort(L0 ++ L1).
 
 -spec roll_stat(#stat_entry{}) -> {stat, term(), #{atom() => term()}}.
 roll_stat(#stat_entry{key=K, max=Max, ops=N, data=Total}) ->
-    {stat, K, #{max => Max, total => Total, avg => case N of
+    {stat, K, #{max => Max, total => Total, ops => N, avg => case N of
         0 -> 0;
         _ -> Total / N
     end}}.
