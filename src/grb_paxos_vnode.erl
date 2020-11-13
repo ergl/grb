@@ -213,13 +213,13 @@ handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_state=u
     ok = grb_measurements:create_stat(?leader_queue_length_stat),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
                                      heartbeat_process=Pid,
-                                     synod_state=grb_paxos_state:leader()})};
+                                     synod_state=grb_paxos_state:leader(Partition)})};
 
-handle_command(init_follower, _Sender, S=#state{synod_state=undefined}) ->
+handle_command(init_follower, _Sender, S=#state{partition=Partition, synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
     ok = grb_measurements:create_stat(?follower_queue_length_stat),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
-                                     synod_state=grb_paxos_state:follower()})};
+                                     synod_state=grb_paxos_state:follower(Partition)})};
 
 %%%===================================================================
 %%% leader protocol messages
