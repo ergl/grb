@@ -11,9 +11,8 @@
          load/1,
          uniform_barrier/3,
          start_transaction/2,
-         try_key_vsn/3,
+         partition_ready/2,
          async_key_vsn/4,
-         async_key_vsn_vc/4,
          key_vsn_bypass/3,
          prepare_blue/4,
          decide_blue/3,
@@ -112,23 +111,14 @@ start_transaction(Partition, ClientVC) ->
 -endif.
 -endif.
 
--spec try_key_vsn(partition_id(), key(), vclock()) -> {ok, val()} | not_ready.
-try_key_vsn(Partition, Key, SnapshotVC) ->
-    ok = try_operation_prologue(Partition, SnapshotVC),
-    case grb_propagation_vnode:partition_ready(Partition, SnapshotVC) of
-        not_ready ->
-            not_ready;
-        ready ->
-            grb_oplog_vnode:get_key_version(Partition, Key, SnapshotVC)
-    end.
+-spec partition_ready(partition_id(), vclock()) -> boolean().
+partition_ready(Partition, SnapshotVC) ->
+    ok = read_snapshot_prologue(Partition, SnapshotVC),
+    ready =:= grb_propagation_vnode:partition_ready(Partition, SnapshotVC).
 
 -spec async_key_vsn(grb_promise:t(), partition_id(), key(), vclock()) -> ok.
 async_key_vsn(Promise, Partition, Key, SnapshotVC) ->
     grb_oplog_reader:async_key_vsn(Promise, Partition, Key, SnapshotVC).
-
--spec async_key_vsn_vc(grb_promise:t(), partition_id(), key(), vclock()) -> ok.
-async_key_vsn_vc(Promise, Partition, Key, SnapshotVC) ->
-    grb_oplog_reader:async_key_vsn_vc(Promise, Partition, Key, SnapshotVC).
 
 -spec key_vsn_bypass(partition_id(), key(), vclock()) -> {ok, val()}.
 key_vsn_bypass(Partition, Key, SnapshotVC) ->
@@ -155,12 +145,12 @@ commit_red(Promise, TargetPartition, TxId, SnapshotVC, Prepares) ->
 %%% Internal
 %%%===================================================================
 
--spec try_operation_prologue(partition_id(), vclock()) -> ok.
+-spec read_snapshot_prologue(partition_id(), vclock()) -> ok.
 -ifdef(BASIC_REPLICATION).
-try_operation_prologue(Partition, SnapshotVC) ->
+read_snapshot_prologue(Partition, SnapshotVC) ->
     grb_propagation_vnode:merge_into_stable_vc(Partition, SnapshotVC).
 -else.
-try_operation_prologue(Partition, SnapshotVC) ->
+read_snapshot_prologue(Partition, SnapshotVC) ->
     grb_propagation_vnode:merge_into_uniform_vc(Partition, SnapshotVC).
 -endif.
 
@@ -180,10 +170,11 @@ sync_uniform_barrier(Partition, CVC) ->
 
 -spec sync_key_vsn(partition_id(), key(), vclock()) -> {ok, val()}.
 sync_key_vsn(Partition, Key, VC) ->
-    case try_key_vsn(Partition, Key, VC) of
-        {ok, Return} ->
-            {ok, Return};
-        not_ready ->
+    case partition_ready(Partition, VC) of
+        true ->
+            grb_oplog_vnode:get_key_version(Partition, Key, VC);
+
+        false ->
             Ref = make_ref(),
             async_key_vsn(grb_promise:new(self(), Ref), Partition, Key, VC),
             receive
