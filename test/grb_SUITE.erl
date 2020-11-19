@@ -94,7 +94,7 @@ init_per_group(replication, C0) ->
     Key = ?random_key,
     Val = ?random_val,
     {Partition, Node} = key_location(Key, Replica, ClusterMap),
-    CVC = update_transaction(Replica, Node, Partition, Key, Val, #{}),
+    CVC = update_transaction(Replica, Node, Partition, tx_1, Key, grb_crdt:make_op(grb_lww, Val), #{}),
     [ {propagate_info, {Key, Val, CVC}} | C1 ];
 
 init_per_group(_, C) ->
@@ -143,7 +143,7 @@ empty_read_test(C) ->
     Replica = random_replica(ClusterMap),
     Key = ?random_key,
     {Partition, Node} = key_location(Key, Replica, ClusterMap),
-    {<<>>, _} = read_only_transaction(Replica, Node, Partition, Key, #{}).
+    {<<>>, _} = read_only_transaction(Node, Partition, tx_1, Key, grb_lww, #{}).
 
 read_your_writes_test(C) ->
     ClusterMap = ?config(cluster_info, C),
@@ -151,8 +151,8 @@ read_your_writes_test(C) ->
     Key = ?random_key,
     Val = ?random_val,
     {Partition, Node} = key_location(Key, Replica, ClusterMap),
-    CVC = update_transaction(Replica, Node, Partition, Key, Val, #{}),
-    {Val, _} = read_only_transaction(Replica, Node, Partition, Key, CVC).
+    CVC = update_transaction(Replica, Node, Partition, tx_1, Key, grb_crdt:make_op(grb_lww, Val), #{}),
+    {Val, _} = read_only_transaction(Node, Partition, tx_2, Key, grb_lww, CVC).
 
 -ifndef(BASIC_REPLICATION).
 propagate_updates_test(C) ->
@@ -161,7 +161,7 @@ propagate_updates_test(C) ->
     foreach_replica(ClusterMap, fun(Replica) ->
         {Partition, Node} = key_location(Key, Replica, ClusterMap),
         ok = uniform_barrier(Replica, Node, Partition, CommitVC),
-        {Val, _} = read_only_transaction(Replica, Node, Partition, Key, CommitVC),
+        {Val, _} = read_only_transaction(Node, Partition, tx_2, Key, grb_lww, CommitVC),
         ok
     end).
 -else.
@@ -286,19 +286,20 @@ advance_clock_single(Node, P, Replicas, ClockName) ->
 uniform_barrier(_Replica, Node, Partition, Clock) ->
     ok = erpc:call(Node, grb, sync_uniform_barrier, [Partition, Clock]).
 
--spec read_only_transaction(replica_id(), node(), partition_id(), key(), vclock()) -> {val(), vclock()}.
-read_only_transaction(_Replica, Node, Partition, Key, Clock) ->
+-spec read_only_transaction(node(), partition_id(), term(), key(), term(), vclock()) -> {snapshot(), vclock()}.
+read_only_transaction(Node, Partition, TxId, Key, Type, Clock) ->
     SVC = erpc:call(Node, grb, start_transaction, [Partition, Clock]),
-    {ok, Val} = erpc:call(Node, grb, sync_key_vsn, [Partition, Key, SVC]),
+    {ok, Val} = erpc:call(Node, grb, sync_key_vsn, [Partition, TxId, Key, Type, SVC]),
     {Val, SVC}.
 
--spec update_transaction(replica_id(), node(), partition_id(), key(), val(), vclock()) -> vclock().
-update_transaction(Replica, Node, Partition, Key, Value, Clock) ->
+-spec update_transaction(replica_id(), node(), partition_id(), term(), key(), operation(), vclock()) -> vclock().
+update_transaction(Replica, Node, Partition, TxId, Key, Operation, Clock) ->
     SVC = erpc:call(Node, grb, start_transaction, [Partition, Clock]),
-    {ok, _} = erpc:call(Node, grb, sync_key_vsn, [Partition, Key, SVC]),
-    PT = erpc:call(Node, grb, prepare_blue, [Partition, ignore, #{Key => Value}, SVC]),
+    ok = erpc:call(Node, grb, update, [Partition, TxId, Key, Operation]),
+    {ok, _} = erpc:call(Node, grb, sync_key_vsn, [Partition, TxId, Key, grb_crdt:op_type(Operation), SVC]),
+    PT = erpc:call(Node, grb, prepare_blue, [Partition, TxId, SVC]),
     CVC = SVC#{Replica => PT},
-    ok = erpc:call(Node, grb, decide_blue, [Partition, ignore, CVC]),
+    ok = erpc:call(Node, grb, decide_blue, [Partition, TxId, CVC]),
     CVC.
 
 -spec random_replica(#{}) -> replica_id().

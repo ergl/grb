@@ -2,8 +2,8 @@
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
--export([get_default_bottom_value/0,
-         set_default_bottom_value/1,
+-export([get_default_snapshot/0,
+         set_default_snapshot/1,
          cluster_info/0,
          inter_dc_ip_port/0,
          my_partitions/0,
@@ -25,7 +25,8 @@
          ready_ring_members/0]).
 
 %% Called via `erpc` or for debug purposes
--ignore_xref([set_default_bottom_value/1,
+-ignore_xref([set_default_snapshot/1,
+              get_default_snapshot/0,
               is_ring_owner/0,
               key_location/1,
               inter_dc_ip_port/0,
@@ -52,13 +53,13 @@ ready_ring_members() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     riak_core_ring:ready_members(Ring).
 
--spec get_default_bottom_value() -> val().
-get_default_bottom_value() ->
-    persistent_term:get({?MODULE, ?BOTTOM}, <<>>).
+-spec get_default_snapshot() -> snapshot().
+get_default_snapshot() ->
+    persistent_term:get({?MODULE, ?BOTTOM}, grb_crdt:new(grb_lww)).
 
--spec set_default_bottom_value(val()) -> ok.
-set_default_bottom_value(Value) ->
-    persistent_term:put({?MODULE, ?BOTTOM}, Value).
+-spec set_default_snapshot(snapshot()) -> ok.
+set_default_snapshot(Snapshot) ->
+    persistent_term:put({?MODULE, ?BOTTOM}, Snapshot).
 
 -spec cluster_info() -> {ok, replica_id(), non_neg_integer(), [index_node()]}.
 cluster_info() ->

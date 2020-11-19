@@ -131,13 +131,31 @@ handle_request('ConnectRequest', _, Context, State) ->
 handle_request('StartReq', #{client_vc := CVC, partition := Partition}, Context, State) ->
     reply_to_client(grb:start_transaction(Partition, CVC), Context, State);
 
-handle_request('GetKeyVersion', Args, Context, State) ->
-    #{partition := Partition, key := Key, read_again := ReadAgain, snapshot_vc := SnapshotVC} = Args,
-    try_read(Partition, ReadAgain, Key, SnapshotVC, Context, State);
+handle_request('OpRequest', Args = #{operation := Operation}, Context, State) ->
+     #{
+        partition := Partition,
+        transaction_id := TxId,
+        key := Key,
+        read_again := ReadAgain,
+        snapshot_vc := SnapshotVC
+    } = Args,
+    ok = grb:update(Partition, TxId, Key, Operation),
+    try_read(Partition, TxId, Key, grb_crdt:op_type(Operation), ReadAgain, SnapshotVC, Context, State);
+
+handle_request('OpRequest', Args, Context, State) ->
+    #{
+        partition := Partition,
+        transaction_id := TxId,
+        key := Key,
+        type := Type,
+        read_again := ReadAgain,
+        snapshot_vc := SnapshotVC
+    } = Args,
+    try_read(Partition, TxId, Key, Type, ReadAgain, SnapshotVC, Context, State);
 
 handle_request('PrepareBlueNode', Args, Context, State) ->
-    #{transaction_id := TxId, snapshot_vc := VC, prepares := Prepares} = Args,
-    Votes = [ {ok, P, grb:prepare_blue(P, TxId, WS, VC)} || #{partition := P, writeset := WS} <- Prepares],
+    #{transaction_id := TxId, snapshot_vc := VC, partitions := Partitions} = Args,
+    Votes = [ {ok, P, grb:prepare_blue(P, TxId, VC)} || P <- Partitions],
     reply_to_client(Votes, Context, State);
 
 handle_request('DecideBlueNode', Args, _Context, _State) ->
@@ -149,14 +167,14 @@ handle_request('CommitRed', Args, Context, _State) ->
     #{transaction_id := TxId, snapshot_vc := VC, prepares := Prepares, partition := TargetP} = Args,
     grb:commit_red(grb_promise:new(self(), Context), TargetP, TxId, VC, Prepares).
 
--spec try_read(partition_id(), boolean(), key(), vclock(), proto_context(), state()) -> ok.
-try_read(Partition, true, Key, SnapshotVC, Context, State) ->
-    reply_to_client(grb:key_vsn_bypass(Partition, Key, SnapshotVC), Context, State);
+-spec try_read(partition_id(), term(), key(), crdt(), boolean(), vclock(), proto_context(), state()) -> ok.
+try_read(Partition, TxId, Key, Type, true, SnapshotVC, Context, State) ->
+    reply_to_client(grb:key_snapshot_bypass(Partition, TxId, Key, Type, SnapshotVC), Context, State);
 
-try_read(Partition, false, Key, SnapshotVC, Context, State) ->
+try_read(Partition, TxId, Key, Type, false, SnapshotVC, Context, State) ->
     case grb:partition_ready(Partition, SnapshotVC) of
         true ->
-            reply_to_client(grb:key_vsn_bypass(Partition, Key, SnapshotVC), Context, State);
+            reply_to_client(grb:key_snapshot_bypass(Partition, TxId, Key, Type, SnapshotVC), Context, State);
         false ->
-            grb:async_key_vsn(grb_promise:new(self(), Context), Partition, Key, SnapshotVC)
+            grb:async_key_snapshot(grb_promise:new(self(), Context), Partition, TxId, Key, Type, SnapshotVC)
     end.

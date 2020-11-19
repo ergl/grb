@@ -17,9 +17,9 @@
          last_vc_table/1]).
 
 %% Public API
--export([get_key_version/3,
-         get_key_version_with_table/3,
-         prepare_blue/4,
+-export([get_key_snapshot/5,
+         put_client_op/4,
+         prepare_blue/3,
          decide_blue_ready/2,
          decide_blue/3,
          handle_replicate/4,
@@ -57,8 +57,10 @@
 -define(OP_LOG_TABLE, op_log_table).
 -define(OP_LOG_LAST_VC, op_log_last_vc_table).
 -define(PREPARED_TABLE, prepared_blue_table).
+-define(PENDING_TX_OPS, pending_tx_ops).
 
 -type op_log() :: cache(key(), grb_version_log:t()).
+-type pending_tx_ops() :: cache({term(), key()}, operation()).
 -type last_vc() :: cache(key(), vclock()).
 
 -record(state, {
@@ -72,23 +74,14 @@
     blue_tick_interval :: non_neg_integer(),
     blue_tick_pid = undefined :: pid() | undefined,
 
-    %% todo(borja, crdt): change type of op_log when adding crdts
-    op_log_size :: non_neg_integer(),
     op_log :: op_log(),
+    op_log_size :: non_neg_integer(),
     op_last_vc :: last_vc(),
+
+    pending_client_ops :: pending_tx_ops(),
 
     %% It doesn't make sense to append it if we're not connected to other clusters
     should_append_commit = true :: boolean()
-}).
-
-%% How a prepared blue transaction is structured,
-%% the key is a tuple of prepare time and transaction id.
-%% Since the ETS table is ordered, lower prepare times will go
-%% at the beggining of the table. A call to ets:first will get us
-%% the lower prepare timestamp in the table.
--record(prepared_record, {
-    key :: {grb_time:ts(), term()},
-    writeset :: #{}
 }).
 
 -type state() :: #state{}.
@@ -139,6 +132,10 @@ stop_readers_all() ->
 op_log_table(Partition) ->
     persistent_term:get({?MODULE, Partition, ?OP_LOG_TABLE}).
 
+-spec pending_ops_table(partition_id()) -> cache_id().
+pending_ops_table(Partition) ->
+    persistent_term:get({?MODULE, Partition, ?PENDING_TX_OPS}).
+
 -spec last_vc_table(partition_id()) -> last_vc().
 last_vc_table(Partition) ->
     persistent_term:get({?MODULE, Partition, ?OP_LOG_LAST_VC}).
@@ -151,37 +148,49 @@ prepared_blue_table(Partition) ->
 %%% API
 %%%===================================================================
 
--spec get_key_version(partition_id(), key(), vclock()) -> {ok, val()}.
-get_key_version(Partition, Key, SnapshotVC) ->
-    get_key_version_with_table(op_log_table(Partition), Key, SnapshotVC).
-
-%% todo(borja, crdts): Should use LWW, aggregate operations on top of given op
-%%
-%% Right now it only reads the last version below SnapshotVC, but it should aggregate
-%% the chosen operations on top of the given value (or operation)
--spec get_key_version_with_table(cache_id(), key(), vclock()) -> {ok, val()}.
-get_key_version_with_table(OpLogTable, Key, SnapshotVC) ->
-    Bottom = grb_dc_utils:get_default_bottom_value(),
-    case ets:lookup(OpLogTable, Key) of
+-spec put_client_op(partition_id(), term(), key(), operation()) -> ok.
+put_client_op(Partition, TxId, Key, Operation) ->
+    ClientKey = {TxId, Key},
+    Table = pending_ops_table(Partition),
+    case ets:lookup(Table, ClientKey) of
+        [{ClientKey, PrevOp}] ->
+            true = ets:insert(Table, {ClientKey, grb_crdt:merge_ops(PrevOp, Operation)});
         [] ->
-            {ok, Bottom};
+            true = ets:insert(Table, {ClientKey, Operation})
+    end,
+    ok.
+
+-spec get_key_snapshot(partition_id(), term(), key(), crdt(), vclock()) -> {ok, snapshot()}.
+get_key_snapshot(Partition, TxId, Key, Type, SnapshotVC) ->
+    case ets:lookup(op_log_table(Partition), Key) of
+        [] ->
+            apply_tx_ops(Partition, TxId, Key, grb_crdt:new(Type));
 
         [{Key, VersionLog}] ->
-            case grb_version_log:get_first_lower(SnapshotVC, VersionLog) of
-                undefined ->
-                    {ok, Bottom};
-
-                {_, LastValue, _LastCommitVC} ->
-                    %% todo(borja, efficiency): Remove clock from return if we don't use it
-                    {ok, LastValue}
+            case grb_version_log:snapshot_lower(SnapshotVC, VersionLog) of
+                {not_found, Base} ->
+                    apply_tx_ops(Partition, TxId, Key, Base);
+                Snapshot ->
+                    apply_tx_ops(Partition, TxId, Key, Snapshot)
             end
     end.
 
--spec prepare_blue(partition_id(), term(), #{}, vclock()) -> grb_time:ts().
-prepare_blue(Partition, TxId, WriteSet, SnapshotVC) ->
+-spec apply_tx_ops(partition_id(), term(), key(), grb_crdt:t()) -> {ok, snapshot()}.
+apply_tx_ops(Partition, TxId, Key, Snapshot) ->
+    case ets:lookup(pending_ops_table(Partition), {TxId, Key}) of
+        [] ->
+            {ok, grb_crdt:value(Snapshot)};
+        [{_, Operation}] ->
+            %% We don't care about metadata for the operation here, since we now
+            %% our operations always come after the snapshot
+            {ok, grb_crdt:value(grb_crdt:apply_op_raw(Operation, Snapshot))}
+    end.
+
+-spec prepare_blue(partition_id(), term(), vclock()) -> grb_time:ts().
+prepare_blue(Partition, TxId, SnapshotVC) ->
     Ts = grb_time:timestamp(),
     ok = update_prepare_clocks(Partition, SnapshotVC),
-    ok = insert_prepared(Partition, TxId, WriteSet, Ts),
+    ok = insert_prepared(Partition, TxId, Ts),
     Ts.
 
 -spec decide_blue_ready(replica_id(), vclock()) -> ready | not_ready.
@@ -294,10 +303,13 @@ init([Partition]) ->
     OpLogTable = ets:new(?OP_LOG_TABLE, [set, protected, {read_concurrency, true}]),
     ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_TABLE}, OpLogTable),
 
+    PendingOps = ets:new(?PENDING_TX_OPS, [ordered_set, public, {write_concurrency, true}]),
+    ok = persistent_term:put({?MODULE, Partition, ?PENDING_TX_OPS}, PendingOps),
+
     LastKeyVC = ets:new(?OP_LOG_LAST_VC, [set, protected, {read_concurrency, true}]),
     ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_LAST_VC}, LastKeyVC),
 
-    PreparedBlue = ets:new(?PREPARED_TABLE, [ordered_set, public, {write_concurrency, true}, {keypos, #prepared_record.key}]),
+    PreparedBlue = ets:new(?PREPARED_TABLE, [ordered_set, public, {write_concurrency, true}]),
     ok = persistent_term:put({?MODULE, Partition, ?PREPARED_TABLE}, PreparedBlue),
 
     State = #state{partition = Partition,
@@ -306,7 +318,8 @@ init([Partition]) ->
                    blue_tick_interval=BlueTickInterval,
                    op_log_size = KeyLogSize,
                    op_log = OpLogTable,
-                   op_last_vc= LastKeyVC},
+                   op_last_vc = LastKeyVC,
+                   pending_client_ops = PendingOps},
 
     {ok, State}.
 
@@ -386,6 +399,7 @@ handle_command({handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4}, _Fro
 handle_command({handle_red_tx, WS, VC}, _From, S=#state{op_log=OperationLog,
                                                         op_log_size=LogSize,
                                                         op_last_vc=LastVC}) ->
+    %% todo(borja, crdts): Need TxId here, call clean_transaction_ops/2
     ok = update_partition_state(?RED_REPLICA, WS, VC, OperationLog, LogSize, LastVC),
     {noreply, S};
 
@@ -401,10 +415,10 @@ handle_info(Msg, State) ->
 %%% Internal functions
 %%%===================================================================
 
--spec insert_prepared(partition_id(), term(), writeset(), grb_time:ts()) -> ok.
-insert_prepared(Partition, TxId, WriteSet, PrepareTime) ->
+-spec insert_prepared(partition_id(), term(), grb_time:ts()) -> ok.
+insert_prepared(Partition, TxId, PrepareTime) ->
     true = ets:insert(prepared_blue_table(Partition),
-                      #prepared_record{key={PrepareTime, TxId}, writeset=WriteSet}),
+                      {{PrepareTime, TxId}}),
     ok.
 
 -spec handle_remote_tx_internal(replica_id(), #{}, grb_time:ts(), vclock(), state()) -> ok.
@@ -471,14 +485,15 @@ decide_blue_internal(TxId, VC, #state{partition=SelfPartition,
                                       op_log=OpLog,
                                       op_log_size=LogSize,
                                       op_last_vc=LastVC,
+                                      pending_client_ops=PendingOps,
                                       prepared_blue=PreparedBlue,
                                       should_append_commit=ShouldAppend}) ->
 
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
-    {ok, WS, PreparedAt} = get_prepared_writeset(PreparedBlue, TxId),
+    WS = take_transaction_writeset(PendingOps, TxId),
     ok = update_partition_state(WS, VC, OpLog, LogSize, LastVC),
-    ok = remove_from_prepared(TxId, PreparedAt, PreparedBlue),
+    ok = remove_from_prepared(PreparedBlue, TxId),
     KnownTime = compute_new_known_time(PreparedBlue),
     case ShouldAppend of
         true ->
@@ -488,26 +503,25 @@ decide_blue_internal(TxId, VC, #state{partition=SelfPartition,
     end,
     ok.
 
--spec get_prepared_writeset(cache_id(), term()) -> {ok, writeset(), grb_time:ts()} | false.
-%% Dialyzer and record matches, the return
--dialyzer({nowarn_function, get_prepared_writeset/2}).
-get_prepared_writeset(PreparedBlue, TxId) ->
-    case ets:select(PreparedBlue, [{ #prepared_record{key={'$1', TxId}, writeset='$2'}, [], [{{'$1', '$2'}}] }]) of
-        [{PrepareTs, WS}] ->
-            {ok, WS, PrepareTs};
-        _ ->
-            %% todo(borja): Warn if more than one result?
-            false
-    end.
+-spec take_transaction_writeset(cache_id(), term()) -> writeset().
+take_transaction_writeset(PendingOps, TxId) ->
+    Tuples = ets:select(PendingOps, [{ {{TxId, '$1'}, '$2'}, [], [{{'$1', '$2'}}] }]),
+    lists:foldl(fun({Key, Op}, WS) ->
+        true = ets:delete(PendingOps, {TxId, Key}),
+        WS#{Key => Op}
+    end, #{}, Tuples).
 
--spec remove_from_prepared(term(), grb_time:ts(), cache_id()) -> ok.
-%% Caused by get_prepared_writeset/2 on decide_internal
--dialyzer({no_unused, remove_from_prepared/3}).
-remove_from_prepared(TxId, PrepareTime, PreparedBlue) ->
-    true = ets:delete(PreparedBlue, {PrepareTime, TxId}),
+%%-spec clean_transaction_ops(cache_id(), term()) -> ok.
+%%clean_transaction_ops(PendingOps, TxId) ->
+%%    _ = ets:select_delete(PendingOps, [{ {{TxId, '$1'}, '$2'}, [], [true] }]),
+%%    ok.
+
+-spec remove_from_prepared(cache_id(), term()) -> ok.
+remove_from_prepared(PreparedBlue, TxId) ->
+    _ = ets:select_delete(PreparedBlue, [{ {{'_', TxId}}, [], [true] }]),
     ok.
 
--spec update_partition_state(WS :: #{},
+-spec update_partition_state(WS :: writeset(),
                              CommitVC :: vclock(),
                              OpLog :: op_log(),
                              DefaultSize :: non_neg_integer(),
@@ -517,16 +531,17 @@ update_partition_state(WS, CommitVC, OpLog, DefaultSize, LastVC) ->
     update_partition_state(blue, WS, CommitVC, OpLog, DefaultSize, LastVC).
 
 -spec update_partition_state(TxType :: transaction_type(),
-                             WS :: #{},
+                             WS :: writeset(),
                              CommitVC :: vclock(),
                              OpLog :: op_log(),
                              DefaultSize :: non_neg_integer(),
                              LastVC :: last_vc()) -> ok.
 
 -ifdef(BLUE_KNOWN_VC).
-update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, _LastVC) ->
-    Objects = maps:fold(fun(Key, Value, Acc) ->
-        Log = append_to_log(TxType, Key, Value, CommitVC, OpLog, DefaultSize),
+update_partition_state(_TxType, WS, CommitVC, OpLog, DefaultSize, _LastVC) ->
+    AllReplicas = grb_dc_manager:all_replicas(),
+    Objects = maps:fold(fun(Key, Operation, Acc) ->
+        Log = append_to_log(AllReplicas, Key, Operation, CommitVC, OpLog, DefaultSize),
         [{Key, Log} | Acc]
     end, [], WS),
     true = ets:insert(OpLog, Objects),
@@ -534,8 +549,8 @@ update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, _LastVC) ->
 -else.
 update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, LastVC) ->
     AllReplicas = [?RED_REPLICA | grb_dc_manager:all_replicas()],
-    Objects = maps:fold(fun(Key, Value, Acc) ->
-        Log = append_to_log(TxType, Key, Value, CommitVC, OpLog, DefaultSize),
+    Objects = maps:fold(fun(Key, Operation, Acc) ->
+        Log = append_to_log(AllReplicas, Key, Operation, CommitVC, OpLog, DefaultSize),
         ok = update_last_vc(TxType, Key, AllReplicas, CommitVC, LastVC),
         [{Key, Log} | Acc]
     end, [], WS),
@@ -552,6 +567,7 @@ update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, LastVC) ->
                       CommitVC :: vclock(),
                       LastVC :: last_vc()) -> ok.
 
+%% fixme(borja): Remove this profile
 -ifndef('RED_BLUE_CONFLICT').
 update_last_vc(blue, _, _, _, _) ->
     ok;
@@ -579,19 +595,22 @@ update_last_vc_log(Key, AtReplicas, CommitVC, LastVC) ->
 
 -endif.
 
--spec append_to_log(Type :: transaction_type(),
+-spec append_to_log(AllReplicas :: [replica_id()],
                     Key :: key(),
-                    Value :: val(),
+                    Operation :: operation(),
                     CommitVC :: vclock(),
                     OpLog :: op_log(),
                     Size ::non_neg_integer()) -> grb_version_log:t().
 
-append_to_log(Type, Key, Value, CommitVC, OpLog, Size) ->
+append_to_log(AllReplicas, Key, Operation, CommitVC, OpLog, Size) ->
     Log = case ets:lookup(OpLog, Key) of
-        [{Key, PrevLog}] -> PrevLog;
-        [] -> grb_version_log:new(Size)
+        [{Key, PrevLog}] ->
+            PrevLog;
+        [] ->
+            TypeBase = grb_crdt:new(grb_crdt:op_type(Operation)),
+            grb_version_log:new(TypeBase, AllReplicas, Size)
     end,
-    grb_version_log:append({Type, Value, CommitVC}, Log).
+    grb_version_log:insert(Operation, CommitVC, Log).
 
 -spec compute_new_known_time(cache_id()) -> grb_time:ts().
 compute_new_known_time(PreparedBlue) ->
@@ -658,45 +677,37 @@ handle_overload_info(_, _Idx) ->
 
 -ifdef(TEST).
 
--spec get_prepared_remove(cache_id(), term()) -> {ok, writeset()}.
-get_prepared_remove(PreparedTable, TxId) ->
-    {ok, WS, Time} = get_prepared_writeset(PreparedTable, TxId),
-    ok = remove_from_prepared(TxId, Time, PreparedTable),
-    {ok, WS}.
-
 grb_oplog_vnode_compute_new_known_time_test() ->
-    _ = ets:new(?PREPARED_TABLE, [ordered_set, named_table, {keypos, #prepared_record.key}]),
-    true = ets:insert(?PREPARED_TABLE, [
-        #prepared_record{key={1, tx_1}, writeset=#{}},
-        #prepared_record{key={3, tx_2}, writeset=#{}},
-        #prepared_record{key={10, tx_4}, writeset=#{}},
-        #prepared_record{key={50, tx_5}, writeset=#{}},
-        #prepared_record{key={5, tx_3}, writeset=#{}}
-    ]),
+    _ = ets:new(?PREPARED_TABLE, [ordered_set, named_table]),
+    true = ets:insert(?PREPARED_TABLE, [{{1, tx_1}},
+                                        {{3, tx_2}},
+                                        {{10, tx_4}},
+                                        {{50, tx_5}},
+                                        {{5, tx_3}}]),
 
     ?assertEqual(0, compute_new_known_time(?PREPARED_TABLE)),
 
     %% If we remove the lowest, now tx_2 is the lowest tx in the queue
-    ?assertEqual({ok, #{}}, get_prepared_remove(?PREPARED_TABLE, tx_1)),
+    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, tx_1)),
     ?assertEqual(2, compute_new_known_time(?PREPARED_TABLE)),
 
     %% tx_3 was removed earlier, but it has a higher ts than tx_2, so tx_2 is still the lowest
-    ?assertEqual({ok, #{}}, get_prepared_remove(?PREPARED_TABLE, tx_3)),
+    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, tx_3)),
     ?assertEqual(2, compute_new_known_time(?PREPARED_TABLE)),
 
     %% now, tx_4 is the next in the queue, at ts 10-1
-    ?assertEqual({ok, #{}}, get_prepared_remove(?PREPARED_TABLE, tx_2)),
+    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, tx_2)),
     ?assertEqual(9, compute_new_known_time(?PREPARED_TABLE)),
 
     %% same with tx_5
-    ?assertEqual({ok, #{}}, get_prepared_remove(?PREPARED_TABLE, tx_4)),
+    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, tx_4)),
     ?assertEqual(49, compute_new_known_time(?PREPARED_TABLE)),
 
-    ?assertEqual({ok, #{}}, get_prepared_remove(?PREPARED_TABLE, tx_5)),
+    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, tx_5)),
     %% Now that the queue is empty, the time is the current clock
     Ts = grb_time:timestamp(),
     Lowest = compute_new_known_time(?PREPARED_TABLE),
-    ?assert(Ts < Lowest),
+    ?assert(Ts =< Lowest),
 
     ets:delete(?PREPARED_TABLE),
     ok.

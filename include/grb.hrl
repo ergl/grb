@@ -8,9 +8,6 @@
 -type cache_id() :: ets:tab().
 -type cache(_K, _V) :: ets:tab().
 
-%% todo(borja, crdt): change operation type when adding crdt lib
--type op() :: atom().
--type effect() :: atom().
 -type transaction_type() :: red | blue.
 
 -type replica_id() :: {atom(), erlang:timestamp()}.
@@ -20,11 +17,12 @@
 
 %% Opaque types
 -type key() :: binary().
--type val() :: binary().
+-type snapshot() :: term().
+-type crdt() :: grb_crdt:crdt().
+-type operation() :: grb_lww:op() | grb_gset:op().
 
-%% todo(borja, crdt): change operation type when adding crdt lib
 -type readset() :: [key()].
--type writeset() :: #{key() => val()}.
+-type writeset() :: #{key() => operation()}.
 -type tx_entry() :: grb_blue_commit_log:entry().
 
 %% Describes the current replica, consumed by other replicas (as a whole)
@@ -60,8 +58,6 @@
               index_node/0,
               cache_id/0,
               cache/2,
-              op/0,
-              effect/0,
               readset/0,
               writeset/0,
               tx_entry/0,
@@ -69,7 +65,9 @@
               replica_id/0,
               vclock/0,
               key/0,
-              val/0,
+              crdt/0,
+              snapshot/0,
+              operation/0,
               replica_descriptor/0,
               inter_dc_conn/0,
               red_coordinator/0,

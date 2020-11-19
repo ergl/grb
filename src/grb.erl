@@ -11,16 +11,17 @@
          load/1,
          uniform_barrier/3,
          start_transaction/2,
+         update/4,
          partition_ready/2,
-         async_key_vsn/4,
-         key_vsn_bypass/3,
-         prepare_blue/4,
+         async_key_snapshot/6,
+         key_snapshot_bypass/5,
+         prepare_blue/3,
          decide_blue/3,
          commit_red/5]).
 
 -ifdef(TEST).
 -export([sync_uniform_barrier/2,
-         sync_key_vsn/3]).
+         sync_key_vsn/5]).
 -endif.
 
 %% Called by rel
@@ -43,17 +44,21 @@ connect() ->
 
 -spec load(non_neg_integer()) -> ok.
 load(Size) ->
-    Val = crypto:strong_rand_bytes(Size),
+    Value = crypto:strong_rand_bytes(Size),
+    BaseSnapshot = grb_crdt:apply_op_raw(
+        grb_crdt:make_op(grb_lww, Value),
+        grb_crdt:new(grb_lww)
+    ),
 
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     LocalNodes = riak_core_ring:all_members(Ring),
 
-    Res = erpc:multicall(LocalNodes, grb_dc_utils, set_default_bottom_value, [Val]),
+    Res = erpc:multicall(LocalNodes, grb_dc_utils, set_default_snapshot, [BaseSnapshot]),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
 
-    Res1 = lists:zip(LocalNodes, erpc:multicall(LocalNodes, grb_dc_utils, get_default_bottom_value, [])),
-    true = lists:all(fun({Node, DefaultVal}) ->
-        case DefaultVal =:= Val of
+    Res1 = lists:zip(LocalNodes, erpc:multicall(LocalNodes, grb_dc_utils, get_default_snapshot, [])),
+    true = lists:all(fun({Node, {ok, DefaultSnapshot}}) ->
+        case grb_crdt:value(DefaultSnapshot) =:= Value of
             true ->
                 true;
             false ->
@@ -116,17 +121,21 @@ partition_ready(Partition, SnapshotVC) ->
     ok = read_snapshot_prologue(Partition, SnapshotVC),
     ready =:= grb_propagation_vnode:partition_ready(Partition, SnapshotVC).
 
--spec async_key_vsn(grb_promise:t(), partition_id(), key(), vclock()) -> ok.
-async_key_vsn(Promise, Partition, Key, SnapshotVC) ->
-    grb_oplog_reader:async_key_vsn(Promise, Partition, Key, SnapshotVC).
+-spec async_key_snapshot(grb_promise:t(), partition_id(), term(), key(), crdt(), vclock()) -> ok.
+async_key_snapshot(Promise, Partition, TxId, Key, Type, SnapshotVC) ->
+    grb_oplog_reader:async_key_snapshot(Promise, Partition, TxId, Key, Type, SnapshotVC).
 
--spec key_vsn_bypass(partition_id(), key(), vclock()) -> {ok, val()}.
-key_vsn_bypass(Partition, Key, SnapshotVC) ->
-    grb_oplog_vnode:get_key_version(Partition, Key, SnapshotVC).
+-spec key_snapshot_bypass(partition_id(), term(), key(), crdt(), vclock()) -> {ok, snapshot()}.
+key_snapshot_bypass(Partition, TxId, Key, Type, SnapshotVC) ->
+    grb_oplog_vnode:get_key_snapshot(Partition, TxId, Key, Type, SnapshotVC).
 
--spec prepare_blue(partition_id(), any(), any(), vclock()) -> non_neg_integer().
-prepare_blue(Partition, TxId, WriteSet, VC) ->
-    grb_oplog_vnode:prepare_blue(Partition, TxId, WriteSet, VC).
+-spec update(partition_id(), term(), key(), operation()) -> ok.
+update(Partition, TxId, Key, Operation) ->
+    grb_oplog_vnode:put_client_op(Partition, TxId, Key, Operation).
+
+-spec prepare_blue(partition_id(), term(), vclock()) -> non_neg_integer().
+prepare_blue(Partition, TxId, VC) ->
+    grb_oplog_vnode:prepare_blue(Partition, TxId, VC).
 
 -spec decide_blue(partition_id(), any(), vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->
@@ -168,15 +177,15 @@ sync_uniform_barrier(Partition, CVC) ->
             Result
     end.
 
--spec sync_key_vsn(partition_id(), key(), vclock()) -> {ok, val()}.
-sync_key_vsn(Partition, Key, VC) ->
+-spec sync_key_vsn(partition_id(), term(), key(), crdt(), vclock()) -> {ok, snapshot()}.
+sync_key_vsn(Partition, TxId, Key, Type, VC) ->
     case partition_ready(Partition, VC) of
         true ->
-            grb_oplog_vnode:get_key_version(Partition, Key, VC);
+            grb_oplog_vnode:get_key_snapshot(Partition, TxId, Key, Type, VC);
 
         false ->
             Ref = make_ref(),
-            async_key_vsn(grb_promise:new(self(), Ref), Partition, Key, VC),
+            async_key_snapshot(grb_promise:new(self(), Ref), Partition, TxId, Key, Type, VC),
             receive
                 {'$grb_promise_resolve', Result, Ref} ->
                     Result

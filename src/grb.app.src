@@ -12,6 +12,7 @@
                   riak_core_lite_util,
                   ranch,
                   pvc_proto,
+                  pvc_types,
                   runtime_tools,
                   recon
                  ]},

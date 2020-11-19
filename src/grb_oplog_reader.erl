@@ -12,7 +12,7 @@
 -export([start_link/2]).
 
 %% protocol api
--export([async_key_vsn/4,
+-export([async_key_snapshot/6,
          decide_blue/3]).
 
 %% replica management API
@@ -34,9 +34,7 @@
     replica_id :: replica_id(),
 
     known_barrier_wait_ms :: non_neg_integer(),
-    pending_decides = #{} :: #{term() => vclock()},
-
-    op_log_reference :: atom()
+    pending_decides = #{} :: #{term() => vclock()}
 }).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -80,9 +78,9 @@ stop_readers(Partition) ->
 %% Protocol API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec async_key_vsn(grb_promise:t(), partition_id(), key(), vclock()) -> ok.
-async_key_vsn(Promise, Partition, Key, VC) ->
-    gen_server:cast(random_reader(Partition), {key_vsn, Promise, Key, VC}).
+-spec async_key_snapshot(grb_promise:t(), partition_id(), term(), key(), crdt(), vclock()) -> ok.
+async_key_snapshot(Promise, Partition, TxId, Key, Type, VC) ->
+    gen_server:cast(random_reader(Partition), {key_snapshot, Promise, TxId, Key, Type, VC}).
 
 -spec decide_blue(partition_id(), _, vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->
@@ -94,12 +92,10 @@ decide_blue(Partition, TxId, VC) ->
 
 init([Partition, Id]) ->
     ok = persist_reader_pid(Partition, Id, self()),
-    OpLog = grb_oplog_vnode:op_log_table(Partition),
     {ok, WaitMs} = application:get_env(grb, partition_ready_wait_ms),
     {ok, #state{partition=Partition,
                 replica_id=grb_dc_manager:replica_id(),
-                known_barrier_wait_ms=WaitMs,
-                op_log_reference=OpLog}}.
+                known_barrier_wait_ms=WaitMs}}.
 
 handle_call(ready, _From, State) ->
     {reply, ready, State};
@@ -111,8 +107,8 @@ handle_call(Request, _From, State) ->
     ?LOG_WARNING("Unhandled call ~p", [Request]),
     {noreply, State}.
 
-handle_cast({key_vsn, Promise, Key, VC}, State) ->
-    ok = key_vsn_wait(Promise, Key, VC, State),
+handle_cast({key_snapshot, Promise, TxId, Key, Type, VC}, State) ->
+    ok = key_snapshot_wait(Promise, TxId, Key, Type, VC, State),
     {noreply, State};
 
 handle_cast({decide_blue, TxId, VC}, S0=#state{partition=Partition,
@@ -135,8 +131,8 @@ handle_cast(Request, State) ->
     ?LOG_WARNING("Unhandled cast ~p", [Request]),
     {noreply, State}.
 
-handle_info({retry_key_vsn_wait, Promise, Key, VC}, State) ->
-    ok = key_vsn_wait(Promise, Key, VC, State),
+handle_info({retry_key_snapshot_wait, Promise, TxId, Key, Type, VC}, State) ->
+    ok = key_snapshot_wait(Promise, TxId, Key, Type, VC, State),
     {noreply, State};
 
 handle_info({retry_decide, TxId}, S0=#state{partition=Partition,
@@ -163,22 +159,23 @@ handle_info(Info, State) ->
 %% Internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec key_vsn_wait(Promise :: grb_promise:t(),
-                   Key :: key(),
-                   SnapshotVC :: vclock(),
-                   State :: #state{}) -> ok.
+-spec key_snapshot_wait(Promise :: grb_promise:t(),
+                        TxId :: term(),
+                        Key :: key(),
+                        Type :: crdt(),
+                        SnapshotVC :: vclock(),
+                        State :: #state{}) -> ok.
 
-key_vsn_wait(Promise, Key, SnapshotVC, #state{partition=Partition,
-                                              replica_id=ReplicaId,
-                                              op_log_reference=OpLogReplica,
-                                              known_barrier_wait_ms=WaitMs}) ->
+key_snapshot_wait(Promise, TxId, Key, Type, SnapshotVC, #state{partition=Partition,
+                                                               replica_id=ReplicaId,
+                                                               known_barrier_wait_ms=WaitMs}) ->
 
     case grb_propagation_vnode:partition_ready(Partition, ReplicaId, SnapshotVC) of
         not_ready ->
-            erlang:send_after(WaitMs, self(), {retry_key_vsn_wait, Promise, Key, SnapshotVC}),
+            erlang:send_after(WaitMs, self(), {retry_key_snapshot_wait, Promise, TxId, Key, Type, SnapshotVC}),
             ok;
         ready ->
-            grb_promise:resolve(grb_oplog_vnode:get_key_version_with_table(OpLogReplica, Key, SnapshotVC),
+            grb_promise:resolve(grb_oplog_vnode:get_key_snapshot(Partition, TxId, Key, Type, SnapshotVC),
                                 Promise)
     end.
 
