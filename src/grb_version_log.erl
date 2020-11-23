@@ -173,6 +173,8 @@ find_first_lower([{OpVC, _}=Entry | Rest], Actors, VC) ->
 
 -dialyzer({no_opaque, snapshot_lower_old_first/4}).
 snapshot_lower_old_first(_, _, Acc, []) ->
+    %% for sets, we know there's no gap between the first op and the snapshot, so we can return Acc
+    %% safely
     Acc;
 
 snapshot_lower_old_first(VC, Actors, Acc, [{OpVC, Op} | Rest]) ->
@@ -207,14 +209,17 @@ grb_version_log_snapshot_lower_lww_test() ->
     Log = from_list(Type, Base, Actors, 10, Ops),
 
     %% If there's no suitable snapshot, return the base value
-    ?assertEqual(BaseVal, grb_crdt:value(grb_version_log:snapshot_lower(VC([{DC1, 0}]), Log))),
+    {not_found, Res0} = grb_version_log:snapshot_lower(VC([{DC1, 0}]), Log),
+    ?assertEqual(BaseVal, grb_crdt:value(Res0)),
 
     %% Max entry
-    ?assertEqual(9, grb_crdt:value(grb_version_log:snapshot_lower(VC([{DC1, 10}]), Log))),
+    {ok, Res1} = grb_version_log:snapshot_lower(VC([{DC1, 10}]), Log),
+    ?assertEqual(9, grb_crdt:value(Res1)),
 
     %% Each snapshot equals each vector
     lists:foreach(fun(X) ->
-        ?assertEqual(X, grb_crdt:value(grb_version_log:snapshot_lower(VC([{DC1, X}]), Log)))
+        {ok, Res} = grb_version_log:snapshot_lower(VC([{DC1, X}]), Log),
+        ?assertEqual(X, grb_crdt:value(Res))
     end, lists:seq(1, 9)).
 
 grb_version_log_snapshot_lower_gset_test() ->
@@ -231,16 +236,21 @@ grb_version_log_snapshot_lower_gset_test() ->
     Log = from_list(Type, Base, Actors, 10, Ops),
 
     %% If there's no suitable snapshot, return the base value
-    ?assertEqual(BaseVal, grb_crdt:value(grb_version_log:snapshot_lower(VC([{DC1, 0}]), Log))),
+    %% For gsets, we know this is the only suitable snapshot,
+    %% as there are no ops between the first op and the saved snapshot
+    {ok, Res1} = grb_version_log:snapshot_lower(VC([{DC1, 0}]), Log),
+    ?assertEqual(BaseVal, grb_crdt:value(Res1)),
 
     %% Max entry is union of all
+    {ok, Res2} = grb_version_log:snapshot_lower(VC([{DC1, 10}]), Log),
     ?assertEqual(lists:seq(1,9),
-                 lists:sort(maps:keys(grb_crdt:value(grb_version_log:snapshot_lower(VC([{DC1, 10}]), Log))))),
+                 lists:sort(maps:keys(grb_crdt:value(Res2)))),
 
     %% Each snapshot contains one extra element each vector
     lists:foreach(fun(X) ->
+        {ok, Res} = grb_version_log:snapshot_lower(VC([{DC1, X}]), Log),
         ?assertEqual(lists:seq(1, X),
-                     lists:sort(maps:keys(grb_crdt:value(grb_version_log:snapshot_lower(VC([{DC1, X}]), Log)))))
+                     lists:sort(maps:keys(grb_crdt:value(Res))))
     end, lists:seq(1, 9)).
 
 grb_version_log_insert_gc_lww_test() ->
@@ -255,9 +265,13 @@ grb_version_log_insert_gc_lww_test() ->
         || X <- lists:seq(1, 10) ],
 
     Log = from_list(Type, Base, Actors, 10, Ops),
-    ?assertEqual(BaseVal, grb_crdt:value(grb_version_log:snapshot_lower(VC([{DC1, 0}]), Log))),
+
+    {not_found, Res1} = grb_version_log:snapshot_lower(VC([{DC1, 0}]), Log),
+    ?assertEqual(BaseVal, grb_crdt:value(Res1)),
+
+    {ok, Res2} = grb_version_log:snapshot_lower(VC([{DC1, 5}]), Log),
     ?assertEqual(5,
-                 grb_crdt:value(grb_version_log:snapshot_lower(VC([{DC1, 5}]), Log))),
+                 grb_crdt:value(Res2)),
 
     Ops2 = [ { VC([{DC1, X}]), grb_crdt:make_op(Type, X) }
             || X <- lists:seq(11, 20) ],
@@ -268,8 +282,9 @@ grb_version_log_insert_gc_lww_test() ->
     ?assertMatch({not_found, _}, grb_version_log:snapshot_lower(VC([{DC1, 5}]), Log2)),
 
     %% Anything above the snapshot works as usual, and takes into account older operations
+    {ok, Res3} = grb_version_log:snapshot_lower(VC([{DC1, 20}]), Log2),
     ?assertEqual(20,
-                 grb_crdt:value(grb_version_log:snapshot_lower(VC([{DC1, 20}]), Log2))).
+                 grb_crdt:value(Res3)).
 
 grb_version_log_insert_gc_gset_test() ->
     DC1 = replica_1, DC2 = replica_2, DC3 = replica_3,
@@ -283,9 +298,13 @@ grb_version_log_insert_gc_gset_test() ->
         || X <- lists:seq(1, 10) ],
 
     Log = from_list(Type, Base, Actors, 10, Ops),
-    ?assertEqual(BaseVal, grb_crdt:value(grb_version_log:snapshot_lower(VC([{DC1, 0}]), Log))),
+
+    {ok, Res0} = grb_version_log:snapshot_lower(VC([{DC1, 0}]), Log),
+    ?assertEqual(BaseVal, grb_crdt:value(Res0)),
+
+    {ok, Res1} = grb_version_log:snapshot_lower(VC([{DC1, 5}]), Log),
     ?assertEqual(lists:seq(1, 5),
-                 lists:sort(maps:keys(grb_crdt:value(grb_version_log:snapshot_lower(VC([{DC1, 5}]), Log))))),
+                 lists:sort(maps:keys(grb_crdt:value(Res1)))),
 
     Ops2 = [ { VC([{DC1, X}]), grb_crdt:make_op(Type, X) }
             || X <- lists:seq(11, 20) ],
@@ -296,7 +315,8 @@ grb_version_log_insert_gc_gset_test() ->
     ?assertMatch({not_found, _}, grb_version_log:snapshot_lower(VC([{DC1, 5}]), Log2)),
 
     %% Anything above the snapshot works as usual, and takes into account older operations
+    {ok, Res2} = grb_version_log:snapshot_lower(VC([{DC1, 20}]), Log2),
     ?assertEqual(lists:seq(1,20),
-                 lists:sort(maps:keys(grb_crdt:value(grb_version_log:snapshot_lower(VC([{DC1, 20}]), Log2))))).
+                 lists:sort(maps:keys(grb_crdt:value(Res2)))).
 
 -endif.
