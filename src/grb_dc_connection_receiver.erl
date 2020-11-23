@@ -136,13 +136,13 @@ handle_request(_, Partition, #forward_heartbeat{replica=SourceReplica, timestamp
 handle_request(_, Partition, #forward_transaction{replica=SourceReplica, writeset=WS, commit_vc=VC}) ->
     grb_oplog_vnode:handle_replicate(Partition, SourceReplica, WS, VC);
 
-handle_request(_, Partition, #red_prepare{coord_location=Coordinator, tx_id=TxId, readset=RS, writeset=WS, snapshot_vc=VC}) ->
-    grb_paxos_vnode:prepare({Partition, node()}, TxId, RS, WS, VC, Coordinator);
+handle_request(_, Partition, #red_prepare{coord_location=Coordinator, tx_id=TxId, tx_label=Label, readset=RS, writeset=WS, snapshot_vc=VC}) ->
+    grb_paxos_vnode:prepare({Partition, node()}, TxId, Label, RS, WS, VC, Coordinator);
 
 handle_request(_, Partition, #red_accept{coord_location=Coordinator, ballot=Ballot, tx_id=TxId,
-                                         readset=RS, writeset=WS, decision=Vote, prepare_vc=VC}) ->
+                                         tx_label=Label, readset=RS, writeset=WS, decision=Vote, prepare_vc=VC}) ->
 
-    grb_paxos_vnode:accept(Partition, Ballot, TxId, RS, WS, Vote, VC, Coordinator);
+    grb_paxos_vnode:accept(Partition, Ballot, TxId, Label, RS, WS, Vote, VC, Coordinator);
 
 handle_request(_, Partition, #red_accept_ack{target_node=Node, ballot=Ballot, tx_id=TxId,
                                              decision=Vote, prepare_vc=PrepareVC}) ->

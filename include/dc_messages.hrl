@@ -86,6 +86,7 @@
 -record(red_prepare, {
     coord_location :: term(),
     tx_id :: term(),
+    tx_label :: binary(),
     readset :: [term()],
     writeset :: #{},
     snapshot_vc :: vclock()
@@ -95,6 +96,7 @@
     coord_location :: term(),
     ballot :: ballot(),
     tx_id :: term(),
+    tx_label :: binary(),
     readset :: [term()],
     writeset :: #{},
     decision :: term(),

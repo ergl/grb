@@ -9,7 +9,7 @@
 %% supervision tree
 -export([start_link/1]).
 
--export([commit/6,
+-export([commit/7,
          commit_send/2,
          already_decided/3,
          accept_ack/5]).
@@ -23,13 +23,15 @@
 -type partition_ballots() :: #{partition_id() => ballot()}.
 -record(tx_acc, {
     promise :: grb_promise:t(),
-    %% used to hold the data while we wait for the uniform barrier to lift
-    prepares = undefined :: [{partition_id(), readset(), writeset()}] | undefined,
-    snapshot_vc = undefined :: vclock() | undefined,
     locations = [] :: [{partition_id(), leader_location()}],
     quorums_to_ack = #{} :: #{partition_id() => pos_integer()},
     ballots = #{} :: partition_ballots(),
-    accumulator = #{} :: #{partition_id() => {red_vote(), vclock()}}
+    accumulator = #{} :: #{partition_id() => {red_vote(), vclock()}},
+
+    %% pending data, hold the data while we wait for the uniform barrier to lift
+    pending_label = undefined :: tx_label() | undefined,
+    pending_snapshot_vc = undefined :: vclock() | undefined,
+    pending_prepares = undefined :: [{partition_id(), readset(), writeset()}] | undefined
 }).
 
 -record(state, {
@@ -50,9 +52,16 @@ generate_coord_name(Id) ->
     BinId = integer_to_binary(Id),
     grb_dc_utils:safe_bin_to_atom(<<"grb_red_coordinator_", BinId/binary>>).
 
--spec commit(red_coordinator(), grb_promise:t(), partition_id(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
-commit(Coordinator, Promise, TargetPartition, TxId, SnapshotVC, Prepares) ->
-    gen_server:cast(Coordinator, {commit_init, Promise, TargetPartition, TxId, SnapshotVC, Prepares}).
+-spec commit(Coordinator :: red_coordinator(),
+             Promise :: grb_promise:t(),
+             TargetPartition :: partition_id(),
+             TxId :: term(),
+             Label :: tx_label(),
+             SnapshotVC :: vclock(),
+             Prepares :: [{partition_id(), readset(), writeset()}]) -> ok.
+
+commit(Coordinator, Promise, TargetPartition, TxId, Label, SnapshotVC, Prepares) ->
+    gen_server:cast(Coordinator, {commit_init, Promise, TargetPartition, TxId, Label, SnapshotVC, Prepares}).
 
 -spec commit_send(red_coordinator(), term()) -> ok.
 commit_send(Coordinator, TxId) ->
@@ -94,18 +103,18 @@ handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
-handle_cast({commit_init, Promise, Partition, TxId, SnapshotVC, Prepares}, S0=#state{self_pid=Pid, replica=LocalId}) ->
+handle_cast({commit_init, Promise, Partition, TxId, Label, SnapshotVC, Prepares}, S0=#state{self_pid=Pid, replica=LocalId}) ->
     Timestamp = grb_vclock:get_time(LocalId, SnapshotVC),
     UniformTimestamp = grb_vclock:get_time(LocalId, grb_propagation_vnode:uniform_vc(Partition)),
     S = case Timestamp =< UniformTimestamp of
         true ->
             ?LOG_DEBUG("no need to register barrier for ~w", [TxId]),
-            init_tx_and_send(Promise, TxId, SnapshotVC, Prepares, S0);
+            init_tx_and_send(Promise, TxId, Label, SnapshotVC, Prepares, S0);
         false ->
             ?LOG_DEBUG("registering barrier for ~w", [TxId]),
             ok = grb_measurements:log_counter({?MODULE, pre_commit_barrier}),
             grb_propagation_vnode:register_red_uniform_barrier(Partition, Timestamp, Pid, TxId),
-            init_tx(Promise, TxId, SnapshotVC, Prepares, S0)
+            init_tx(Promise, TxId, Label, SnapshotVC, Prepares, S0)
     end,
     {noreply, S};
 
@@ -148,23 +157,17 @@ handle_info(Info, State) ->
 %% internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-init_tx(Promise, TxId, SnapshotVC, Prepares, S=#state{accumulators=Acc}) ->
+init_tx(Promise, TxId, Label, SnapshotVC, Prepares, S=#state{accumulators=Acc}) ->
     S#state{accumulators=Acc#{TxId => #tx_acc{promise=Promise,
-                                              prepares=Prepares,
-                                              snapshot_vc=SnapshotVC}}}.
+                                              pending_label=Label,
+                                              pending_prepares=Prepares,
+                                              pending_snapshot_vc=SnapshotVC}}}.
 
-init_tx_and_send(Promise, TxId, SnapshotVC, Prepares, S=#state{self_location=SelfCoord,
-                                                               quorum_size=QuorumSize,
-                                                               accumulators=Acc}) ->
+init_tx_and_send(Promise, TxId, Label, SnapshotVC, Prepares, S=#state{self_location=SelfCoord,
+                                                                      quorum_size=QuorumSize,
+                                                                      accumulators=Acc}) ->
 
-    SendFun = fun({Partition, Readset, Writeset}, {LeaderAcc, QuorumAcc}) ->
-        Location = send_prepare(SelfCoord, Partition, TxId, Readset, Writeset, SnapshotVC),
-        {
-            [{Partition, Location} | LeaderAcc],
-            QuorumAcc#{Partition => QuorumSize }
-        }
-    end,
-    {LeaderLocations, QuorumsToAck} = lists:foldl(SendFun, {[], #{}}, Prepares),
+    {LeaderLocations, QuorumsToAck} = send_loop(SelfCoord, TxId, Label, SnapshotVC, QuorumSize, Prepares),
     S#state{accumulators=Acc#{TxId => #tx_acc{promise=Promise,
                                               locations=LeaderLocations,
                                               quorums_to_ack=QuorumsToAck}}}.
@@ -173,17 +176,34 @@ send_tx_prepares(TxId, S=#state{self_location=SelfCoord,
                                 quorum_size=QuorumSize,
                                 accumulators=Acc}) ->
 
-    TxData = #tx_acc{prepares=Prepares, snapshot_vc=SnapshotVC} = maps:get(TxId, Acc),
+    TxData = #tx_acc{pending_label=Label,
+                     pending_prepares=Prepares,
+                     pending_snapshot_vc=SnapshotVC} = maps:get(TxId, Acc),
+
+    {LeaderLocations, QuorumsToAck} = send_loop(SelfCoord, TxId, Label, SnapshotVC, QuorumSize, Prepares),
+    S#state{accumulators=Acc#{TxId => TxData#tx_acc{pending_label=undefined,
+                                                    pending_prepares=undefined,
+                                                    pending_snapshot_vc=undefined,
+                                                    locations=LeaderLocations,
+                                                    quorums_to_ack=QuorumsToAck}}}.
+
+-spec send_loop(Coordinator :: red_coord_location(),
+                TxId :: term(),
+                _Label :: tx_label(),
+                PrepareVC :: vclock(),
+                QuorumSize :: non_neg_integer(),
+                Prepares :: [{partition_id(), readset(), writeset()}]) -> { [{partition_id(), leader_location()}],
+                                                                            #{partition_id() => pos_integer()} }.
+
+send_loop(Coordinator, TxId, Label, PrepareVC, QuorumSize, Prepares) ->
     SendFun = fun({Partition, Readset, Writeset}, {LeaderAcc, QuorumAcc}) ->
-        Location = send_prepare(SelfCoord, Partition, TxId, Readset, Writeset, SnapshotVC),
+        Location = send_prepare(Coordinator, Partition, TxId, Label, Readset, Writeset, PrepareVC),
         {
             [{Partition, Location} | LeaderAcc],
             QuorumAcc#{Partition => QuorumSize}
         }
     end,
-    {LeaderLocations, QuorumsToAck} = lists:foldl(SendFun, {[], #{}}, Prepares),
-    S#state{accumulators=Acc#{TxId => TxData#tx_acc{prepares=undefined, snapshot_vc=undefined,
-                                                    locations=LeaderLocations, quorums_to_ack=QuorumsToAck}}}.
+    lists:foldl(SendFun, {[], #{}}, Prepares).
 
 -spec check_ballot(partition_id(), ballot(), partition_ballots()) -> {ok, partition_ballots()} | error.
 check_ballot(Partition, Ballot, Ballots) ->
@@ -202,21 +222,21 @@ check_ballot(Partition, Ballot, Ballots) ->
 %%   own it, so we won't have an active connection to any node that owns P0).
 %%   In that case, we will need to go through a proxy located at the local cluster
 %%   node that owns P0.
--spec send_prepare(red_coord_location(), partition_id(), term(), readset(), writeset(), vclock()) -> leader_location().
-send_prepare(Coordinator, Partition, TxId, RS, WS, VC) ->
+-spec send_prepare(red_coord_location(), partition_id(), term(), tx_label(), readset(), writeset(), vclock()) -> leader_location().
+send_prepare(Coordinator, Partition, TxId, Label, RS, WS, VC) ->
     LeaderLoc = grb_red_manager:leader_of(Partition),
     case LeaderLoc of
         {local, IndexNode} ->
             %% leader is in the local cluster, go through vnode directly
-            ok = grb_paxos_vnode:prepare(IndexNode, TxId, RS, WS, VC, Coordinator);
+            ok = grb_paxos_vnode:prepare(IndexNode, TxId, Label, RS, WS, VC, Coordinator);
         {remote, RemoteReplica} ->
             %% leader is in another replica, and we have a direct inter_dc connection to it
             ok = grb_dc_connection_manager:send_red_prepare(RemoteReplica, Coordinator, Partition,
-                                                            TxId, RS, WS, VC);
+                                                            TxId, Label, RS, WS, VC);
         {proxy, LocalNode, RemoteReplica} ->
             %% leader is in another replica, but we don't have a direct inter_dc connection, have
             %% to go through a cluster-local proxy at `LocalNode`
-            Msg = grb_dc_messages:red_prepare(Coordinator, TxId, RS, WS, VC),
+            Msg = grb_dc_messages:red_prepare(Coordinator, TxId, Label, RS, WS, VC),
             ok = erpc:cast(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
     end,
     LeaderLoc.

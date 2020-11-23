@@ -6,7 +6,8 @@
 %% init api
 -export([all_fetch_lastvc_table/0,
          init_leader_state/0,
-         init_follower_state/0]).
+         init_follower_state/0,
+         put_conflicts_all/1]).
 
 %% heartbeat api
 -export([prepare_heartbeat/2,
@@ -15,8 +16,8 @@
          decide_heartbeat/4]).
 
 %% tx API
--export([prepare/6,
-         accept/8,
+-export([prepare/7,
+         accept/9,
          broadcast_decision/5,
          decide/5]).
 
@@ -71,6 +72,9 @@
     op_log_last_vc_replica :: grb_oplog_vnode:last_vc() | undefined,
     synod_state = undefined :: grb_paxos_state:t() | undefined,
 
+    %% conflict information, who conflicts with whom
+    conflict_relations = #{} :: conflict_relations(),
+
     %% a buffer of outstanding decision messages
     %% If we receive a DECIDE message from the coordinator before we receive
     %% an ACCEPT from the leader, we should buffer the DECIDE here, and apply it
@@ -87,6 +91,20 @@ all_fetch_lastvc_table() ->
     Res = grb_dc_utils:bcast_vnode_sync(?master, fetch_lastvc_table, 1000),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res).
 -endif.
+
+-spec put_conflicts_all(conflict_relations()) -> ok | error.
+put_conflicts_all(Conflicts) ->
+    Results = [try
+        riak_core_vnode_master:sync_command(N, {learn_conflicts, Conflicts}, ?master, 1000)
+    catch
+        _:_ -> false
+    end || N <- grb_dc_utils:get_index_nodes() ],
+    case lists:all(fun(Result) -> Result =:= ok end, Results) of
+        true ->
+            ok;
+        false ->
+            error
+    end.
 
 -spec init_leader_state() -> ok.
 init_leader_state() ->
@@ -125,27 +143,29 @@ decide_heartbeat(Partition, Ballot, Id, Ts) ->
 
 -spec prepare(IndexNode :: index_node(),
               TxId :: term(),
+              Label :: tx_label(),
               Readset :: readset(),
               WriteSet :: writeset(),
               SnapshotVC :: vclock(),
               Coord :: red_coord_location()) -> ok.
 
-prepare(IndexNode, TxId, ReadSet, Writeset, SnapshotVC, Coord) ->
+prepare(IndexNode, TxId, Label, ReadSet, Writeset, SnapshotVC, Coord) ->
     riak_core_vnode_master:command(IndexNode,
-                                   {prepare, TxId, ReadSet, Writeset, SnapshotVC},
+                                   {prepare, TxId, Label, ReadSet, Writeset, SnapshotVC},
                                    Coord,
                                    ?master).
 
 -spec accept(Partition :: partition_id(),
              Ballot :: ballot(),
              TxId :: term(),
+             Label :: tx_label(),
              RS :: readset(),
              WS :: writeset(),
              Vote :: red_vote(),
              PrepareVC :: vclock(),
              Coord :: red_coord_location()) -> ok.
 
-accept(Partition, Ballot, TxId, RS, WS, Vote, PrepareVC, Coord) ->
+accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, Coord) ->
     %% For blue transactions, any pending operations are removed during blue commit, since
     %% it is performed at the replica / partitions where the client originally performed the
     %% operations. For red commit, however, the client can start the red commit at any
@@ -153,7 +173,7 @@ accept(Partition, Ballot, TxId, RS, WS, Vote, PrepareVC, Coord) ->
     %% for red transactions when we accept them
     ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
     riak_core_vnode_master:command({Partition, node()},
-                                   {accept, Ballot, TxId, RS, WS, Vote, PrepareVC},
+                                   {accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
                                    Coord,
                                    ?master).
 
@@ -205,6 +225,9 @@ handle_command(ping, _Sender, State) ->
 handle_command(is_ready, _Sender, State) ->
     {reply, true, State};
 
+handle_command({learn_conflicts, Conflicts}, _Sender, State) ->
+    {reply, ok, State#state{conflict_relations=Conflicts}};
+
 handle_command(fetch_lastvc_table, _Sender, S0=#state{partition=Partition}) ->
     {Result, S} = try
         Table = grb_oplog_vnode:last_vc_table(Partition),
@@ -252,10 +275,11 @@ handle_command({prepare_hb, Id}, _Sender, S=#state{partition=Partition,
     end,
     {noreply, S#state{synod_state=LeaderState}};
 
-handle_command({prepare, TxId, RS, WS, SnapshotVC},
+handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
                Coordinator, S=#state{replica_id=LocalId,
                                      partition=Partition,
                                      synod_state=LeaderState0,
+                                     conflict_relations=Conflicts,
                                      op_log_last_vc_replica=LastRed}) ->
 
     ok = grb_measurements:log_queue_length(?leader_queue_length_stat),
@@ -267,7 +291,7 @@ handle_command({prepare, TxId, RS, WS, SnapshotVC},
     %% for red transactions when we prepare them
     ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
 
-    {Result, LeaderState} = grb_paxos_state:prepare(TxId, RS, WS, SnapshotVC, LastRed, LeaderState0),
+    {Result, LeaderState} = grb_paxos_state:prepare(TxId, Label, RS, WS, SnapshotVC, LastRed, Conflicts, LeaderState0),
     ?LOG_DEBUG("~p: ~p prepared as ~p, reply to coordinator ~p", [Partition, TxId, Result, Coordinator]),
     case Result of
         {already_decided, Decision, CommitVC} ->
@@ -277,7 +301,7 @@ handle_command({prepare, TxId, RS, WS, SnapshotVC},
             reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
             lists:foreach(fun(ReplicaId) ->
                 grb_dc_connection_manager:send_red_accept(ReplicaId, Coordinator, Partition,
-                                                          Ballot, Vote, TxId, RS, WS, PrepareVC)
+                                                          Ballot, Vote, TxId, Label, RS, WS, PrepareVC)
             end, grb_dc_connection_manager:connected_replicas())
     end,
     {noreply, S#state{synod_state=LeaderState}};
@@ -286,15 +310,16 @@ handle_command({prepare, TxId, RS, WS, SnapshotVC},
 %%% follower protocol messages
 %%%===================================================================
 
-handle_command({accept, Ballot, TxId, RS, WS, Vote, PrepareVC}, Coordinator, S0=#state{replica_id=LocalId,
-                                                                                       partition=Partition,
-                                                                                       synod_state=FollowerState0,
-                                                                                       decision_buffer=DecisionBuffer0}) ->
+handle_command({accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
+                Coordinator, S0=#state{replica_id=LocalId,
+                                       partition=Partition,
+                                       synod_state=FollowerState0,
+                                       decision_buffer=DecisionBuffer0}) ->
 
     ok = grb_measurements:log_queue_length(?follower_queue_length_stat),
 
     ?LOG_DEBUG("~p: ACCEPT(~b, ~p, ~p), reply to coordinator ~p", [Partition, Ballot, TxId, Vote, Coordinator]),
-    {ok, FollowerState} = grb_paxos_state:accept(Ballot, TxId, RS, WS, Vote, PrepareVC, FollowerState0),
+    {ok, FollowerState} = grb_paxos_state:accept(Ballot, TxId, Label, RS, WS, Vote, PrepareVC, FollowerState0),
     S1 = S0#state{synod_state=FollowerState},
     S = case maps:take({TxId, Ballot}, DecisionBuffer0) of
         error ->
@@ -480,9 +505,9 @@ deliver_updates(Partition, From, SynodState) ->
             From;
         {NextFrom, Entries} ->
             lists:foreach(fun
-                ({WriteSet, CommitVC}) when is_map(WriteSet) andalso map_size(WriteSet) =/= 0->
-                    ?LOG_DEBUG("~p DELIVER(~p, ~p)", [Partition, NextFrom, WriteSet]),
-                    ok = grb_oplog_vnode:handle_red_transaction(Partition, WriteSet, CommitVC);
+                ({Label, WriteSet, CommitVC}) when is_map(WriteSet) andalso map_size(WriteSet) =/= 0->
+                    ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, NextFrom, Label, WriteSet]),
+                    ok = grb_oplog_vnode:handle_red_transaction(Partition, Label, WriteSet, CommitVC);
                 (_) ->
                     ok
             end, Entries),

@@ -83,7 +83,7 @@ test:
 	${REBAR} as uniform_blue eunit skip_deps=true
 
 ct:
-	$(REBAR) ct
+	$(REBAR) ct --fail_fast
 
 full_ct: ct
 	$(REBAR) as basic_replication ct

@@ -28,7 +28,7 @@
          handle_replicate/4,
          handle_replicate_array/6,
          handle_replicate_array/10,
-         handle_red_transaction/3]).
+         handle_red_transaction/4]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -64,7 +64,7 @@
 
 -type op_log() :: cache(key(), grb_version_log:t()).
 -type pending_tx_ops() :: cache({term(), key()}, operation()).
--type last_vc() :: cache(key(), vclock()).
+-type last_vc() :: cache({key(), tx_label()}, vclock()).
 
 -record(state, {
     partition :: partition_id(),
@@ -306,10 +306,10 @@ handle_replicate_array(Partition, SourceReplica, Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, T
                                            ?master)
     end.
 
--spec handle_red_transaction(partition_id(), writeset(), vclock()) -> ok.
-handle_red_transaction(Partition, WS, VC) ->
+-spec handle_red_transaction(partition_id(), tx_label(), writeset(), vclock()) -> ok.
+handle_red_transaction(Partition, Label, WS, VC) ->
     riak_core_vnode_master:command({Partition, node()},
-                                   {handle_red_tx, WS, VC},
+                                   {handle_red_tx, Label, WS, VC},
                                    ?master).
 
 %%%===================================================================
@@ -439,12 +439,12 @@ handle_command({handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4}, _Fro
     ok = handle_remote_tx_array_internal(SourceReplica, Tx1, Tx2, Tx3, Tx4, State),
     {noreply, State};
 
-handle_command({handle_red_tx, WS, VC}, _From, S=#state{all_replicas=AllReplicas,
-                                                        op_log=OperationLog,
-                                                        op_log_size=LogSize,
-                                                        op_last_vc=LastVC}) ->
+handle_command({handle_red_tx, Label, WS, VC}, _From, S=#state{all_replicas=AllReplicas,
+                                                               op_log=OperationLog,
+                                                               op_log_size=LogSize,
+                                                               op_last_vc=LastVC}) ->
 
-    ok = append_red_writeset(AllReplicas, WS, VC, OperationLog, LogSize, LastVC),
+    ok = append_red_writeset(AllReplicas, Label, WS, VC, OperationLog, LogSize, LastVC),
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->
@@ -575,16 +575,17 @@ append_writeset(AtReplicas, WS, CommitVC, OpLog, DefaultSize) ->
     ok.
 
 -spec append_red_writeset(AtReplicas :: [all_replica_id()],
+                          Label :: tx_label(),
                           WS :: writeset(),
                           CommitVC :: vclock(),
                           OpLog :: op_log(),
                           DefaultSize :: non_neg_integer(),
                           LastVC :: last_vc()) -> ok.
 
-append_red_writeset(AtReplicas, WS, CommitVC, OpLog, DefaultSize, LastVC) ->
+append_red_writeset(AtReplicas, Label, WS, CommitVC, OpLog, DefaultSize, LastVC) ->
     Objects = maps:fold(fun(Key, Operation, Acc) ->
         Log = append_to_log(AtReplicas, Key, Operation, CommitVC, OpLog, DefaultSize),
-        ok = update_last_vc(Key, AtReplicas, CommitVC, LastVC),
+        ok = update_last_vc(Key, Label, AtReplicas, CommitVC, LastVC),
         [{Key, Log} | Acc]
     end, [], WS),
     true = ets:insert(OpLog, Objects),
@@ -609,23 +610,23 @@ append_to_log(AllReplicas, Key, Operation, CommitVC, OpLog, Size) ->
     grb_version_log:insert(Operation, CommitVC, Log).
 
 
-%% LastVC contains, for each key, its max commit vector.
+%% LastVC contains, for each key and transaction label, its max commit vector.
 %% Although maxing two vectors on each transaction could be slow, this only happens on red transactions,
 %% which are already slow due to cross-dc 2PC. Adding a little bit of time doing this max shouldn't add
 %% too much overhead on top.
 -spec update_last_vc(Key :: key(),
+                     Label :: tx_label(),
                      AtReplicas :: [replica_id()],
                      CommitVC :: vclock(),
                      LastVC :: last_vc()) -> ok.
 
-%% todo(borja, rubis): Annotate with procedure name for conflict detection
-update_last_vc(Key, AtReplicas, CommitVC, LastVC) ->
-    case ets:lookup(LastVC, Key) of
-        [{Key, LastCommitVC}] ->
-            true = ets:update_element(LastVC, Key,
+update_last_vc(Key, Label, AtReplicas, CommitVC, LastVC) ->
+    case ets:lookup(LastVC, {Key, Label}) of
+        [{_, LastCommitVC}] ->
+            true = ets:update_element(LastVC, {Key, Label},
                                       {2, grb_vclock:max_at_keys(AtReplicas, LastCommitVC, CommitVC)});
         [] ->
-            true = ets:insert(LastVC, {Key, CommitVC})
+            true = ets:insert(LastVC, {{Key, Label}, CommitVC})
     end,
     ok.
 

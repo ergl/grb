@@ -9,6 +9,7 @@
 %% API for applications
 -export([connect/0,
          load/1,
+         put_conflicts/1,
          uniform_barrier/3,
          start_transaction/2,
          update/4,
@@ -17,12 +18,12 @@
          key_snapshot_bypass/5,
          prepare_blue/3,
          decide_blue/3,
-         commit_red/5]).
+         commit_red/6]).
 
 -ifdef(TEST).
 -export([sync_uniform_barrier/2,
          sync_key_vsn/5,
-         sync_commit_red/4]).
+         sync_commit_red/5]).
 -endif.
 
 %% Called by rel
@@ -68,6 +69,10 @@ load(Size) ->
         end
     end, Res1),
     ok.
+
+-spec put_conflicts(conflict_relations()) -> ok.
+put_conflicts(Conflicts) ->
+    grb_paxos_vnode:put_conflicts_all(Conflicts).
 
 -spec uniform_barrier(grb_promise:t(), partition_id(), vclock()) -> ok.
 -ifdef(BASIC_REPLICATION).
@@ -142,13 +147,19 @@ prepare_blue(Partition, TxId, VC) ->
 decide_blue(Partition, TxId, VC) ->
     grb_oplog_reader:decide_blue(Partition, TxId, VC).
 
--spec commit_red(grb_promise:t(), partition_id(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
+-spec commit_red(Promise :: grb_promise:t(),
+                 Partition :: partition_id(),
+                 TxId :: term(),
+                 Label :: tx_label(),
+                 SnapshotVC :: vclock(),
+                 Prepares :: [{partition_id(), readset(), writeset()}]) -> ok.
+
 -ifdef(BLUE_KNOWN_VC).
-commit_red(Promise, _, _, VC, _) -> grb_promise:resolve({ok, VC}, Promise).
+commit_red(Promise, _, _, _, VC, _) -> grb_promise:resolve({ok, VC}, Promise).
 -else.
-commit_red(Promise, TargetPartition, TxId, SnapshotVC, Prepares) ->
+commit_red(Promise, TargetPartition, TxId, Label, SnapshotVC, Prepares) ->
     Coordinator = grb_red_manager:register_coordinator(TxId),
-    grb_red_coordinator:commit(Coordinator, Promise, TargetPartition, TxId, SnapshotVC, Prepares).
+    grb_red_coordinator:commit(Coordinator, Promise, TargetPartition, TxId, Label, SnapshotVC, Prepares).
 -endif.
 
 %%%===================================================================
@@ -188,10 +199,10 @@ sync_key_vsn(Partition, TxId, Key, Type, VC) ->
             Result
     end.
 
--spec sync_commit_red(partition_id(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
-sync_commit_red(Partition, TxId, VC, Prepares) ->
+-spec sync_commit_red(partition_id(), term(), tx_label(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
+sync_commit_red(Partition, TxId, Label, VC, Prepares) ->
     Ref = make_ref(),
-    ok = grb:commit_red(grb_promise:new(self(), Ref), Partition, TxId, VC, Prepares),
+    ok = grb:commit_red(grb_promise:new(self(), Ref), Partition, TxId, Label, VC, Prepares),
     receive
         {'$grb_promise_resolve', Result, Ref} ->
             Result

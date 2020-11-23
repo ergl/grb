@@ -21,8 +21,8 @@
          send_clocks_heartbeat/4]).
 
 %% Red transactions
--export([send_red_prepare/7,
-         send_red_accept/9,
+-export([send_red_prepare/8,
+         send_red_accept/10,
          send_red_accept_ack/7,
          send_red_already_decided/6,
          send_red_decision/6]).
@@ -193,12 +193,13 @@ send_clocks_heartbeat(ToId, Partition, KnownVC, StableVC) ->
                        Coordinator :: red_coord_location(),
                        Partition :: partition_id(),
                        TxId :: term(),
+                       Label :: tx_label(),
                        RS :: readset(),
                        WS :: writeset(),
                        VC :: vclock()) -> ok | {error, term()}.
 
-send_red_prepare(ToId, Coordinator, Partition, TxId, RS, WS, VC) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:red_prepare(Coordinator, TxId, RS, WS, VC)).
+send_red_prepare(ToId, Coordinator, Partition, TxId, Label, RS, WS, VC) ->
+    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:red_prepare(Coordinator, TxId, Label, RS, WS, VC)).
 
 -spec send_red_accept(ToId :: replica_id(),
                       Coordinator :: red_coord_location(),
@@ -206,13 +207,14 @@ send_red_prepare(ToId, Coordinator, Partition, TxId, RS, WS, VC) ->
                       Ballot :: ballot(),
                       Vote :: red_vote(),
                       TxId :: term(),
+                      Label :: tx_label(),
                       RS :: readset(),
                       WS :: writeset(),
                       PrepareVC :: vclock()) -> ok | {error, term()}.
 
-send_red_accept(ToId, Coordinator, Partition, Ballot, Vote, TxId, RS, WS, VC) ->
+send_red_accept(ToId, Coordinator, Partition, Ballot, Vote, TxId, Label, RS, WS, VC) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition,
-             grb_dc_messages:red_accept(Coordinator, Ballot, Vote, TxId, RS, WS, VC)).
+             grb_dc_messages:red_accept(Coordinator, Ballot, Vote, TxId, Label, RS, WS, VC)).
 
 -spec send_red_accept_ack(replica_id(), node(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
 send_red_accept_ack(ToId, ToNode, Partition, Ballot, TxId, Vote, PrepareVC) ->

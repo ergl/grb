@@ -128,6 +128,9 @@ handle_request('UniformBarrier', #{client_vc := CVC, partition := Partition}, Co
 handle_request('ConnectRequest', _, Context, State) ->
     reply_to_client(grb:connect(), Context, State);
 
+handle_request('PutConflictRelations', #{payload := Conflicts}, Context, State) ->
+    reply_to_client(grb:put_conflicts(Conflicts), Context, State);
+
 handle_request('StartReq', #{client_vc := CVC, partition := Partition}, Context, State) ->
     reply_to_client(grb:start_transaction(Partition, CVC), Context, State);
 
@@ -164,8 +167,14 @@ handle_request('DecideBlueNode', Args, _Context, _State) ->
     ok;
 
 handle_request('CommitRed', Args, Context, _State) ->
-    #{transaction_id := TxId, snapshot_vc := VC, prepares := Prepares, partition := TargetP} = Args,
-    grb:commit_red(grb_promise:new(self(), Context), TargetP, TxId, VC, Prepares).
+    #{
+        partition := TargetP,
+        transaction_id := TxId,
+        snapshot_vc := VC,
+        transaction_label := Label,
+        prepares := Prepares
+    } = Args,
+    grb:commit_red(grb_promise:new(self(), Context), TargetP, TxId, Label, VC, Prepares).
 
 -spec try_read(partition_id(), term(), key(), crdt(), boolean(), vclock(), proto_context(), state()) -> ok.
 try_read(Partition, TxId, Key, Type, true, SnapshotVC, Context, State) ->

@@ -31,6 +31,10 @@
 
 -define(random_key, crypto:strong_rand_bytes(64)).
 -define(random_val, crypto:strong_rand_bytes(8)).
+-define(random_key_map(__M), begin
+    __L = maps:keys(__M),
+    lists:nth(length(__L), __L)
+end).
 
 -define(repeat_test_limit, 100).
 
@@ -100,8 +104,12 @@ init_per_group(single_dc_red, C) ->
     Key = ?random_key,
     Val = ?random_val,
     {Partition, Node} = key_location(Key, Replica, ClusterMap),
-    {ok, CVC} = update_red_transaction(Node, Partition, Tx, Key, grb_crdt:make_op(grb_lww, Val), #{}),
-    [ {propagate_info, {Tx, Key, Val, CVC}} | C1 ];
+
+    Conflicts = #{<<1>> => <<1>>},
+    ok = put_conflicts(Node, Conflicts),
+
+    {ok, CVC} = update_red_transaction(Node, Partition, Tx, <<1>>, Key, grb_crdt:make_op(grb_lww, Val), #{}),
+    [ {propagate_info, {Tx, Key, Val, CVC}}, {red_conflicts, {Replica, Conflicts}} | C1 ];
 
 init_per_group(multi_dc, C) ->
     grb_utils:init_multi_dc(?MODULE, [[clusterdev1, clusterdev2], [clusterdev3, clusterdev4]], C);
@@ -174,14 +182,22 @@ read_your_writes_test(C) ->
     CVC = update_transaction(Replica, Node, Partition, tx_1, Key, grb_crdt:make_op(grb_lww, Val), #{}),
     {Val, _} = read_only_transaction(Node, Partition, tx_2, Key, grb_lww, CVC).
 
+-ifndef(BLUE_KNOWN_VC).
 read_your_writes_red_test(C) ->
     ClusterMap = ?config(cluster_info, C),
+    {_, Conflicts} = ?config(red_conflicts, C),
+    Label = ?random_key_map(Conflicts),
     Replica = random_replica(ClusterMap),
     Key = ?random_key,
     Val = ?random_val,
     {Partition, Node} = key_location(Key, Replica, ClusterMap),
-    {ok, CVC} = update_red_transaction(Node, Partition, tx_1, Key, grb_crdt:make_op(grb_lww, Val), #{}),
+    {ok, CVC} = update_red_transaction(Node, Partition, tx_1, Label, Key, grb_crdt:make_op(grb_lww, Val), #{}),
     {Val, _} = read_only_transaction(Node, Partition, tx_2, Key, grb_lww, CVC).
+-else.
+read_your_writes_red_test(_C) ->
+    %% No red transactions
+    ok.
+-endif.
 
 -ifndef(BASIC_REPLICATION).
 propagate_updates_test(C) ->
@@ -230,8 +246,11 @@ transaction_ops_flush_test(C) ->
         ok
     end).
 
+-ifndef(BLUE_KNOWN_VC).
 abort_ops_flush_test(C) ->
     ClusterMap = ?config(cluster_info, C),
+    {_, Conflicts} = ?config(red_conflicts, C),
+    Label = ?random_key_map(Conflicts),
     Replica = random_replica(ClusterMap),
     Key = ?random_key,
     {Partition, Node} = key_location(Key, Replica, ClusterMap),
@@ -253,11 +272,16 @@ abort_ops_flush_test(C) ->
     ok = erpc:call(Node, grb, update, [Partition, TxId2, Key, Operation2]),
     {ok, _} = erpc:call(Node, grb, sync_key_vsn, [Partition, TxId1, Key, grb_crdt:op_type(Operation2), SVC2]),
 
-    {ok, _} = erpc:call(Node, grb, sync_commit_red, [Partition, TxId1, SVC1, [{Partition, [Key], #{Key => Operation1}}]]),
-    {abort, _} = erpc:call(Node, grb, sync_commit_red, [Partition, TxId2, SVC2, [{Partition, [Key], #{Key => Operation2}}]]),
+    {ok, _} = erpc:call(Node, grb, sync_commit_red, [Partition, TxId1, Label, SVC1, [{Partition, [Key], #{Key => Operation1}}]]),
+    {abort, _} = erpc:call(Node, grb, sync_commit_red, [Partition, TxId2, Label, SVC2, [{Partition, [Key], #{Key => Operation2}}]]),
 
     0 = erpc:call(Node, grb_oplog_vnode, transaction_ops, [Partition, TxId1]),
     0 = erpc:call(Node, grb_oplog_vnode, transaction_ops, [Partition, TxId2]).
+-else.
+abort_ops_flush_test(_C) ->
+    %% No red transactions
+    ok.
+-endif.
 
 known_replicas_test(C) ->
     ClusterMap = ?config(cluster_info, C),
@@ -369,12 +393,26 @@ update_transaction(Replica, Node, Partition, TxId, Key, Operation, Clock) ->
     ok = erpc:call(Node, grb, decide_blue, [Partition, TxId, CVC]),
     CVC.
 
--spec update_red_transaction(node(), partition_id(), term(), key(), operation(), vclock()) -> {ok, vclock()} | {abort, term()}.
-update_red_transaction(Node, Partition, TxId, Key, Operation, Clock) ->
+-spec put_conflicts(node(), conflict_relations()) -> ok.
+-ifndef(BLUE_KNOWN_VC).
+put_conflicts(Node, Conflicts) ->
+    erpc:call(Node, grb, put_conflicts, [Conflicts]).
+-else.
+put_conflicts(_Node, _Conflicts) ->
+    ok.
+-endif.
+
+-spec update_red_transaction(node(), partition_id(), term(), tx_label(), key(), operation(), vclock()) -> {ok, vclock()} | {abort, term()}.
+-ifndef(BLUE_KNOWN_VC).
+update_red_transaction(Node, Partition, TxId, Label, Key, Operation, Clock) ->
     SVC = erpc:call(Node, grb, start_transaction, [Partition, Clock]),
     ok = erpc:call(Node, grb, update, [Partition, TxId, Key, Operation]),
     {ok, _} = erpc:call(Node, grb, sync_key_vsn, [Partition, TxId, Key, grb_crdt:op_type(Operation), SVC]),
-    erpc:call(Node, grb, sync_commit_red, [Partition, TxId, SVC, [{Partition, [Key], #{Key => Operation}}]]).
+    erpc:call(Node, grb, sync_commit_red, [Partition, TxId, Label, SVC, [{Partition, [Key], #{Key => Operation}}]]).
+-else.
+update_red_transaction(_Node, _Partition, _TxId, _Label, _Key, _Operation, Clock) ->
+    {ok, Clock}.
+-endif.
 
 -spec random_replica(#{}) -> replica_id().
 random_replica(ClusterMap) ->

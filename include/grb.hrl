@@ -22,6 +22,9 @@
 -type crdt() :: grb_crdt:crdt().
 -type operation() :: grb_crdt:operation().
 
+-type tx_label() :: binary().
+-type conflict_relations() :: #{tx_label() := tx_label()}.
+
 -type readset() :: [key()].
 -type writeset() :: #{key() => operation()}.
 -type tx_entry() :: grb_blue_commit_log:entry().
@@ -70,6 +73,8 @@
               crdt/0,
               snapshot/0,
               operation/0,
+              tx_label/0,
+              conflict_relations/0,
               replica_descriptor/0,
               inter_dc_conn/0,
               red_coordinator/0,
