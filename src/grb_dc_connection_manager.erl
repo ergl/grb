@@ -22,7 +22,7 @@
 
 %% Red transactions
 -export([send_red_prepare/7,
-         send_red_accept/7,
+         send_red_accept/9,
          send_red_accept_ack/7,
          send_red_already_decided/6,
          send_red_decision/6]).
@@ -203,13 +203,14 @@ send_red_prepare(ToId, Coordinator, Partition, TxId, RS, WS, VC) ->
 -spec send_red_accept(ToId :: replica_id(),
                       Coordinator :: red_coord_location(),
                       Partition :: partition_id(),
+                      Ballot :: ballot(),
+                      Vote :: red_vote(),
                       TxId :: term(),
                       RS :: readset(),
                       WS :: writeset(),
-                      Prepare :: {red_vote(), ballot(), vclock()}) -> ok | {error, term()}.
+                      PrepareVC :: vclock()) -> ok | {error, term()}.
 
-%% todo(borja): unpack prepare msg at the callee
-send_red_accept(ToId, Coordinator, Partition, TxId, RS, WS, {Vote, Ballot, VC}) ->
+send_red_accept(ToId, Coordinator, Partition, Ballot, Vote, TxId, RS, WS, VC) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition,
              grb_dc_messages:red_accept(Coordinator, Ballot, Vote, TxId, RS, WS, VC)).
 

@@ -260,11 +260,11 @@ handle_command({prepare, TxId, RS, WS, SnapshotVC},
         {already_decided, Decision, CommitVC} ->
             %% skip replicas, this is enough to reply to the client
             reply_already_decided(Coordinator, LocalId, Partition, TxId, Decision, CommitVC);
-        {Vote, Ballot, PrepareVC}=Prepare ->
+        {Vote, Ballot, PrepareVC} ->
             reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
             lists:foreach(fun(ReplicaId) ->
                 grb_dc_connection_manager:send_red_accept(ReplicaId, Coordinator, Partition,
-                                                          TxId, RS, WS, Prepare)
+                                                          Ballot, Vote, TxId, RS, WS, PrepareVC)
             end, grb_dc_connection_manager:connected_replicas())
     end,
     {noreply, S#state{synod_state=LeaderState}};
