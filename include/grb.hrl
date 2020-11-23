@@ -11,7 +11,8 @@
 -type transaction_type() :: red | blue.
 
 -type replica_id() :: {atom(), erlang:timestamp()}.
--type vclock() :: grb_vclock:vc(replica_id() | atom()).
+-type all_replica_id() :: red | replica_id().
+-type vclock() :: grb_vclock:vc(all_replica_id()).
 %% the entry for red transactions in the clock
 -define(RED_REPLICA, red).
 
@@ -63,6 +64,7 @@
               tx_entry/0,
               transaction_type/0,
               replica_id/0,
+              all_replica_id/0,
               vclock/0,
               key/0,
               crdt/0,

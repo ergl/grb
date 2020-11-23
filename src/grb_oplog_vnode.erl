@@ -66,7 +66,7 @@
 
 -record(state, {
     partition :: partition_id(),
-    all_replicas :: [replica_id()],
+    all_replicas :: [all_replica_id()],
 
     %% number of gen_servers replicating this vnode state
     replicas_n :: non_neg_integer(),
@@ -135,7 +135,7 @@ learn_all_replicas_all() ->
     learn_all_replicas_all([?RED_REPLICA | grb_dc_manager:all_replicas()]).
 -endif.
 
--spec learn_all_replicas_all([replica_id()]) -> ok.
+-spec learn_all_replicas_all([all_replica_id()]) -> ok.
 learn_all_replicas_all(Replicas) ->
     [try
         riak_core_vnode_master:command(N, {learn_all_replicas, Replicas}, ?master)
@@ -187,12 +187,14 @@ get_key_snapshot(Partition, TxId, Key, Type, SnapshotVC) ->
             apply_tx_ops(Partition, TxId, Key, grb_crdt:new(Type));
 
         [{Key, VersionLog}] ->
-            case grb_version_log:snapshot_lower(SnapshotVC, VersionLog) of
+            Found = case grb_version_log:snapshot_lower(SnapshotVC, VersionLog) of
                 {not_found, Base} ->
-                    apply_tx_ops(Partition, TxId, Key, Base);
-                Snapshot ->
-                    apply_tx_ops(Partition, TxId, Key, Snapshot)
-            end
+                    %% todo(borja): Log miss?
+                    Base;
+                {ok, Snapshot} ->
+                    Snapshot
+            end,
+            apply_tx_ops(Partition, TxId, Key, Found)
     end.
 
 -spec apply_tx_ops(partition_id(), term(), key(), grb_crdt:t()) -> {ok, snapshot()}.
@@ -547,7 +549,7 @@ remove_from_prepared(PreparedBlue, TxId) ->
     _ = ets:select_delete(PreparedBlue, [{ {{'_', TxId}}, [], [true] }]),
     ok.
 
--spec append_writeset(AtReplicas :: [replica_id()],
+-spec append_writeset(AtReplicas :: [all_replica_id()],
                       WS :: writeset(),
                       CommitVC :: vclock(),
                       OpLog :: op_log(),
@@ -561,7 +563,7 @@ append_writeset(AtReplicas, WS, CommitVC, OpLog, DefaultSize) ->
     true = ets:insert(OpLog, Objects),
     ok.
 
--spec append_red_writeset(AtReplicas :: [replica_id()],
+-spec append_red_writeset(AtReplicas :: [all_replica_id()],
                           WS :: writeset(),
                           CommitVC :: vclock(),
                           OpLog :: op_log(),
@@ -577,7 +579,7 @@ append_red_writeset(AtReplicas, WS, CommitVC, OpLog, DefaultSize, LastVC) ->
     true = ets:insert(OpLog, Objects),
     ok.
 
--spec append_to_log(AllReplicas :: [replica_id()],
+-spec append_to_log(AllReplicas :: [all_replica_id()],
                     Key :: key(),
                     Operation :: operation(),
                     CommitVC :: vclock(),

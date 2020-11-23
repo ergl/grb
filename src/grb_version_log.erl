@@ -11,7 +11,7 @@
 -record(state, {
     type :: crdt(),
     base :: grb_crdt:t(),
-    actors :: [replica_id()],
+    actors :: [all_replica_id()],
     snapshot :: {vclock(), grb_crdt:t()},
     size :: non_neg_integer(),
     max_size :: non_neg_integer(),
@@ -30,9 +30,9 @@
 -export([from_list/5]).
 -endif.
 
-%% fixme(borja, dialyzer): Opaqueness breaks in new/3 and more
-
--spec new(crdt(), grb_crdt:t(), [replica_id()], non_neg_integer()) -> t().
+-spec new(crdt(), grb_crdt:t(), [all_replica_id()], non_neg_integer()) -> t().
+%% For some reason, dialyzer things that matching snapshot={_, _} breaks the opaqueness of the clock
+-dialyzer({nowarn_function, new/4}).
 new(Type, Base, Actors, Size) ->
     #state{type=Type,
            base=Base,
@@ -50,7 +50,7 @@ insert(Op, VC, S=#state{size=N, type=?gset, actors=Actors, operations=Operations
     maybe_gc_old_first(S#state{size=N+1, operations=insert_old_first(Op, Actors, VC, Operations)}).
 
 -spec insert_old_first(Op :: operation(),
-                       Actors :: [replica_id()],
+                       Actors :: [all_replica_id()],
                        CommitVC :: vclock(),
                        Operations0 :: [{vclock(), operation()}]) -> Operations :: [{vclock(), operation()}].
 
@@ -59,7 +59,7 @@ insert_old_first(Op, Actors, VC, L) ->
     insert_old_first(Op, Actors, VC, L, []).
 
 -spec insert_old_first(Op :: operation(),
-                       Actors :: [replica_id()],
+                       Actors :: [all_replica_id()],
                        CommitVC :: vclock(),
                        Operations0 :: [{vclock(), operation()}],
                        Acc :: [{vclock(), operation()}]) -> Operations :: [{vclock(), operation()}].
@@ -75,7 +75,7 @@ insert_old_first(Op, Actors, InVC, [{FirstVC, _}=Entry | Rest], Acc) ->
     end.
 
 -spec insert_new_first(Op :: operation(),
-                       Actors :: [replica_id()],
+                       Actors :: [all_replica_id()],
                        CommitVC :: vclock(),
                        Operations0 :: [{vclock(), operation()}]) -> Operations :: [{vclock(), operation()}].
 
@@ -84,7 +84,7 @@ insert_new_first(Op, Actors, VC, L) ->
     insert_new_first(Op, Actors, VC, L, []).
 
 -spec insert_new_first(Op :: operation(),
-                       Actors :: [replica_id()],
+                       Actors :: [all_replica_id()],
                        CommitVC :: vclock(),
                        Operations0 :: [{vclock(), operation()}],
                        Acc :: [{vclock(), operation()}]) -> Operations :: [{vclock(), operation()}].
@@ -107,7 +107,8 @@ maybe_gc_old_first(S=#state{size=N, max_size=M})
 maybe_gc_old_first(S=#state{snapshot=BaseSnapshot, actors=Actors, operations=Ops}) ->
     S#state{size=0, snapshot=compress(Ops, Actors, BaseSnapshot), operations=[]}.
 
--spec compress([{vclock(), operation()}], [replica_id()], {vclock(), grb_crdt:t()}) -> {vclock(), grb_crdt:t()}.
+-spec compress([{vclock(), operation()}], [all_replica_id()], {vclock(), grb_crdt:t()}) -> {vclock(), grb_crdt:t()}.
+-dialyzer({[no_opaque, no_return, no_match], [compress/3, maybe_gc_new_first/1]}).
 compress([], _, Acc) ->
     Acc;
 compress([{VC, Op} | Rest], Actors, {SnapshotVC, Acc}) ->
@@ -122,7 +123,7 @@ maybe_gc_new_first(S=#state{size=N, max_size=M})
 maybe_gc_new_first(S=#state{snapshot={_, Snapshot}, actors=Actors, operations=[{VC, Op} | _]}) ->
     S#state{size=0, snapshot={VC, grb_crdt:apply_op(Op, Actors, VC, Snapshot)}, operations=[]}.
 
--spec snapshot_lower(vclock(), t()) -> grb_crdt:t() | {not_found, grb_crdt:t()}.
+-spec snapshot_lower(vclock(), t()) -> {ok, grb_crdt:t()} | {not_found, grb_crdt:t()}.
 snapshot_lower(VC, S=#state{type=Type, actors=Actors, snapshot={SnapshotVC, Snapshot}, operations=Ops}) ->
     case grb_vclock:lt_at_keys(Actors, VC, SnapshotVC) of
         true ->
@@ -132,17 +133,23 @@ snapshot_lower(VC, S=#state{type=Type, actors=Actors, snapshot={SnapshotVC, Snap
             snapshot_lower(Type, VC, Actors, Snapshot, Ops)
     end.
 
--spec snapshot_lower(crdt(), vclock(), [replica_id()], vclock(), [{vclock(), operation()}]) -> grb_crdt:t().
+-spec snapshot_lower(Type :: crdt(),
+                     VC :: vclock(),
+                     Actors :: [all_replica_id()],
+                     Snapshot :: grb_crdt:t(),
+                     Ops :: [{vclock(), operation()}]) -> {ok, grb_crdt:t()} | {not_found, grb_crdt:t()}.
+
+-dialyzer({no_opaque, snapshot_lower/5}).
 snapshot_lower(?lww, VC, Actors, Snapshot, Ops) ->
      case find_first_lower(Ops, Actors, VC) of
          not_found ->
-             Snapshot;
+             {not_found, Snapshot};
          {OpVC, Op} ->
-             grb_crdt:apply_op(Op, Actors, OpVC, Snapshot)
+             {ok, grb_crdt:apply_op(Op, Actors, OpVC, Snapshot)}
      end;
 
 snapshot_lower(?gset, VC, Actors, Snapshot, Ops) ->
-    snapshot_lower_old_first(VC, Actors, Snapshot, Ops).
+    {ok, snapshot_lower_old_first(VC, Actors, Snapshot, Ops)}.
 
 -spec find_first_lower(Ops :: [{vclock(), operation()}],
                        Actors :: [replica_id()],
@@ -160,10 +167,11 @@ find_first_lower([{OpVC, _}=Entry | Rest], Actors, VC) ->
     end.
 
 -spec snapshot_lower_old_first(VC :: vclock(),
-                               Actors :: [replica_id()],
+                               Actors :: [all_replica_id()],
                                Acc :: grb_crdt:t(),
                                Ops :: [{vclock(), operation()}]) -> grb_crdt:t().
 
+-dialyzer({no_opaque, snapshot_lower_old_first/4}).
 snapshot_lower_old_first(_, _, Acc, []) ->
     Acc;
 
@@ -178,7 +186,7 @@ snapshot_lower_old_first(VC, Actors, Acc, [{OpVC, Op} | Rest]) ->
 
 -ifdef(TEST).
 
--spec from_list(crdt(), grb_crdt:t(), [replica_id()], non_neg_integer(), [{vclock(), operation()}]) -> t().
+-spec from_list(crdt(), grb_crdt:t(), [all_replica_id()], non_neg_integer(), [{vclock(), operation()}]) -> t().
 from_list(Type, Base, Actors, Size, Ops) ->
     from_list_(Ops, new(Type, Base, Actors, Size)).
 
