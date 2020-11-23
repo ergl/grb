@@ -146,6 +146,12 @@ prepare(IndexNode, TxId, ReadSet, Writeset, SnapshotVC, Coord) ->
              Coord :: red_coord_location()) -> ok.
 
 accept(Partition, Ballot, TxId, RS, WS, Vote, PrepareVC, Coord) ->
+    %% For blue transactions, any pending operations are removed during blue commit, since
+    %% it is performed at the replica / partitions where the client originally performed the
+    %% operations. For red commit, however, the client can start the red commit at any
+    %% partition, so we aren't able to prune them. With this, we prune the operations
+    %% for red transactions when we accept them
+    ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
     riak_core_vnode_master:command({Partition, node()},
                                    {accept, Ballot, TxId, RS, WS, Vote, PrepareVC},
                                    Coord,
@@ -253,6 +259,13 @@ handle_command({prepare, TxId, RS, WS, SnapshotVC},
                                      op_log_last_vc_replica=LastRed}) ->
 
     ok = grb_measurements:log_queue_length(?leader_queue_length_stat),
+
+    %% For blue transactions, any pending operations are removed during blue commit, since
+    %% it is performed at the replica / partitions where the client originally performed the
+    %% operations. For red commit, however, the client can start the red commit at any
+    %% partition, so we aren't able to prune them. With this, we prune the operations
+    %% for red transactions when we prepare them
+    ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
 
     {Result, LeaderState} = grb_paxos_state:prepare(TxId, RS, WS, SnapshotVC, LastRed, LeaderState0),
     ?LOG_DEBUG("~p: ~p prepared as ~p, reply to coordinator ~p", [Partition, TxId, Result, Coordinator]),

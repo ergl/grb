@@ -15,9 +15,12 @@
 -export([sanity_check_test/1,
          empty_read_test/1,
          read_your_writes_test/1,
+         read_your_writes_red_test/1,
          propagate_updates_test/1,
          replication_queue_flush_test/1,
          uniform_barrier_flush_test/1,
+         transaction_ops_flush_test/1,
+         abort_ops_flush_test/1,
          known_replicas_test/1,
          advance_clocks_test/1]).
 
@@ -47,10 +50,13 @@ groups() ->
             [sequence],
             [{group, basic_operations}]},
 
-        %% todo(borja, red): Add tests here
         {single_dc_red,
             [sequence, {repeat_until_ok, 100}],
-            []},
+            [
+                read_your_writes_red_test,
+                transaction_ops_flush_test,
+                abort_ops_flush_test
+            ]},
 
         {multi_dc,
             [sequence],
@@ -58,14 +64,19 @@ groups() ->
 
         {replication,
             [sequence, {repeat_until_ok, 100}],
-            [propagate_updates_test, replication_queue_flush_test, uniform_barrier_flush_test]},
+            [propagate_updates_test,
+             replication_queue_flush_test,
+             uniform_barrier_flush_test,
+             transaction_ops_flush_test]},
 
         {all_tests,
             [sequence],
-            [ {group, single_dc},
-              %% {group, single_dc_red},
-              {group, multi_dc},
-              {group, replication}] }
+            [
+                {group, single_dc},
+                {group, single_dc_red},
+                {group, multi_dc},
+                {group, replication}
+            ]}
     ].
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -82,7 +93,15 @@ init_per_group(single_dc, C) ->
     grb_utils:init_single_dc(?MODULE, [dev1, dev2], C);
 
 init_per_group(single_dc_red, C) ->
-    grb_utils:init_single_dc(?MODULE, [dev1, dev2], C);
+    C1 = grb_utils:init_single_dc(?MODULE, [dev1, dev2], C),
+    ClusterMap = ?config(cluster_info, C1),
+    Replica = random_replica(ClusterMap),
+    Tx = tx_1,
+    Key = ?random_key,
+    Val = ?random_val,
+    {Partition, Node} = key_location(Key, Replica, ClusterMap),
+    {ok, CVC} = update_red_transaction(Node, Partition, Tx, Key, grb_crdt:make_op(grb_lww, Val), #{}),
+    [ {propagate_info, {Tx, Key, Val, CVC}} | C1 ];
 
 init_per_group(multi_dc, C) ->
     grb_utils:init_multi_dc(?MODULE, [[clusterdev1, clusterdev2], [clusterdev3, clusterdev4]], C);
@@ -91,11 +110,12 @@ init_per_group(replication, C0) ->
     C1 = grb_utils:init_multi_dc(?MODULE, [[clusterdev1, clusterdev2], [clusterdev3, clusterdev4]], C0),
     ClusterMap = ?config(cluster_info, C1),
     Replica = random_replica(ClusterMap),
+    Tx = tx_1,
     Key = ?random_key,
     Val = ?random_val,
     {Partition, Node} = key_location(Key, Replica, ClusterMap),
-    CVC = update_transaction(Replica, Node, Partition, tx_1, Key, grb_crdt:make_op(grb_lww, Val), #{}),
-    [ {propagate_info, {Key, Val, CVC}} | C1 ];
+    CVC = update_transaction(Replica, Node, Partition, Tx, Key, grb_crdt:make_op(grb_lww, Val), #{}),
+    [ {propagate_info, {Tx, Key, Val, CVC}} | C1 ];
 
 init_per_group(_, C) ->
     C.
@@ -154,10 +174,19 @@ read_your_writes_test(C) ->
     CVC = update_transaction(Replica, Node, Partition, tx_1, Key, grb_crdt:make_op(grb_lww, Val), #{}),
     {Val, _} = read_only_transaction(Node, Partition, tx_2, Key, grb_lww, CVC).
 
+read_your_writes_red_test(C) ->
+    ClusterMap = ?config(cluster_info, C),
+    Replica = random_replica(ClusterMap),
+    Key = ?random_key,
+    Val = ?random_val,
+    {Partition, Node} = key_location(Key, Replica, ClusterMap),
+    {ok, CVC} = update_red_transaction(Node, Partition, tx_1, Key, grb_crdt:make_op(grb_lww, Val), #{}),
+    {Val, _} = read_only_transaction(Node, Partition, tx_2, Key, grb_lww, CVC).
+
 -ifndef(BASIC_REPLICATION).
 propagate_updates_test(C) ->
     ClusterMap = ?config(cluster_info, C),
-    {Key, Val, CommitVC} = ?config(propagate_info, C),
+    {_, Key, Val, CommitVC} = ?config(propagate_info, C),
     foreach_replica(ClusterMap, fun(Replica) ->
         {Partition, Node} = key_location(Key, Replica, ClusterMap),
         ok = uniform_barrier(Replica, Node, Partition, CommitVC),
@@ -173,7 +202,7 @@ propagate_updates_test(_C) ->
 
 replication_queue_flush_test(C) ->
     ClusterMap = ?config(cluster_info, C),
-    {Key, _, _} = ?config(propagate_info, C),
+    {_, Key, _, _} = ?config(propagate_info, C),
     ok = foreach_replica(ClusterMap, fun(RemoteReplica) ->
         {Partition, Node} = key_location(Key, RemoteReplica, ClusterMap),
         CommitLog = erpc:call(Node, grb_propagation_vnode, get_commit_log, [Partition]),
@@ -183,7 +212,7 @@ replication_queue_flush_test(C) ->
 
 uniform_barrier_flush_test(C) ->
     ClusterMap = ?config(cluster_info, C),
-    {Key, _, CommitVC} = ?config(propagate_info, C),
+    {_, Key, _, CommitVC} = ?config(propagate_info, C),
     foreach_replica(ClusterMap, fun(Replica) ->
         {Partition, Node} = key_location(Key, Replica, ClusterMap),
         ok = uniform_barrier(Replica, Node, Partition, CommitVC),
@@ -191,6 +220,44 @@ uniform_barrier_flush_test(C) ->
         [] = orddict:to_list(Barriers),
         ok
     end).
+
+transaction_ops_flush_test(C) ->
+    ClusterMap = ?config(cluster_info, C),
+    {TxId, Key, _, _} = ?config(propagate_info, C),
+    foreach_replica(ClusterMap, fun(Replica) ->
+        {Partition, Node} = key_location(Key, Replica, ClusterMap),
+        0 = erpc:call(Node, grb_oplog_vnode, transaction_ops, [Partition, TxId]),
+        ok
+    end).
+
+abort_ops_flush_test(C) ->
+    ClusterMap = ?config(cluster_info, C),
+    Replica = random_replica(ClusterMap),
+    Key = ?random_key,
+    {Partition, Node} = key_location(Key, Replica, ClusterMap),
+
+    TxId1 = tx_1,
+    Val1 = ?random_val,
+    Operation1 = grb_crdt:make_op(grb_lww, Val1),
+
+    TxId2 = tx_2,
+    Val2 = ?random_val,
+    Operation2 = grb_crdt:make_op(grb_lww, Val2),
+
+    SVC1 = erpc:call(Node, grb, start_transaction, [Partition, #{}]),
+    SVC2 = erpc:call(Node, grb, start_transaction, [Partition, #{}]),
+
+    ok = erpc:call(Node, grb, update, [Partition, TxId1, Key, Operation1]),
+    {ok, _} = erpc:call(Node, grb, sync_key_vsn, [Partition, TxId1, Key, grb_crdt:op_type(Operation1), SVC1]),
+
+    ok = erpc:call(Node, grb, update, [Partition, TxId2, Key, Operation2]),
+    {ok, _} = erpc:call(Node, grb, sync_key_vsn, [Partition, TxId1, Key, grb_crdt:op_type(Operation2), SVC2]),
+
+    {ok, _} = erpc:call(Node, grb, sync_commit_red, [Partition, TxId1, SVC1, [{Partition, [Key], #{Key => Operation1}}]]),
+    {abort, _} = erpc:call(Node, grb, sync_commit_red, [Partition, TxId2, SVC2, [{Partition, [Key], #{Key => Operation2}}]]),
+
+    0 = erpc:call(Node, grb_oplog_vnode, transaction_ops, [Partition, TxId1]),
+    0 = erpc:call(Node, grb_oplog_vnode, transaction_ops, [Partition, TxId2]).
 
 known_replicas_test(C) ->
     ClusterMap = ?config(cluster_info, C),
@@ -301,6 +368,13 @@ update_transaction(Replica, Node, Partition, TxId, Key, Operation, Clock) ->
     CVC = SVC#{Replica => PT},
     ok = erpc:call(Node, grb, decide_blue, [Partition, TxId, CVC]),
     CVC.
+
+-spec update_red_transaction(node(), partition_id(), term(), key(), operation(), vclock()) -> {ok, vclock()} | {abort, term()}.
+update_red_transaction(Node, Partition, TxId, Key, Operation, Clock) ->
+    SVC = erpc:call(Node, grb, start_transaction, [Partition, Clock]),
+    ok = erpc:call(Node, grb, update, [Partition, TxId, Key, Operation]),
+    {ok, _} = erpc:call(Node, grb, sync_key_vsn, [Partition, TxId, Key, grb_crdt:op_type(Operation), SVC]),
+    erpc:call(Node, grb, sync_commit_red, [Partition, TxId, SVC, [{Partition, [Key], #{Key => Operation}}]]).
 
 -spec random_replica(#{}) -> replica_id().
 random_replica(ClusterMap) ->

@@ -5,6 +5,7 @@
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
+-export([transaction_ops/2]).
 -endif.
 
 %% Management API
@@ -15,7 +16,8 @@
 
 %% ETS table API
 -export([op_log_table/1,
-         last_vc_table/1]).
+         last_vc_table/1,
+         clean_transaction_ops/2]).
 
 %% Public API
 -export([get_key_snapshot/5,
@@ -163,6 +165,21 @@ last_vc_table(Partition) ->
 -spec prepared_blue_table(partition_id()) -> cache_id().
 prepared_blue_table(Partition) ->
     persistent_term:get({?MODULE, Partition, ?PREPARED_TABLE}).
+
+-ifdef(TEST).
+-spec transaction_ops(partition_id(), term()) -> non_neg_integer().
+transaction_ops(Partition, TxId) ->
+    ets:select_count(pending_ops_table(Partition), [{ {{TxId, '_'}, '_'}, [], [true] }]).
+-endif.
+
+-spec clean_transaction_ops(partition_id(), term()) -> ok.
+clean_transaction_ops(Partition, TxId) ->
+    clean_transaction_ops_with_table(pending_ops_table(Partition), TxId).
+
+-spec clean_transaction_ops_with_table(cache_id(), term()) -> ok.
+clean_transaction_ops_with_table(PendingOps, TxId) ->
+    _ = ets:select_delete(PendingOps, [{ {{TxId, '_'}, '_'}, [], [true] }]),
+    ok.
 
 %%%===================================================================
 %%% API
@@ -427,7 +444,6 @@ handle_command({handle_red_tx, WS, VC}, _From, S=#state{all_replicas=AllReplicas
                                                         op_log_size=LogSize,
                                                         op_last_vc=LastVC}) ->
 
-    %% todo(borja, crdts): Need TxId here, call clean_transaction_ops/2
     ok = append_red_writeset(AllReplicas, WS, VC, OperationLog, LogSize, LastVC),
     {noreply, S};
 
@@ -538,11 +554,6 @@ take_transaction_writeset(PendingOps, TxId) ->
         true = ets:delete(PendingOps, {TxId, Key}),
         WS#{Key => Op}
     end, #{}, Tuples).
-
-%%-spec clean_transaction_ops(cache_id(), term()) -> ok.
-%%clean_transaction_ops(PendingOps, TxId) ->
-%%    _ = ets:select_delete(PendingOps, [{ {{TxId, '$1'}, '$2'}, [], [true] }]),
-%%    ok.
 
 -spec remove_from_prepared(cache_id(), term()) -> ok.
 remove_from_prepared(PreparedBlue, TxId) ->

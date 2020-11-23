@@ -21,7 +21,8 @@
 
 -ifdef(TEST).
 -export([sync_uniform_barrier/2,
-         sync_key_vsn/5]).
+         sync_key_vsn/5,
+         sync_commit_red/4]).
 -endif.
 
 %% Called by rel
@@ -190,5 +191,14 @@ sync_key_vsn(Partition, TxId, Key, Type, VC) ->
                 {'$grb_promise_resolve', Result, Ref} ->
                     Result
             end
+    end.
+
+-spec sync_commit_red(partition_id(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
+sync_commit_red(Partition, TxId, VC, Prepares) ->
+    Ref = make_ref(),
+    ok = grb:commit_red(grb_promise:new(self(), Ref), Partition, TxId, VC, Prepares),
+    receive
+        {'$grb_promise_resolve', Result, Ref} ->
+            Result
     end.
 -endif.
