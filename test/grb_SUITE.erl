@@ -27,7 +27,7 @@
     end, maps:to_list(Map))).
 
 -define(random_key, crypto:strong_rand_bytes(64)).
--define(random_val, crypto:strong_rand_bytes(256)).
+-define(random_val, crypto:strong_rand_bytes(8)).
 
 -define(repeat_test_limit, 100).
 
