@@ -180,17 +180,12 @@ sync_uniform_barrier(Partition, CVC) ->
 
 -spec sync_key_vsn(partition_id(), term(), key(), crdt(), vclock()) -> {ok, snapshot()}.
 sync_key_vsn(Partition, TxId, Key, Type, VC) ->
-    case partition_ready(Partition, VC) of
-        true ->
-            grb_oplog_vnode:get_key_snapshot(Partition, TxId, Key, Type, VC);
-
-        false ->
-            Ref = make_ref(),
-            async_key_snapshot(grb_promise:new(self(), Ref), Partition, TxId, Key, Type, VC),
-            receive
-                {'$grb_promise_resolve', Result, Ref} ->
-                    Result
-            end
+    ok = read_snapshot_prologue(Partition, VC),
+    Ref = make_ref(),
+    async_key_snapshot(grb_promise:new(self(), Ref), Partition, TxId, Key, Type, VC),
+    receive
+        {'$grb_promise_resolve', Result, Ref} ->
+            Result
     end.
 
 -spec sync_commit_red(partition_id(), term(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
