@@ -26,13 +26,11 @@ xref:
 	- $(REBAR) xref skip_deps=true
 	- $(REBAR) as basic_replication xref skip_deps=true
 	- $(REBAR) as uniform_blue xref skip_deps=true
-	- $(REBAR) as enable_blue_conflict xref skip_deps=true
 
 dialyzer:
 	- $(REBAR) dialyzer
 	- $(REBAR) as basic_replication dialyzer
 	- $(REBAR) as uniform_blue dialyzer
-	- $(REBAR) as enable_blue_conflict dialyzer
 
 debug:
 	$(REBAR) as debug_log compile
@@ -83,7 +81,6 @@ test:
 	${REBAR} eunit skip_deps=true
 	${REBAR} as basic_replication eunit skip_deps=true
 	${REBAR} as uniform_blue eunit skip_deps=true
-	${REBAR} as enable_blue_conflict eunit skip_deps=true
 
 ct:
 	$(REBAR) ct
@@ -91,13 +88,11 @@ ct:
 full_ct: ct
 	$(REBAR) as basic_replication ct
 	$(REBAR) as uniform_blue ct
-	${REBAR} as enable_blue_conflict ct
 
 ct_clean:
 	rm -rf $(BASEDIR)/_build/test/logs
 	rm -rf $(BASEDIR)/_build/basic_replication+test/logs
 	rm -rf $(BASEDIR)/_build/uniform_blue+test/logs
-	rm -rf $(BASEDIR)/_build/enable_blue_conflict+test/logs
 
 dev1-rel:
 	$(REBAR) as $(DEV_PROFILE) release -n grb_local1

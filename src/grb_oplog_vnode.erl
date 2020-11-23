@@ -10,7 +10,8 @@
 %% Management API
 -export([stop_blue_hb_timer_all/0,
          start_readers_all/0,
-         stop_readers_all/0]).
+         stop_readers_all/0,
+         learn_all_replicas_all/0]).
 
 %% ETS table API
 -export([op_log_table/1,
@@ -65,6 +66,7 @@
 
 -record(state, {
     partition :: partition_id(),
+    all_replicas :: [replica_id()],
 
     %% number of gen_servers replicating this vnode state
     replicas_n :: non_neg_integer(),
@@ -119,6 +121,24 @@ start_readers_all() ->
 stop_readers_all() ->
     [try
         riak_core_vnode_master:command(N, stop_readers, ?master)
+     catch
+         _:_ -> ok
+     end  || N <- grb_dc_utils:get_index_nodes() ],
+    ok.
+
+-spec learn_all_replicas_all() -> ok.
+-ifdef(BLUE_KNOWN_VC).
+learn_all_replicas_all() ->
+    learn_all_replicas_all(grb_dc_manager:all_replicas()).
+-else.
+learn_all_replicas_all() ->
+    learn_all_replicas_all([?RED_REPLICA | grb_dc_manager:all_replicas()]).
+-endif.
+
+-spec learn_all_replicas_all([replica_id()]) -> ok.
+learn_all_replicas_all(Replicas) ->
+    [try
+        riak_core_vnode_master:command(N, {learn_all_replicas, Replicas}, ?master)
      catch
          _:_ -> ok
      end  || N <- grb_dc_utils:get_index_nodes() ],
@@ -313,6 +333,7 @@ init([Partition]) ->
     ok = persistent_term:put({?MODULE, Partition, ?PREPARED_TABLE}, PreparedBlue),
 
     State = #state{partition = Partition,
+                   all_replicas=[], %% ok to do this, we'll overwrite it later
                    replicas_n=NumReaders,
                    prepared_blue=PreparedBlue,
                    blue_tick_interval=BlueTickInterval,
@@ -384,6 +405,9 @@ handle_command(readers_ready, _From, S = #state{partition=P, replicas_n=N}) ->
     Result = grb_oplog_reader:readers_ready(P, N),
     {reply, Result, S};
 
+handle_command({learn_all_replicas, Replicas}, _From, S) ->
+    {noreply, S#state{all_replicas=Replicas}};
+
 handle_command({decide_blue, TxId, VC}, _From, State) ->
     ok = decide_blue_internal(TxId, VC, State),
     {reply, ok, State};
@@ -396,11 +420,13 @@ handle_command({handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4}, _Fro
     ok = handle_remote_tx_array_internal(SourceReplica, Tx1, Tx2, Tx3, Tx4, State),
     {noreply, State};
 
-handle_command({handle_red_tx, WS, VC}, _From, S=#state{op_log=OperationLog,
+handle_command({handle_red_tx, WS, VC}, _From, S=#state{all_replicas=AllReplicas,
+                                                        op_log=OperationLog,
                                                         op_log_size=LogSize,
                                                         op_last_vc=LastVC}) ->
+
     %% todo(borja, crdts): Need TxId here, call clean_transaction_ops/2
-    ok = update_partition_state(?RED_REPLICA, WS, VC, OperationLog, LogSize, LastVC),
+    ok = append_red_writeset(AllReplicas, WS, VC, OperationLog, LogSize, LastVC),
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->
@@ -423,21 +449,21 @@ insert_prepared(Partition, TxId, PrepareTime) ->
 
 -spec handle_remote_tx_internal(replica_id(), #{}, grb_time:ts(), vclock(), state()) -> ok.
 -ifdef(NO_REMOTE_APPEND).
-handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{partition=Partition,
-                                                                       op_log=OperationLog,
-                                                                       op_log_size=LogSize,
-                                                                       op_last_vc=LastVC}) ->
-    ok = update_partition_state(WS, VC, OperationLog, LogSize, LastVC),
+handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{all_replicas=AllReplicas,
+                                                                    partition=Partition,
+                                                                    op_log=OperationLog,
+                                                                    op_log_size=LogSize}) ->
+    ok = append_writeset(AllReplicas, WS, VC, OperationLog, LogSize),
     ok = grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, CommitTime),
     ok.
 
 -else.
 
-handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{partition=Partition,
-                                                                          op_log=OperationLog,
-                                                                          op_log_size=LogSize,
-                                                                          op_last_vc=LastVC}) ->
-    ok = update_partition_state(WS, VC, OperationLog, LogSize, LastVC),
+handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{all_replicas=AllReplicas,
+                                                                    partition=Partition,
+                                                                    op_log=OperationLog,
+                                                                    op_log_size=LogSize}) ->
+    ok = append_writeset(AllReplicas, WS, VC, OperationLog, LogSize),
     ok = grb_propagation_vnode:append_remote_blue_commit(SourceReplica, Partition, CommitTime, WS, VC),
     ok.
 
@@ -447,24 +473,24 @@ handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{partition=Pa
 -ifdef(NO_REMOTE_APPEND).
 
 handle_remote_tx_array_internal(SourceReplica, {WS1, VC1}, {WS2, VC2}, {WS3, VC3}, {WS4, VC4},
-        #state{partition=Partition, op_log=OperationLog, op_log_size=LogSize, op_last_vc=LastVC}) ->
+        #state{all_replicas=AllReplicas, partition=Partition, op_log=OperationLog, op_log_size=LogSize}) ->
 
-    ok = update_partition_state(WS1, VC1, OperationLog, LogSize, LastVC),
-    ok = update_partition_state(WS2, VC2, OperationLog, LogSize, LastVC),
-    ok = update_partition_state(WS3, VC3, OperationLog, LogSize, LastVC),
-    ok = update_partition_state(WS4, VC4, OperationLog, LogSize, LastVC),
+    ok = append_writeset(AllReplicas, WS1, VC1, OperationLog, LogSize),
+    ok = append_writeset(AllReplicas, WS2, VC2, OperationLog, LogSize),
+    ok = append_writeset(AllReplicas, WS3, VC3, OperationLog, LogSize),
+    ok = append_writeset(AllReplicas, WS4, VC4, OperationLog, LogSize),
     ok = grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, grb_vclock:get_time(SourceReplica, VC4)),
     ok.
 
 -else.
 
 handle_remote_tx_array_internal(SourceReplica, {WS1, VC1}, {WS2, VC2}, {WS3, VC3}, {WS4, VC4},
-        #state{partition=Partition, op_log=OperationLog, op_log_size=LogSize, op_last_vc=LastVC}) ->
+        #state{all_replicas=AllReplicas, partition=Partition, op_log=OperationLog, op_log_size=LogSize}) ->
 
-    ok = update_partition_state(WS1, VC1, OperationLog, LogSize, LastVC),
-    ok = update_partition_state(WS2, VC2, OperationLog, LogSize, LastVC),
-    ok = update_partition_state(WS3, VC3, OperationLog, LogSize, LastVC),
-    ok = update_partition_state(WS4, VC4, OperationLog, LogSize, LastVC),
+    ok = append_writeset(AllReplicas, WS1, VC1, OperationLog, LogSize),
+    ok = append_writeset(AllReplicas, WS2, VC2, OperationLog, LogSize),
+    ok = append_writeset(AllReplicas, WS3, VC3, OperationLog, LogSize),
+    ok = append_writeset(AllReplicas, WS4, VC4, OperationLog, LogSize),
 
     ok = grb_propagation_vnode:append_remote_blue_commit_no_hb(SourceReplica, Partition, WS1, VC1),
     ok = grb_propagation_vnode:append_remote_blue_commit_no_hb(SourceReplica, Partition, WS2, VC2),
@@ -481,10 +507,10 @@ handle_remote_tx_array_internal(SourceReplica, {WS1, VC1}, {WS2, VC2}, {WS3, VC3
 -spec decide_blue_internal(term(), vclock(), state()) -> ok.
 %% Caused by get_prepared_writeset/2
 -dialyzer({no_return, decide_blue_internal/3}).
-decide_blue_internal(TxId, VC, #state{partition=SelfPartition,
+decide_blue_internal(TxId, VC, #state{all_replicas=AllReplicas,
+                                      partition=SelfPartition,
                                       op_log=OpLog,
                                       op_log_size=LogSize,
-                                      op_last_vc=LastVC,
                                       pending_client_ops=PendingOps,
                                       prepared_blue=PreparedBlue,
                                       should_append_commit=ShouldAppend}) ->
@@ -492,7 +518,7 @@ decide_blue_internal(TxId, VC, #state{partition=SelfPartition,
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
     WS = take_transaction_writeset(PendingOps, TxId),
-    ok = update_partition_state(WS, VC, OpLog, LogSize, LastVC),
+    ok = append_writeset(AllReplicas, WS, VC, OpLog, LogSize),
     ok = remove_from_prepared(PreparedBlue, TxId),
     KnownTime = compute_new_known_time(PreparedBlue),
     case ShouldAppend of
@@ -521,79 +547,35 @@ remove_from_prepared(PreparedBlue, TxId) ->
     _ = ets:select_delete(PreparedBlue, [{ {{'_', TxId}}, [], [true] }]),
     ok.
 
--spec update_partition_state(WS :: writeset(),
-                             CommitVC :: vclock(),
-                             OpLog :: op_log(),
-                             DefaultSize :: non_neg_integer(),
-                             LastVC :: last_vc()) -> ok.
-
-update_partition_state(WS, CommitVC, OpLog, DefaultSize, LastVC) ->
-    update_partition_state(blue, WS, CommitVC, OpLog, DefaultSize, LastVC).
-
--spec update_partition_state(TxType :: transaction_type(),
-                             WS :: writeset(),
-                             CommitVC :: vclock(),
-                             OpLog :: op_log(),
-                             DefaultSize :: non_neg_integer(),
-                             LastVC :: last_vc()) -> ok.
-
--ifdef(BLUE_KNOWN_VC).
-update_partition_state(_TxType, WS, CommitVC, OpLog, DefaultSize, _LastVC) ->
-    AllReplicas = grb_dc_manager:all_replicas(),
-    Objects = maps:fold(fun(Key, Operation, Acc) ->
-        Log = append_to_log(AllReplicas, Key, Operation, CommitVC, OpLog, DefaultSize),
-        [{Key, Log} | Acc]
-    end, [], WS),
-    true = ets:insert(OpLog, Objects),
-    ok.
--else.
-update_partition_state(TxType, WS, CommitVC, OpLog, DefaultSize, LastVC) ->
-    AllReplicas = [?RED_REPLICA | grb_dc_manager:all_replicas()],
-    Objects = maps:fold(fun(Key, Operation, Acc) ->
-        Log = append_to_log(AllReplicas, Key, Operation, CommitVC, OpLog, DefaultSize),
-        ok = update_last_vc(TxType, Key, AllReplicas, CommitVC, LastVC),
-        [{Key, Log} | Acc]
-    end, [], WS),
-    true = ets:insert(OpLog, Objects),
-    ok.
-
-%% LastVC contains, for each key, its max commit vector.
-%% Although maxing two vectors on each transaction could be slow, this only happens on red transactions,
-%% which are already slow due to cross-dc 2PC. Adding a little bit of time doing this max shouldn't add
-%% too much overhead on top.
--spec update_last_vc(TxType :: transaction_type(),
-                      Key :: key(),
-                      AtReplicas :: [replica_id()],
+-spec append_writeset(AtReplicas :: [replica_id()],
+                      WS :: writeset(),
                       CommitVC :: vclock(),
-                      LastVC :: last_vc()) -> ok.
+                      OpLog :: op_log(),
+                      DefaultSize :: non_neg_integer()) -> ok.
 
-%% fixme(borja): Remove this profile
--ifndef('RED_BLUE_CONFLICT').
-update_last_vc(blue, _, _, _, _) ->
-    ok;
-update_last_vc(red, Key, AtReplicas, CommitVC, LastVC) ->
-    update_last_vc_log(Key, AtReplicas, CommitVC, LastVC).
--else.
-update_last_vc(_TxType, Key, AtReplicas, CommitVC, LastVC) ->
-    update_last_vc_log(Key, AtReplicas, CommitVC, LastVC).
--endif.
-
--spec update_last_vc_log(Key :: key(),
-                         AtReplicas :: [replica_id()],
-                         CommitVC :: vclock(),
-                         LastVC :: last_vc()) -> ok.
-
-update_last_vc_log(Key, AtReplicas, CommitVC, LastVC) ->
-    case ets:lookup(LastVC, Key) of
-        [{Key, LastCommitVC}] ->
-            true = ets:update_element(LastVC, Key,
-                                      {2, grb_vclock:max_at_keys(AtReplicas, LastCommitVC, CommitVC)});
-        [] ->
-            true = ets:insert(LastVC, {Key, CommitVC})
-    end,
+append_writeset(AtReplicas, WS, CommitVC, OpLog, DefaultSize) ->
+    Objects = maps:fold(fun(Key, Operation, Acc) ->
+        Log = append_to_log(AtReplicas, Key, Operation, CommitVC, OpLog, DefaultSize),
+        [{Key, Log} | Acc]
+    end, [], WS),
+    true = ets:insert(OpLog, Objects),
     ok.
 
--endif.
+-spec append_red_writeset(AtReplicas :: [replica_id()],
+                          WS :: writeset(),
+                          CommitVC :: vclock(),
+                          OpLog :: op_log(),
+                          DefaultSize :: non_neg_integer(),
+                          LastVC :: last_vc()) -> ok.
+
+append_red_writeset(AtReplicas, WS, CommitVC, OpLog, DefaultSize, LastVC) ->
+    Objects = maps:fold(fun(Key, Operation, Acc) ->
+        Log = append_to_log(AtReplicas, Key, Operation, CommitVC, OpLog, DefaultSize),
+        ok = update_last_vc(Key, AtReplicas, CommitVC, LastVC),
+        [{Key, Log} | Acc]
+    end, [], WS),
+    true = ets:insert(OpLog, Objects),
+    ok.
 
 -spec append_to_log(AllReplicas :: [replica_id()],
                     Key :: key(),
@@ -612,6 +594,27 @@ append_to_log(AllReplicas, Key, Operation, CommitVC, OpLog, Size) ->
             grb_version_log:new(Type, TypeBase, AllReplicas, Size)
     end,
     grb_version_log:insert(Operation, CommitVC, Log).
+
+
+%% LastVC contains, for each key, its max commit vector.
+%% Although maxing two vectors on each transaction could be slow, this only happens on red transactions,
+%% which are already slow due to cross-dc 2PC. Adding a little bit of time doing this max shouldn't add
+%% too much overhead on top.
+-spec update_last_vc(Key :: key(),
+                     AtReplicas :: [replica_id()],
+                     CommitVC :: vclock(),
+                     LastVC :: last_vc()) -> ok.
+
+%% todo(borja, rubis): Annotate with procedure name for conflict detection
+update_last_vc(Key, AtReplicas, CommitVC, LastVC) ->
+    case ets:lookup(LastVC, Key) of
+        [{Key, LastCommitVC}] ->
+            true = ets:update_element(LastVC, Key,
+                                      {2, grb_vclock:max_at_keys(AtReplicas, LastCommitVC, CommitVC)});
+        [] ->
+            true = ets:insert(LastVC, {Key, CommitVC})
+    end,
+    ok.
 
 -spec compute_new_known_time(cache_id()) -> grb_time:ts().
 compute_new_known_time(PreparedBlue) ->

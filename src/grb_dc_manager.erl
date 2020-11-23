@@ -179,6 +179,8 @@ single_replica_processes() ->
     Res0 = grb_dc_utils:bcast_vnode_sync(grb_oplog_vnode_master, disable_blue_append),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
 
+    ok = grb_oplog_vnode:learn_all_replicas_all(),
+
     SingleDCGroups = [[replica_id()]],
     Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, {learn_dc_groups, SingleDCGroups}),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
@@ -198,6 +200,9 @@ start_propagation_processes() ->
 
     Res0 = erpc:multicall(LocalNodes, ?MODULE, persist_replica_info, []),
     ok = lists:foreach(fun({ok, ok}) -> ok end, Res0),
+
+    %% Tell oplog vnode to learn about all replicas
+    ok = grb_oplog_vnode:learn_all_replicas_all(),
 
     %% Important, this is the same at all cluster nodes
     MyReplicaId = replica_id(),
