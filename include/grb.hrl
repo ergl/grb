@@ -19,7 +19,7 @@
 -type key() :: binary().
 -type snapshot() :: term().
 -type crdt() :: grb_crdt:crdt().
--type operation() :: grb_lww:op() | grb_gset:op().
+-type operation() :: grb_crdt:operation().
 
 -type readset() :: [key()].
 -type writeset() :: #{key() => operation()}.

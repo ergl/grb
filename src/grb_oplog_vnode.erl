@@ -607,8 +607,9 @@ append_to_log(AllReplicas, Key, Operation, CommitVC, OpLog, Size) ->
         [{Key, PrevLog}] ->
             PrevLog;
         [] ->
-            TypeBase = grb_crdt:new(grb_crdt:op_type(Operation)),
-            grb_version_log:new(TypeBase, AllReplicas, Size)
+            Type = grb_crdt:op_type(Operation),
+            TypeBase = grb_crdt:new(Type),
+            grb_version_log:new(Type, TypeBase, AllReplicas, Size)
     end,
     grb_version_log:insert(Operation, CommitVC, Log).
 
