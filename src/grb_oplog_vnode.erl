@@ -523,8 +523,6 @@ handle_remote_tx_array_internal(SourceReplica, {WS1, VC1}, {WS2, VC2}, {WS3, VC3
 -endif.
 
 -spec decide_blue_internal(term(), vclock(), state()) -> ok.
-%% Caused by get_prepared_writeset/2
--dialyzer({no_return, decide_blue_internal/3}).
 decide_blue_internal(TxId, VC, #state{all_replicas=AllReplicas,
                                       partition=SelfPartition,
                                       op_log=OpLog,
