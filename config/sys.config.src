@@ -107,6 +107,15 @@
 
     %% How often do we prune our local decidedRed?
     %% Set this value to 0 to disable it
-    {red_prune_interval, ${RED_PRUNE_INTERVAL}}
+    {red_prune_interval, ${RED_PRUNE_INTERVAL}},
+
+    %% Conflicts file for red transactions.
+    {red_conflicts_config, #{
+        <<"default">> => <<"default">>,
+        <<"rubis/registerUser">> => <<"rubis/registerUser">>,
+        <<"rubis/storeBuyNow">> => <<"rubis/storeBuyNow">>,
+        <<"rubis/placeBid">> => <<"rubis/closeAuction">>,
+        <<"rubis/closeAuction">> => <<"rubis/placeBid">>
+    }}
   ]}
 ].

@@ -73,7 +73,7 @@
     synod_state = undefined :: grb_paxos_state:t() | undefined,
 
     %% conflict information, who conflicts with whom
-    conflict_relations = #{} :: conflict_relations(),
+    conflict_relations :: conflict_relations(),
 
     %% a buffer of outstanding decision messages
     %% If we receive a DECIDE message from the coordinator before we receive
@@ -203,13 +203,17 @@ init([Partition]) ->
     {ok, DeliverInterval} = application:get_env(grb, red_delivery_interval),
     PruningInterval = application:get_env(grb, red_prune_interval, 0),
 
+    %% conflict information can be overwritten by calling grb:put_conflicts/1
+    Conflicts = application:get_env(grb, red_conflicts_config, #{}),
+
     %% don't care about setting bad values, we will overwrite it
     State = #state{partition=Partition,
                    deliver_interval=DeliverInterval,
                    decision_retry_interval=RetryInterval,
                    prune_interval=PruningInterval,
                    op_log_last_vc_replica=undefined,
-                   synod_state=undefined},
+                   synod_state=undefined,
+                   conflict_relations=Conflicts},
     {ok, State}.
 
 terminate(_Reason, #state{synod_state=undefined}) ->
