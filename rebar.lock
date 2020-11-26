@@ -6,7 +6,7 @@
   0},
  {<<"pvc_types">>,
   {git,"https://github.com/ergl/pvc_types.git",
-       {ref,"03cf0c4b5a7addbe476ea15e3230e5e2e5af8bf6"}},
+       {ref,"4c7e5b7512d44c6d99651707417203931b54cdab"}},
   0},
  {<<"ranch">>,{pkg,<<"ranch">>,<<"1.7.1">>},0},
  {<<"recon">>,{pkg,<<"recon">>,<<"2.5.1">>},0},
