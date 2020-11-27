@@ -9,6 +9,7 @@
 %% API for applications
 -export([connect/0,
          load/1,
+         put_direct/2,
          put_conflicts/1,
          uniform_barrier/3,
          start_transaction/2,
@@ -69,6 +70,10 @@ load(Size) ->
         end
     end, Res1),
     ok.
+
+-spec put_direct(partition_id(), writeset()) -> ok.
+put_direct(Partition, WS) ->
+    grb_oplog_vnode:put_direct(Partition, WS).
 
 -spec put_conflicts(conflict_relations()) -> ok.
 put_conflicts(Conflicts) ->

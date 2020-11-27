@@ -144,6 +144,14 @@ handle_request('OpRequest', Args, Context, State) ->
     } = Args,
     try_read(Partition, TxId, Key, Type, ReadAgain, SnapshotVC, Context, State);
 
+handle_request('OpRequestNode', _Args = #{reads := _Reads}, Context, State) ->
+    %% FIXME(borja, crdts): Parallel read
+    reply_to_client([], Context, State);
+
+handle_request('OpRequestNode', _Args = #{operations := _Ops}, Context, State) ->
+    %% FIXME(borja, crdts): Parallel update
+    reply_to_client([], Context, State);
+
 handle_request('PrepareBlueNode', Args, Context, State) ->
     #{transaction_id := TxId, snapshot_vc := VC, partitions := Partitions} = Args,
     Votes = [ {ok, P, grb:prepare_blue(P, TxId, VC)} || P <- Partitions],
@@ -174,7 +182,10 @@ handle_request('PutConflictRelations', #{payload := Conflicts}, Context, State) 
     reply_to_client(grb:put_conflicts(Conflicts), Context, State);
 
 handle_request('Load', #{bin_size := Size}, Context, State) ->
-    reply_to_client(grb:load(Size), Context, State).
+    reply_to_client(grb:load(Size), Context, State);
+
+handle_request('PutDirect', #{partition := Partition, payload := WS}, Context, State) ->
+    reply_to_client(grb:put_direct(Partition, WS), Context, State).
 
 -spec try_read(partition_id(), term(), key(), crdt(), boolean(), vclock(), proto_context(), state()) -> ok.
 try_read(Partition, TxId, Key, Type, true, SnapshotVC, Context, State) ->

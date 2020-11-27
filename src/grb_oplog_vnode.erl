@@ -14,6 +14,9 @@
          stop_readers_all/0,
          learn_all_replicas_all/0]).
 
+%% Unsafe load API
+-export([put_direct/2]).
+
 %% ETS table API
 -export([op_log_table/1,
          last_vc_table/1,
@@ -174,6 +177,24 @@ clean_transaction_ops_with_table(PendingOps, TxId) ->
     ok.
 
 %%%===================================================================
+%%% Load API
+%%%===================================================================
+
+-spec put_direct(partition_id(), writeset()) -> ok.
+put_direct(Partition, WS) ->
+    T = op_log_table(Partition),
+    AllReplicas = grb_dc_manager:all_replicas_red(),
+    {ok, KeyLogSize} = application:get_env(grb, version_log_size),
+    Objects = maps:fold(fun(Key, Operation, Acc) ->
+        Type = grb_crdt:op_type(Operation),
+        Base = grb_crdt:apply_op_raw(Operation, grb_crdt:new(Type)),
+        Log = grb_version_log:new(Type, Base, AllReplicas, KeyLogSize),
+        [{Key, Log} | Acc]
+    end, [], WS),
+    true = ets:insert(T, Objects),
+    ok.
+
+%%%===================================================================
 %%% API
 %%%===================================================================
 
@@ -331,7 +352,7 @@ init([Partition]) ->
     {ok, BlueTickInterval} = application:get_env(grb, self_blue_heartbeat_interval),
     NumReaders = application:get_env(grb, oplog_readers, ?OPLOG_READER_NUM),
 
-    OpLogTable = ets:new(?OP_LOG_TABLE, [set, protected, {read_concurrency, true}]),
+    OpLogTable = ets:new(?OP_LOG_TABLE, [set, public, {read_concurrency, true}]),
     ok = persistent_term:put({?MODULE, Partition, ?OP_LOG_TABLE}, OpLogTable),
 
     PendingOps = ets:new(?PENDING_TX_OPS, [ordered_set, public, {write_concurrency, true}]),

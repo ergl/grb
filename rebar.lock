@@ -2,7 +2,7 @@
 [{<<"poolboy">>,{pkg,<<"poolboy">>,<<"1.5.2">>},1},
  {<<"pvc_proto">>,
   {git,"https://github.com/ergl/pvc_proto.git",
-       {ref,"9869e97c2993d1c922352dc4a59e47ad56e32d03"}},
+       {ref,"8c1f712c9da36b9fc7c40f9de2e7a0ff1a779e38"}},
   0},
  {<<"pvc_types">>,
   {git,"https://github.com/ergl/pvc_types.git",
