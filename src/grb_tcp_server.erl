@@ -119,18 +119,6 @@ reply_to_client(Result, {Id, Mod, Type}, #state{socket=Socket, id_len=IdLen, tra
     ok.
 
 -spec handle_request(atom(), #{atom() => term()}, proto_context(), state()) -> ok.
-handle_request('Load', #{bin_size := Size}, Context, State) ->
-    reply_to_client(grb:load(Size), Context, State);
-
-handle_request('UniformBarrier', #{client_vc := CVC, partition := Partition}, Context, _State) ->
-    grb:uniform_barrier(grb_promise:new(self(), Context), Partition, CVC);
-
-handle_request('ConnectRequest', _, Context, State) ->
-    reply_to_client(grb:connect(), Context, State);
-
-handle_request('PutConflictRelations', #{payload := Conflicts}, Context, State) ->
-    reply_to_client(grb:put_conflicts(Conflicts), Context, State);
-
 handle_request('StartReq', #{client_vc := CVC, partition := Partition}, Context, State) ->
     reply_to_client(grb:start_transaction(Partition, CVC), Context, State);
 
@@ -174,7 +162,19 @@ handle_request('CommitRed', Args, Context, _State) ->
         transaction_label := Label,
         prepares := Prepares
     } = Args,
-    grb:commit_red(grb_promise:new(self(), Context), TargetP, TxId, Label, VC, Prepares).
+    grb:commit_red(grb_promise:new(self(), Context), TargetP, TxId, Label, VC, Prepares);
+
+handle_request('UniformBarrier', #{client_vc := CVC, partition := Partition}, Context, _State) ->
+    grb:uniform_barrier(grb_promise:new(self(), Context), Partition, CVC);
+
+handle_request('ConnectRequest', _, Context, State) ->
+    reply_to_client(grb:connect(), Context, State);
+
+handle_request('PutConflictRelations', #{payload := Conflicts}, Context, State) ->
+    reply_to_client(grb:put_conflicts(Conflicts), Context, State);
+
+handle_request('Load', #{bin_size := Size}, Context, State) ->
+    reply_to_client(grb:load(Size), Context, State).
 
 -spec try_read(partition_id(), term(), key(), crdt(), boolean(), vclock(), proto_context(), state()) -> ok.
 try_read(Partition, TxId, Key, Type, true, SnapshotVC, Context, State) ->
