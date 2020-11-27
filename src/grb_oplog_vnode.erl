@@ -129,16 +129,8 @@ stop_readers_all() ->
     ok.
 
 -spec learn_all_replicas_all() -> ok.
--ifdef(BLUE_KNOWN_VC).
 learn_all_replicas_all() ->
-    learn_all_replicas_all(grb_dc_manager:all_replicas()).
--else.
-learn_all_replicas_all() ->
-    learn_all_replicas_all([?RED_REPLICA | grb_dc_manager:all_replicas()]).
--endif.
-
--spec learn_all_replicas_all([all_replica_id()]) -> ok.
-learn_all_replicas_all(Replicas) ->
+    Replicas = grb_dc_manager:all_replicas_red(),
     [try
         riak_core_vnode_master:command(N, {learn_all_replicas, Replicas}, ?master)
      catch

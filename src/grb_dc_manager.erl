@@ -11,6 +11,7 @@
 %% Node API
 -export([replica_id/0,
          all_replicas/0,
+         all_replicas_red/0,
          remote_replicas/0]).
 
 %% Remote API
@@ -54,6 +55,13 @@ replica_id() ->
 -spec all_replicas() -> [replica_id()].
 all_replicas() ->
     persistent_term:get({?MODULE, ?ALL_REPLICAS}, [replica_id()]).
+
+-spec all_replicas_red() -> [all_replica_id()].
+-ifdef(BLUE_KNOWN_VC).
+all_replicas_red() -> all_replicas().
+-else.
+all_replicas_red() -> [?RED_REPLICA | all_replicas()].
+-endif.
 
 -spec remote_replicas() -> [replica_id()].
 remote_replicas() ->
