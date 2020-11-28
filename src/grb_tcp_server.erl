@@ -144,13 +144,30 @@ handle_request('OpRequest', Args, Context, State) ->
     } = Args,
     try_read(Partition, TxId, Key, Type, ReadAgain, SnapshotVC, Context, State);
 
-handle_request('OpRequestNode', _Args = #{reads := _Reads}, Context, State) ->
-    %% FIXME(borja, crdts): Parallel read
-    reply_to_client([], Context, State);
+handle_request('OpRequestPartition', Args = #{reads := Reads}, Context, State) ->
+    #{
+        partition := Partition,
+        transaction_id := TxId,
+        snapshot_vc := SVC,
+        read_again := ReadAgain
+    } = Args,
+    try_multiop_read(Partition, TxId, SVC, ReadAgain, Reads, Context, State);
 
-handle_request('OpRequestNode', _Args = #{operations := _Ops}, Context, State) ->
-    %% FIXME(borja, crdts): Parallel update
-    reply_to_client([], Context, State);
+handle_request('OpRequestPartition', Args = #{operations := Ops}, Context, State) ->
+    #{
+        partition := Partition,
+        transaction_id := TxId,
+        snapshot_vc := SVC,
+        read_again := ReadAgain
+    } = Args,
+
+    Reads = [
+        begin
+            ok = grb:update(Partition, TxId, Key, Op),
+            {Key, grb_crdt:op_type(Op)}
+        end || {Key, Op} <- Ops
+    ],
+    try_multiop_read(Partition, TxId, SVC, ReadAgain, Reads, Context, State);
 
 handle_request('PrepareBlueNode', Args, Context, State) ->
     #{transaction_id := TxId, snapshot_vc := VC, partitions := Partitions} = Args,
@@ -198,3 +215,8 @@ try_read(Partition, TxId, Key, Type, false, SnapshotVC, Context, State) ->
         false ->
             grb:async_key_snapshot(grb_promise:new(self(), Context), Partition, TxId, Key, Type, SnapshotVC)
     end.
+
+-spec try_multiop_read(partition_id(), term(), vclock(), boolean(), [{key(), crdt()}], proto_context(), state()) -> ok.
+try_multiop_read(_Partition, _TxId, _SVC, _ReadAgain, _KeyTypes, _Context, _State) ->
+    %% FIXME(borja, crdts): Implement multiop read
+    ok.

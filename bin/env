@@ -84,7 +84,7 @@ if [ -z "$RED_SENDER_POOL_SIZE" ]; then
 fi
 
 if [ -z "$RED_COORD_POOL_SIZE" ]; then
-  export RED_COORD_POOL_SIZE=500
+  export RED_COORD_POOL_SIZE=50
 fi
 
 # Node config
