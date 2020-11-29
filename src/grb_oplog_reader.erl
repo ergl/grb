@@ -13,6 +13,8 @@
 
 %% protocol api
 -export([async_key_snapshot/6,
+         multikey_snapshot/5,
+         multikey_snapshot_bypass/5,
          decide_blue/3]).
 
 %% replica management API
@@ -28,14 +30,31 @@
 
 -define(NUM_READERS_KEY, num_replicas).
 
+-record(pending_reads, {
+    promise :: grb_promise:t(),
+    to_ack :: pos_integer(),
+    accumulator :: #{key() := snapshot()}
+}).
+-type pending_reads() :: #pending_reads{}.
+
+-record(waiting_reads, {
+    promise :: grb_promise:t(),
+    pending_snapshot_vc :: vclock(),
+    pending_key_payload :: {reads, [{key(), crdt()}]} | {updates, [{key(), operation()}]}
+}).
+-type waiting_reads() :: #waiting_reads{}.
+
 -record(state, {
     %% Partition that this server is replicating
     partition :: partition_id(),
     replica_id :: replica_id(),
 
     known_barrier_wait_ms :: non_neg_integer(),
-    pending_decides = #{} :: #{term() => vclock()}
+    pending_decides = #{} :: #{term() => vclock()},
+    pending_reads = #{} :: #{term() => pending_reads() | waiting_reads()}
 }).
+
+-type state() :: #state{}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Reader management API
@@ -82,6 +101,24 @@ stop_readers(Partition) ->
 async_key_snapshot(Promise, Partition, TxId, Key, Type, VC) ->
     gen_server:cast(random_reader(Partition), {key_snapshot, Promise, TxId, Key, Type, VC}).
 
+-spec multikey_snapshot(Promise :: grb_promise:t(),
+                        Partition :: partition_id(),
+                        TxId :: term(),
+                        VC :: vclock(),
+                        KeyPayload :: {reads, [{key(), crdt()}]} | {updates, [{key(), operation()}]}) -> ok.
+
+multikey_snapshot(Promise, Partition, TxId, VC, KeyPayload) ->
+    gen_server:cast(random_reader(Partition), {multikey_snapshot, Promise, TxId, VC, KeyPayload}).
+
+-spec multikey_snapshot_bypass(Promise :: grb_promise:t(),
+                        Partition :: partition_id(),
+                        TxId :: term(),
+                        VC :: vclock(),
+                        KeyPayload :: {reads, [{key(), crdt()}]} | {updates, [{key(), operation()}]}) -> ok.
+
+multikey_snapshot_bypass(Promise, Partition, TxId, VC, KeyPayload) ->
+    gen_server:cast(random_reader(Partition), {multikey_snapshot_bypass, Promise, TxId, VC, KeyPayload}).
+
 -spec decide_blue(partition_id(), _, vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->
     gen_server:cast(random_reader(Partition), {decide_blue, TxId, VC}).
@@ -111,6 +148,38 @@ handle_cast({key_snapshot, Promise, TxId, Key, Type, VC}, State) ->
     ok = key_snapshot_wait(Promise, TxId, Key, Type, VC, State),
     {noreply, State};
 
+handle_cast({key_snapshot_bypass, Promise, TxId, Key, Type, VC}, State=#state{partition=Partition}) ->
+    {ok, Snapshot} = grb_oplog_vnode:get_key_snapshot(Partition, TxId, Key, Type, VC),
+    ok = grb_promise:resolve({ok, Key, Snapshot}, Promise),
+    {noreply, State};
+
+handle_cast({key_snapshot_bypass, Promise, TxId, Key, Type, Operation, VC}, State=#state{partition=Partition}) ->
+    ok = grb_oplog_vnode:put_client_op(Partition, TxId, Key, Operation),
+    {ok, Snapshot} = grb_oplog_vnode:get_key_snapshot(Partition, TxId, Key, Type, VC),
+    ok = grb_promise:resolve({ok, Key, Snapshot}, Promise),
+    {noreply, State};
+
+handle_cast({multikey_snapshot, Promise, TxId, VC, KeyPayload}, S0=#state{partition=Partition,
+                                                                          replica_id=ReplicaId,
+                                                                          pending_reads=PendingReads,
+                                                                          known_barrier_wait_ms=WaitMs}) ->
+
+    S = case grb_propagation_vnode:partition_ready(Partition, ReplicaId, VC) of
+        ready ->
+            send_multi_read(Promise, TxId, VC, KeyPayload, S0);
+
+        not_ready ->
+            erlang:send(WaitMs, self(), {retry_multikey_snapshot, TxId}),
+            PendingState = #waiting_reads{promise=Promise,
+                                          pending_snapshot_vc=VC,
+                                          pending_key_payload=KeyPayload},
+            S0#state{pending_reads=PendingReads#{TxId => PendingState}}
+    end,
+    {noreply, S};
+
+handle_cast({multikey_snapshot_bypass, Promise, TxId, VC, KeyPayload}, State) ->
+    {noreply, send_multi_read(Promise, TxId, VC, KeyPayload, State)};
+
 handle_cast({decide_blue, TxId, VC}, S0=#state{partition=Partition,
                                                replica_id=ReplicaId,
                                                pending_decides=Pending,
@@ -134,6 +203,40 @@ handle_cast(Request, State) ->
 handle_info({retry_key_snapshot_wait, Promise, TxId, Key, Type, VC}, State) ->
     ok = key_snapshot_wait(Promise, TxId, Key, Type, VC, State),
     {noreply, State};
+
+handle_info({retry_multikey_snapshot, TxId}, S0=#state{partition=Partition,
+                                                       replica_id=ReplicaId,
+                                                       pending_reads=PendingReads,
+                                                       known_barrier_wait_ms=WaitMs}) ->
+
+    #waiting_reads{promise=ClientPromise,
+                   pending_snapshot_vc=VC,
+                   pending_key_payload=KeyPayload} = maps:get(TxId, PendingReads),
+
+    S = case grb_propagation_vnode:partition_ready(Partition, ReplicaId, VC) of
+        ready ->
+            send_multi_read(ClientPromise, TxId, VC, KeyPayload,
+                          S0#state{pending_reads=maps:remove(TxId, PendingReads)});
+
+        not_ready ->
+            erlang:send_after(WaitMs, self(), {retry_multikey_snapshot, TxId}),
+            S0
+    end,
+    {noreply, S};
+
+handle_info({'$grb_promise_resolve', {ok, Key, Snapshot}, TxId}, S0=#state{pending_reads=PendingReads}) ->
+    PendingAcc = #pending_reads{accumulator=Acc0} = maps:get(TxId, PendingReads),
+    Acc = Acc0#{Key => Snapshot},
+    S = case PendingAcc of
+        #pending_reads{to_ack=ToAck} when ToAck > 1 ->
+            S0#state{pending_reads=PendingReads#{TxId := PendingAcc#pending_reads{to_ack=ToAck - 1,
+                                                                                  accumulator=Acc}}};
+
+        #pending_reads{promise=Promise} ->
+            ok = grb_promise:resolve(Acc, Promise),
+            S0#state{pending_reads=maps:remove(TxId, PendingReads)}
+    end,
+    {noreply, S};
 
 handle_info({retry_decide, TxId}, S0=#state{partition=Partition,
                                             replica_id=ReplicaId,
@@ -178,6 +281,41 @@ key_snapshot_wait(Promise, TxId, Key, Type, SnapshotVC, #state{partition=Partiti
             grb_promise:resolve(grb_oplog_vnode:get_key_snapshot(Partition, TxId, Key, Type, SnapshotVC),
                                 Promise)
     end.
+
+-spec send_multi_read(Promise :: grb_promise:t(),
+                      TxId :: term(),
+                      VC :: vclock(),
+                      KeyPayload :: {reads, [{key(), crdt()}]} | {updates, [{key(), operation()}]},
+                      State0 :: state()) -> State :: state().
+
+send_multi_read(ClientPromise, TxId, VC, {reads, KeyTypes}, S=#state{partition=Partition,
+                                                                     pending_reads=PendingReads}) ->
+    SelfPromise = grb_promise:new(self(), TxId),
+    ToAck = lists:foldl(fun({Key, Type}, Acc) ->
+        ok = key_snapshot_bypass(SelfPromise, Partition, TxId, Key, Type, VC),
+        Acc + 1
+    end, 0, KeyTypes),
+    PendingState = #pending_reads{promise=ClientPromise, to_ack=ToAck, accumulator = #{}},
+    S#state{pending_reads=PendingReads#{TxId => PendingState}};
+
+send_multi_read(ClientPromise, TxId, VC, {updates, KeyOps}, S=#state{partition=Partition,
+                                                                     pending_reads=PendingReads}) ->
+    SelfPromise = grb_promise:new(self(), TxId),
+    ToAck = lists:foldl(fun({Key, Operation}, Acc) ->
+        Type = grb_crdt:op_type(Operation),
+        ok = key_snapshot_bypass(SelfPromise, Partition, TxId, Key, Type, Operation, VC),
+        Acc + 1
+    end, 0, KeyOps),
+    PendingState = #pending_reads{promise=ClientPromise, to_ack=ToAck, accumulator = #{}},
+    S#state{pending_reads=PendingReads#{TxId => PendingState}}.
+
+-spec key_snapshot_bypass(grb_promise:t(), partition_id(), term(), key(), crdt(), vclock()) -> ok.
+key_snapshot_bypass(Promise, Partition, TxId, Key, Type, VC) ->
+    gen_server:cast(hashed_reader(Partition, Key), {key_snapshot_bypass, Promise, TxId, Key, Type, VC}).
+
+-spec key_snapshot_bypass(grb_promise:t(), partition_id(), term(), key(), crdt(), operation(), vclock()) -> ok.
+key_snapshot_bypass(Promise, Partition, TxId, Key, Type, Operation, VC) ->
+    gen_server:cast(hashed_reader(Partition, Key), {key_snapshot_bypass, Promise, TxId, Key, Type, Operation, VC}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Start / Ready / Stop
@@ -245,6 +383,11 @@ persist_reader_pid(Partition, Id, Pid) ->
 -spec random_reader(partition_id()) -> pid().
 random_reader(Partition) ->
     reader_pid(Partition, rand:uniform(num_readers(Partition))).
+
+-spec hashed_reader(partition_id(), key()) -> pid().
+hashed_reader(Partition, Key) ->
+    Pos = grb_dc_utils:convert_key(Key) rem num_readers(Partition) + 1,
+    reader_pid(Partition, Pos).
 
 -spec num_readers(partition_id()) -> non_neg_integer().
 num_readers(Partition) ->

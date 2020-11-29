@@ -22,6 +22,14 @@
          key_snapshot/6,
          key_snapshot_bypass/5]).
 
+%% Multi-read API
+-export([multikey_snapshot/5,
+         multikey_snapshot_bypass/5]).
+
+%% Multi-update API (reads back)
+-export([multikey_update/5,
+         multikey_update_bypass/5]).
+
 %% Blue Transaction Commit
 -export([prepare_blue/3,
          decide_blue/3]).
@@ -147,6 +155,43 @@ key_snapshot(Promise, Partition, TxId, Key, Type, SnapshotVC) ->
 -spec key_snapshot_bypass(partition_id(), term(), key(), crdt(), vclock()) -> {ok, snapshot()}.
 key_snapshot_bypass(Partition, TxId, Key, Type, SnapshotVC) ->
     grb_oplog_vnode:get_key_snapshot(Partition, TxId, Key, Type, SnapshotVC).
+
+-spec multikey_snapshot(Promise :: grb_promise:t(),
+                        Partition :: partition_id(),
+                        TxId :: term(),
+                        SnapshotVC :: vclock(),
+                        KeyTypes :: [{key(), crdt()}]) -> ok.
+
+multikey_snapshot(Promise, Partition, TxId, SnapshotVC, KeyTypes) ->
+    grb_oplog_reader:multikey_snapshot(Promise, Partition, TxId, SnapshotVC, {reads, KeyTypes}).
+
+-spec multikey_snapshot_bypass(Promise :: grb_promise:t(),
+                               Partition :: partition_id(),
+                               TxId :: term(),
+                               SnapshotVC :: vclock(),
+                               KeyTypes :: [{key(), crdt()}]) -> ok.
+
+multikey_snapshot_bypass(Promise, Partition, TxId, SnapshotVC, KeyTypes) ->
+    grb_oplog_reader:multikey_snapshot_bypass(Promise, Partition, TxId, SnapshotVC, {reads, KeyTypes}).
+
+-spec multikey_update(Promise :: grb_promise:t(),
+                      Partition :: partition_id(),
+                      TxId :: term(),
+                      SnapshotVC :: vclock(),
+                      KeyOps :: [{key(), operation()}]) -> ok.
+
+multikey_update(Promise, Partition, TxId, SnapshotVC, KeyOps) ->
+    grb_oplog_reader:multikey_snapshot(Promise, Partition, TxId, SnapshotVC, {updates, KeyOps}).
+
+-spec multikey_update_bypass(Promise :: grb_promise:t(),
+                               Partition :: partition_id(),
+                               TxId :: term(),
+                               SnapshotVC :: vclock(),
+                               KeyOps :: [{key(), crdt()}]) -> ok.
+
+multikey_update_bypass(Promise, Partition, TxId, SnapshotVC, KeyOps) ->
+    grb_oplog_reader:multikey_snapshot_bypass(Promise, Partition, TxId, SnapshotVC, {updates, KeyOps}).
+
 
 -spec update(partition_id(), term(), key(), operation()) -> ok.
 update(Partition, TxId, Key, Operation) ->

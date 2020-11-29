@@ -24,6 +24,9 @@
          pending_ring_changes/0,
          ready_ring_members/0]).
 
+%% Util API
+-export([convert_key/1]).
+
 %% Called via `erpc` or for debug purposes
 -ignore_xref([set_default_snapshot/1,
               get_default_snapshot/0,
