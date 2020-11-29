@@ -6,20 +6,28 @@
 -export([start/0,
          stop/0]).
 
-%% API for applications
+%% Util API
 -export([connect/0,
          load/1,
          put_direct/2,
          put_conflicts/1,
-         uniform_barrier/3,
-         start_transaction/2,
-         update/4,
-         partition_ready/2,
-         async_key_snapshot/6,
-         key_snapshot_bypass/5,
-         prepare_blue/3,
-         decide_blue/3,
-         commit_red/6]).
+         partition_ready/2]).
+
+%% Start / Barrier
+-export([uniform_barrier/3,
+         start_transaction/2]).
+
+%% Regular read / write API
+-export([update/4,
+         key_snapshot/6,
+         key_snapshot_bypass/5]).
+
+%% Blue Transaction Commit
+-export([prepare_blue/3,
+         decide_blue/3]).
+
+%% Red Transaction Commit
+-export([commit_red/6]).
 
 -ifdef(TEST).
 -export([sync_uniform_barrier/2,
@@ -132,8 +140,8 @@ partition_ready(Partition, SnapshotVC) ->
     ok = read_snapshot_prologue(Partition, SnapshotVC),
     ready =:= grb_propagation_vnode:partition_ready(Partition, SnapshotVC).
 
--spec async_key_snapshot(grb_promise:t(), partition_id(), term(), key(), crdt(), vclock()) -> ok.
-async_key_snapshot(Promise, Partition, TxId, Key, Type, SnapshotVC) ->
+-spec key_snapshot(grb_promise:t(), partition_id(), term(), key(), crdt(), vclock()) -> ok.
+key_snapshot(Promise, Partition, TxId, Key, Type, SnapshotVC) ->
     grb_oplog_reader:async_key_snapshot(Promise, Partition, TxId, Key, Type, SnapshotVC).
 
 -spec key_snapshot_bypass(partition_id(), term(), key(), crdt(), vclock()) -> {ok, snapshot()}.
@@ -198,7 +206,7 @@ sync_uniform_barrier(Partition, CVC) ->
 sync_key_vsn(Partition, TxId, Key, Type, VC) ->
     ok = read_snapshot_prologue(Partition, VC),
     Ref = make_ref(),
-    async_key_snapshot(grb_promise:new(self(), Ref), Partition, TxId, Key, Type, VC),
+    key_snapshot(grb_promise:new(self(), Ref), Partition, TxId, Key, Type, VC),
     receive
         {'$grb_promise_resolve', Result, Ref} ->
             Result
