@@ -162,6 +162,10 @@ handle_request('OpRequestPartition', Args = #{operations := Ops}, Context, _Stat
     } = Args,
     try_multikey_update(grb_promise:new(self(), Context), Partition, TxId, SVC, ReadAgain, Ops);
 
+handle_request('OpSend', Args, Context, State) ->
+    #{partition := Partition, transaction_id := TxId, key := Key, operation := Op} = Args,
+    reply_to_client(grb:update(Partition, TxId, Key, Op), Context, State);
+
 handle_request('PrepareBlueNode', Args, Context, State) ->
     #{transaction_id := TxId, snapshot_vc := VC, partitions := Partitions} = Args,
     Votes = [ {ok, P, grb:prepare_blue(P, TxId, VC)} || P <- Partitions],
