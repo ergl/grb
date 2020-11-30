@@ -19,6 +19,7 @@ start(_StartType, _StartArgs) ->
             ok = enable_debug_logs(),
             ok = grb_tcp_server:start_server(),
             ok = grb_dc_connection_receiver:start_service(),
+            ok = grb_rubis_utils:persist_configs(),
             {ok, Pid}
     end.
 

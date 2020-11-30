@@ -28,6 +28,9 @@
          insert/3,
          snapshot_lower/2]).
 
+%% Unsafe API
+-export([apply_raw/2]).
+
 -ifdef(TEST).
 -export([from_list/5]).
 -endif.
@@ -43,6 +46,11 @@ new(Type, Base, Actors, Size) ->
            size=0,
            max_size=Size,
            operations=[]}.
+
+-spec apply_raw(operation(), t()) -> t().
+apply_raw(Operation, S=#state{base=Base, snapshot={VC, _}}) ->
+    NewBase = grb_crdt:apply_op_raw(Operation, Base),
+    S#state{base=NewBase, snapshot={VC, NewBase}}.
 
 -spec insert(operation(), vclock(), t()) -> t().
 %% For LWW and MaxTuple, we can make an optimization where we go backwards, instead of forwards

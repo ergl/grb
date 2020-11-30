@@ -15,7 +15,9 @@
          learn_all_replicas_all/0]).
 
 %% Unsafe load API
--export([put_direct/2]).
+-export([put_direct/2,
+         put_direct_vnode/3,
+         append_direct_vnode/3]).
 
 %% ETS table API
 -export([op_log_table/1,
@@ -177,22 +179,69 @@ clean_transaction_ops_with_table(PendingOps, TxId) ->
     ok.
 
 %%%===================================================================
-%%% Load API
+%%% Load API (unsafe)
 %%%===================================================================
 
 -spec put_direct(partition_id(), writeset()) -> ok.
 put_direct(Partition, WS) ->
-    T = op_log_table(Partition),
     AllReplicas = grb_dc_manager:all_replicas_red(),
     {ok, KeyLogSize} = application:get_env(grb, version_log_size),
-    Objects = maps:fold(fun(Key, Operation, Acc) ->
-        Type = grb_crdt:op_type(Operation),
+    put_direct_internal(WS, op_log_table(Partition), KeyLogSize, AllReplicas).
+
+-spec put_direct_internal(WS :: #{key() := {crdt(), non_neg_integer()}},
+                          OpLogTable :: cache_id(),
+                          Size :: non_neg_integer(),
+                          AllReplicas :: [all_replica_id()]) -> ok.
+
+put_direct_internal(WS, OpLogTable, Size, AllReplicas) ->
+    Objects = maps:fold(fun(Key, {Type, Value}, Acc) ->
+        Operation = grb_crdt:make_op(Type, Value),
         Base = grb_crdt:apply_op_raw(Operation, grb_crdt:new(Type)),
-        Log = grb_version_log:new(Type, Base, AllReplicas, KeyLogSize),
+        Log = grb_version_log:new(Type, Base, AllReplicas, Size),
         [{Key, Log} | Acc]
     end, [], WS),
-    true = ets:insert(T, Objects),
+    true = ets:insert(OpLogTable, Objects),
     ok.
+
+-spec append_direct_internal(writeset(), cache_id(), non_neg_integer(), [all_replica_id()]) -> ok.
+append_direct_internal(WS, OpLogTable, Size, AllReplicas) ->
+    Objects = maps:fold(fun(Key, Operation, Acc) ->
+        Log = case ets:lookup(OpLogTable, Key) of
+            [{Key, PrevLog}] ->
+                PrevLog;
+              [] ->
+                  Type = grb_crdt:op_type(Operation),
+                  TypeBase = grb_crdt:new(Type),
+                  grb_version_log:new(Type, TypeBase, AllReplicas, Size)
+        end,
+        [ { Key, grb_version_log:apply_raw(Operation, Log) } | Acc]
+    end, [], WS),
+    true = ets:insert(OpLogTable, Objects),
+    ok.
+
+-spec put_direct_vnode(async | sync, index_node(), #{key() => {crdt(), snapshot()}}) -> ok.
+put_direct_vnode(async, IndexNode, WS) ->
+    riak_core_vnode_master:command(IndexNode, {put_direct, WS}, self(), ?master);
+
+put_direct_vnode(sync, {P, N}, WS) when N =:= node() ->
+    AllReplicas = grb_dc_manager:all_replicas_red(),
+    {ok, KeyLogSize} = application:get_env(grb, version_log_size),
+    put_direct_internal(WS, op_log_table(P), KeyLogSize, AllReplicas);
+
+put_direct_vnode(sync, IndexNode, WS) ->
+    riak_core_vnode_master:sync_command(IndexNode, {put_direct, WS}, ?master, infinity).
+
+-spec append_direct_vnode(async | sync, index_node(), #{key() => operation()}) -> ok.
+append_direct_vnode(async, IndexNode, WS) ->
+    riak_core_vnode_master:command(IndexNode, {append_direct, WS}, self(), ?master);
+
+append_direct_vnode(sync, {P, N}, WS) when N =:= node() ->
+    AllReplicas = grb_dc_manager:all_replicas_red(),
+    {ok, KeyLogSize} = application:get_env(grb, version_log_size),
+    append_direct_internal(WS, op_log_table(P), KeyLogSize, AllReplicas);
+
+append_direct_vnode(sync, IndexNode, WS) ->
+    riak_core_vnode_master:sync_command(IndexNode, {append_direct, WS}, ?master, infinity).
 
 %%%===================================================================
 %%% API
@@ -382,6 +431,30 @@ handle_command(ping, _Sender, State) ->
 handle_command(is_ready, _Sender, State) ->
     Ready = lists:all(fun is_ready/1, [State#state.op_log]),
     {reply, Ready, State};
+
+handle_command({put_direct, WS}, Sender,
+                State=#state{op_log=OpLog, op_log_size=Size, all_replicas=AllReplicas}) ->
+
+    ok = put_direct_internal(WS, OpLog, Size, AllReplicas),
+    if
+        is_pid(Sender) ->
+            Sender ! ok,
+            {noreply, State};
+        true ->
+            {reply, ok, State}
+    end;
+
+handle_command({append_direct, WS}, Sender,
+               State=#state{op_log=OpLog, op_log_size=Size, all_replicas=AllReplicas}) ->
+
+    ok = append_direct_internal(WS, OpLog, Size, AllReplicas),
+    if
+        is_pid(Sender) ->
+            Sender ! ok,
+            {noreply, State};
+        true ->
+            {reply, ok, State}
+    end;
 
 handle_command(enable_blue_append, _Sender, S) ->
     {reply, ok, S#state{should_append_commit=true}};
