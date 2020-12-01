@@ -165,5 +165,5 @@ convert_key_binary(Bin) ->
 
 -spec convert_key_hash(term()) -> non_neg_integer().
 convert_key_hash(Key) ->
-    HashKey = riak_core_util:chash_key({?BUCKET, term_to_binary(Key)}),
+    HashKey = riak_core_util:chash_key({?BUCKET, Key}),
     abs(crypto:bytes_to_integer(HashKey)).
