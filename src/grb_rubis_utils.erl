@@ -256,7 +256,9 @@ load_bids_(Id, ItemRegion, ItemKey, NRegions, Regions, UsersPerRegion, BidProps,
                 ItemKey :: {binary(), atom(), binary()},
                 UserKey :: {binary(), atom(), binary()},
                 Id :: non_neg_integer(),
-                BidProperties :: map()) -> { ToWait :: non_neg_integer(), BidAmount :: non_neg_integer()}.
+                BidProperties :: map()
+                ) -> { ToWait :: non_neg_integer(), BidKey :: {binary(), atom(), binary()}, BidAmount :: non_neg_integer()}.
+
 store_bid(Region, ItemKey={Region, _, ItemId}, UserKey={UserRegion, _, _}, Id, BidProperties) ->
     %% Fields:
     %% nickname of bidder (user id)
@@ -416,7 +418,7 @@ rand_user_key_different({UserRegion, _, UserId}=UserKey, NRegions, Regions, User
 %%% Util
 %%%===================================================================
 
--spec pmap_limit(fun((non_neg_integer()) -> non_neg_integer()), non_neg_integer()) -> non_neg_integer().
+-spec pmap_limit(fun((non_neg_integer()) -> non_neg_integer()), non_neg_integer()) -> ok.
 pmap_limit(Fun, Total) ->
     Send = fun
        S(0, Acc) -> Acc;

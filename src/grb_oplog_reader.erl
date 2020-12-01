@@ -169,7 +169,7 @@ handle_cast({multikey_snapshot, Promise, TxId, VC, KeyPayload}, S0=#state{partit
             send_multi_read(Promise, TxId, VC, KeyPayload, S0);
 
         not_ready ->
-            erlang:send(WaitMs, self(), {retry_multikey_snapshot, TxId}),
+            erlang:send_after(WaitMs, self(), {retry_multikey_snapshot, TxId}),
             PendingState = #waiting_reads{promise=Promise,
                                           pending_snapshot_vc=VC,
                                           pending_key_payload=KeyPayload},
