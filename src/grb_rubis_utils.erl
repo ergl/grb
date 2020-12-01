@@ -4,6 +4,7 @@
 -export([preload/2]).
 -export([preload_sync/1]).
 
+-define(global_indices, <<"global_index">>).
 
 -spec preload(grb_promise:t(), map()) -> ok.
 preload(Promise, Properties) ->
@@ -92,21 +93,21 @@ load_items(Regions, UsersPerRegion, CategoriesAndItems, Properties) ->
 
 -spec store_region(binary()) -> ok.
 store_region(Region) ->
-    ok = grb_oplog_vnode:put_direct_vnode(
+    ok = grb_oplog_vnode:append_direct_vnode(
         sync,
-        grb_dc_utils:key_location(Region),
+        grb_dc_utils:key_location(?global_indices),
         #{
-            {Region, regions, Region} => {grb_lww, Region}
+            {?global_indices, all_regions} => grb_crdt:make_op(grb_gset, Region)
         }
     ).
 
 -spec store_category(binary()) -> ok.
 store_category(Category) ->
-    ok = grb_oplog_vnode:put_direct_vnode(
+    ok = grb_oplog_vnode:append_direct_vnode(
         sync,
-        grb_dc_utils:key_location(Category),
+        grb_dc_utils:key_location(?global_indices),
         #{
-            {Category, categories, Category} => {grb_lww, Category}
+            {?global_indices, all_categories} => grb_crdt:make_op(grb_gset, Category)
         }
     ).
 
