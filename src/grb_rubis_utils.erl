@@ -23,6 +23,8 @@ preload(Promise, Properties) ->
     end),
     ok.
 
+%% todo(borja, rubis): Make client supply entire config (list of regions, etc)
+%% so we don't have to worry about mismatched configs in two separate places
 -spec preload_sync(map()) -> ok.
 preload_sync(Properties) ->
     Regions = get_config(regions),
@@ -142,16 +144,7 @@ store_user(Region, Id) ->
         }
     ),
 
-    %% Append region_id -> user_id index, located at that region
-    ok = grb_oplog_vnode:append_direct_vnode(
-        async,
-        grb_dc_utils:key_location(Region),
-        #{
-            {Region, users_region} => grb_crdt:make_op(grb_gset, UserKey)
-        }
-    ),
-
-    3.
+    2.
 
 store_item(Region, Seller, Category, Id, ItemProperties) ->
     Table = items,
