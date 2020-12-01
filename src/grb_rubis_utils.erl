@@ -159,7 +159,7 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
     InitialPrice = rand:uniform(100),
 
     MaxQuantity = maps:get(item_max_quantity, ItemProperties),
-    Quantity = rand:uniform(MaxQuantity),
+    Quantity = safe_uniform(MaxQuantity),
 
     ReservedPercentage = maps:get(item_reserve_percentage, ItemProperties, 0),
     ReservePrice = case (rand:uniform(100) =< ReservedPercentage) of
@@ -177,10 +177,10 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
     Closed = (rand:uniform(100) =< ClosedPercentage),
 
     MaxBids = maps:get(item_max_bids, ItemProperties),
-    BidsN = if MaxBids =:= 0 -> 0; true -> rand:uniform(MaxBids) end,
+    BidsN = safe_uniform(MaxBids),
 
     MaxComments = maps:get(item_max_comments, ItemProperties),
-    CommentsN = if MaxComments =:= 0 -> 0; true -> rand:uniform(MaxComments) end,
+    CommentsN = safe_uniform(MaxComments),
 
     ItemKey = {Region, Table, ItemId},
     ok = grb_oplog_vnode:put_direct_vnode(
@@ -266,10 +266,10 @@ store_bid(Region, ItemKey={Region, _, ItemId}, UserKey={UserRegion, _, _}, Id, B
     Table = bids,
 
     #{ item_initial_price := ItemInitalPrice } = BidProperties,
-    BidAmount = ItemInitalPrice + rand:uniform((ItemInitalPrice div 2)),
+    BidAmount = ItemInitalPrice + safe_uniform((ItemInitalPrice div 2)),
 
     #{ item_max_quantity := ItemMaxQty } = BidProperties,
-    BidQty = rand:uniform(ItemMaxQty),
+    BidQty = safe_uniform(ItemMaxQty),
 
     %% Ensure id partitioning during load so we can do it in parallel
     BidId = list_to_binary(io_lib:format("~s/bid/preload_~b", [ItemId, Id])),
@@ -333,7 +333,7 @@ store_comment(RecipientRegion, RecipientKey={_, _, RecipientId}, ItemKey={_, _, 
     Table = comments,
 
     #{ comment_max_len := MaxCommentLength} = CommentProps,
-    CommentText = random_binary(rand:uniform(MaxCommentLength)),
+    CommentText = random_binary(safe_uniform(MaxCommentLength)),
     CommentRating = random_rating(),
 
     %% Ensure id partitioning during load so we can do it in parallel
@@ -367,6 +367,10 @@ store_comment(RecipientRegion, RecipientKey={_, _, RecipientId}, ItemKey={_, _, 
 %%%===================================================================
 %%% Random Utils
 %%%===================================================================
+
+-spec safe_uniform(pos_integer()) -> pos_integer().
+safe_uniform(0) -> 0;
+safe_uniform(X) when X >= 1 -> rand:uniform(X).
 
 -spec random_binary(Size :: non_neg_integer()) -> binary().
 random_binary(N) ->
