@@ -1,20 +1,9 @@
 -module(grb_rubis_utils).
 
 %% API
--export([persist_configs/0,
-         preload/2]).
+-export([preload/2]).
+-export([preload_sync/1]).
 
--spec persist_configs() -> ok.
-persist_configs() ->
-    {ok, File} = application:get_env(grb, rubis_defaults_path),
-    {ok, Terms} = file:consult(File),
-    lists:foreach(fun({TermKey, TermValue}) ->
-        persistent_term:put({?MODULE, TermKey}, TermValue)
-    end, Terms).
-
--spec get_config(term()) -> term().
-get_config(Key) ->
-    persistent_term:get({?MODULE, Key}).
 
 -spec preload(grb_promise:t(), map()) -> ok.
 preload(Promise, Properties) ->
@@ -23,24 +12,19 @@ preload(Promise, Properties) ->
     end),
     ok.
 
-%% todo(borja, rubis): Make client supply entire config (list of regions, etc)
-%% so we don't have to worry about mismatched configs in two separate places
 -spec preload_sync(map()) -> ok.
 preload_sync(Properties) ->
-    Regions = get_config(regions),
-    ok = load_regions(Regions),
+    #{ regions := Regions,
+       categories := CategoriesAndItems,
+       user_total := TotalUsers } = Properties,
 
-    CategoriesAndItems = case maps:get(category_profile, Properties, small) of
-         small -> get_config(categories_small);
-         _ -> get_config(categories)
-    end,
     Categories = [ C || {C, _} <- CategoriesAndItems ],
+
+    ok = load_regions(Regions),
     ok = load_categories(Categories),
 
-    TotalUsers = maps:get(user_number, Properties),
     UsersPerRegion = (TotalUsers div length(Regions)),
-    ok = load_users(get_config(regions), UsersPerRegion),
-
+    ok = load_users(Regions, UsersPerRegion),
     ok = load_items(Regions, TotalUsers, CategoriesAndItems, Properties),
 
     ok.
@@ -82,11 +66,10 @@ load_items(Regions, UsersPerRegion, CategoriesAndItems, Properties) ->
                 item_buy_now_percentage => maps:get(item_buy_now_percentage, Properties, 0),
                 item_closed_percentage => maps:get(item_closed_percentage, Properties, 0),
                 item_max_bids => maps:get(item_max_bids, Properties, 0),
-                item_max_comments => maps:get(item_max_comments, Properties, 0),
-                comment_max_len => maps:get(comment_max_len, Properties, 0)
+                item_max_comments => maps:get(item_max_comments, Properties, 0)
             }),
 
-            {ToWait, ItemKey, NBids, _NComments, _CommentsLen, BidProps} = Ret,
+            {ToWait, ItemKey, NBids, NComments, BidProps} = Ret,
             {ToWaitBids, MaxBid} = load_bids(Region, ItemKey, NBids, Regions, UsersPerRegion, BidProps),
 
             %% Update the max_bid for the item id
@@ -99,7 +82,10 @@ load_items(Regions, UsersPerRegion, CategoriesAndItems, Properties) ->
                 }
             ),
 
-            ToWait + ToWaitBids + 1
+            ToWaitComments = load_comments(Region, UserKey, ItemKey, NComments, Regions, UsersPerRegion, #{
+                comment_max_len => maps:get(comment_max_len, Properties, 10)
+            }),
+            ToWait + ToWaitBids + 1 + ToWaitComments
         end, NumberOfItems)
     end, CategoriesAndItems),
     ok.
@@ -193,9 +179,7 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
     BidsN = if MaxBids =:= 0 -> 0; true -> rand:uniform(MaxBids) end,
 
     MaxComments = maps:get(item_max_comments, ItemProperties),
-    MaxCommentLength = maps:get(comment_max_len, ItemProperties),
     CommentsN = if MaxComments =:= 0 -> 0; true -> rand:uniform(MaxComments) end,
-    CommentsLength = if MaxCommentLength =:= 0 -> 0; true -> rand:uniform(MaxCommentLength) end,
 
     ItemKey = {Region, Table, ItemId},
     ok = grb_oplog_vnode:put_direct_vnode(
@@ -243,7 +227,7 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
     ),
 
     BidProperties = #{item_initial_price => InitialPrice, item_max_quantity => Quantity},
-    {3, ItemKey, BidsN, CommentsN, CommentsLength, BidProperties}.
+    {3, ItemKey, BidsN, CommentsN, BidProperties}.
 
 load_bids(ItemRegion, ItemKey, NBids, Regions, UsersPerRegion, BidProps) ->
     load_bids_(NBids, ItemRegion, ItemKey, length(Regions), Regions, UsersPerRegion, BidProps, {0, {ignore, -1}}).
@@ -323,6 +307,62 @@ store_bid(Region, ItemKey={Region, _, ItemId}, UserKey={UserRegion, _, _}, Id, B
 
     {3, BidKey, BidAmount}.
 
+load_comments(Region, SellerKey, ItemKey, NComments, Regions, UsersPerRegion, CommentProps) ->
+    load_comments_(NComments, Region, SellerKey, ItemKey, length(Regions), Regions, UsersPerRegion, CommentProps, 0).
+
+load_comments_(0, _, _, _, _, _, _, _, Acc) ->
+    Acc;
+load_comments_(Id, RecipientRegion, RecipientKey, ItemKey, NRegions, Regions, UsersPerRegion, CommentProps, Acc) ->
+    SenderKey = rand_user_key_different(RecipientKey, NRegions, Regions, UsersPerRegion),
+    MsgsToWait = store_comment(RecipientRegion, RecipientKey, ItemKey, SenderKey, Id, CommentProps),
+    load_comments_(Id - 1, RecipientRegion, RecipientKey, ItemKey, NRegions, Regions, UsersPerRegion, CommentProps, Acc + MsgsToWait).
+
+%% comments objects are colocated with the recipient key
+%% and there's the COMMENTS_to_user index also colocated with the recipient
+%%
+store_comment(RecipientRegion, RecipientKey={_, _, RecipientId}, ItemKey={_, _, ItemId}, SenderKey, Id, CommentProps) ->
+    %% fields:
+    %% sender
+    %% recipient
+    %% item_id
+    %% rating
+    %% text
+    %% remember to update rating of recipient
+    %% can store the nickname in the comments_to_user index, but it's not necessary, nickname is built into the key
+    Table = comments,
+
+    #{ comment_max_len := MaxCommentLength} = CommentProps,
+    CommentText = random_binary(rand:uniform(MaxCommentLength)),
+    CommentRating = random_rating(),
+
+    %% Ensure id partitioning during load so we can do it in parallel
+    CommentId = list_to_binary(io_lib:format("~s/comment/preload_~b", [ItemId, Id])),
+    CommentKey = {RecipientRegion, Table, CommentId},
+    ok = grb_oplog_vnode:put_direct_vnode(
+        async,
+        grb_dc_utils:key_location(RecipientRegion),
+        #{
+            CommentKey => {grb_lww, CommentKey},
+            {RecipientRegion, Table, CommentId, from} => {grb_lww, SenderKey},
+            {RecipientRegion, Table, CommentId, to} => {grb_lww, RecipientKey},
+            {RecipientRegion, Table, CommentId, on_item} => {grb_lww, ItemKey},
+            {RecipientRegion, Table, CommentId, rating} => {grb_lww, CommentRating},
+            {RecipientRegion, Table, CommentId, text} => {grb_lww, CommentText}
+        }
+    ),
+
+    %% Append to users_id -> comment_id index, and modify recipient rating
+    ok = grb_oplog_vnode:append_direct_vnode(
+        async,
+        grb_dc_utils:key_location(RecipientRegion),
+        #{
+            {RecipientRegion, comments_to_user, RecipientKey} => grb_crdt:make_op(grb_gset, CommentKey),
+            {RecipientRegion, users, RecipientId, rating} => grb_crdt:make_op(grb_gcounter, CommentRating)
+        }
+    ),
+
+    2.
+
 %%%===================================================================
 %%% Random Utils
 %%%===================================================================
@@ -339,16 +379,33 @@ random_email(N) ->
 random_rating() ->
     rand:uniform(11) - 6.
 
-%%-spec random_boolean() -> boolean().
-%%random_boolean() ->
-%%    (rand:uniform(16) > 8).
-
 -spec random_string_(Size :: non_neg_integer()) -> list().
 random_string_(N) ->
     Chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890",
     lists:foldl(fun(_, Acc) ->
         [lists:nth(rand:uniform(length(Chars)), Chars)] ++ Acc
     end, [], lists:seq(1, N)).
+
+-spec rand_user_key_different(UserKey :: {binary(), atom(), binary()},
+                              NRegions :: non_neg_integer(),
+                              Regions:: [binary()],
+                              UsersPerRegion :: non_neg_integer()) -> OtherUserKey :: {binary(), atom(), binary()}.
+
+rand_user_key_different({UserRegion, _, UserId}=UserKey, NRegions, Regions, UsersPerRegion) ->
+    SenderRegion = lists:nth(rand:uniform(NRegions), Regions),
+    Id = rand:uniform(UsersPerRegion),
+    if
+        SenderRegion =/= UserRegion ->
+            {SenderRegion, users, list_to_binary(io_lib:format("~s/user/preload_~b", [SenderRegion, Id]))};
+        true ->
+            AttemptUserId = list_to_binary(io_lib:format("~s/user/preload_~b", [UserRegion, Id])),
+            if
+                AttemptUserId =/= UserId ->
+                    {UserRegion, users, AttemptUserId};
+                true ->
+                    rand_user_key_different(UserKey, NRegions, Regions, UsersPerRegion)
+            end
+    end.
 
 %%%===================================================================
 %%% Util
