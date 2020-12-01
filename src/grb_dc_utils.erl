@@ -141,15 +141,28 @@ maybe_send_after(Time, Msg) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -spec convert_key(key()) -> non_neg_integer().
-convert_key(Key) when is_integer(Key) -> abs(Key);
-convert_key(Key) when is_binary(Key) ->
-    AsInt = (catch list_to_integer(binary_to_list(Key))),
-    case is_integer(AsInt) of
-        false ->
-            HashKey = riak_core_util:chash_key({?BUCKET, Key}),
-            abs(crypto:bytes_to_integer(HashKey));
-        true -> abs(AsInt)
-    end;
 convert_key(Key) ->
+    if
+        is_integer(Key) -> convert_key_int(Key);
+        is_binary(Key) -> convert_key_binary(Key);
+        true -> convert_key_hash(Key)
+    end.
+
+-spec convert_key_int(integer()) -> non_neg_integer().
+convert_key_int(Int) ->
+    abs(Int).
+
+-spec convert_key_binary(binary()) -> non_neg_integer().
+convert_key_binary(Bin) ->
+    AsInt = (catch list_to_integer(binary_to_list(Bin))),
+    if
+        is_integer(AsInt) ->
+            convert_key_int(AsInt);
+        true ->
+            convert_key_hash(Bin)
+    end.
+
+-spec convert_key_hash(term()) -> non_neg_integer().
+convert_key_hash(Key) ->
     HashKey = riak_core_util:chash_key({?BUCKET, term_to_binary(Key)}),
     abs(crypto:bytes_to_integer(HashKey)).

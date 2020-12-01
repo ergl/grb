@@ -17,7 +17,7 @@
 -define(RED_REPLICA, red).
 
 %% Opaque types
--type key() :: binary().
+-type key() :: term().
 -type snapshot() :: term().
 -type crdt() :: grb_crdt:crdt().
 -type operation() :: grb_crdt:operation().
