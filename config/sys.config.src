@@ -116,8 +116,6 @@
         <<"rubis/storeBuyNow">> => <<"rubis/storeBuyNow">>,
         <<"rubis/placeBid">> => <<"rubis/closeAuction">>,
         <<"rubis/closeAuction">> => <<"rubis/placeBid">>
-    }},
-
-    {rubis_defaults_path, "./bin/rubis_defaults.config"}
+    }}
   ]}
 ].
