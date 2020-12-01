@@ -76,7 +76,7 @@ load_items(Regions, UsersPerRegion, CategoriesAndItems, Properties) ->
             Region = lists:nth(rand:uniform(NRegions), Regions),
             UserId = rand:uniform(UsersPerRegion),
             UserKey = {Region, users, list_to_binary(io_lib:format("~s/user/preload_~b", [Region, UserId]))},
-            store_item(Region, UserKey, Category, Id, #{
+            Ret = store_item(Region, UserKey, Category, Id, #{
                 item_max_quantity => maps:get(item_max_quantity, Properties),
                 item_reserve_percentage => maps:get(item_reserve_percentage, Properties, 0),
                 item_buy_now_percentage => maps:get(item_buy_now_percentage, Properties, 0),
@@ -84,7 +84,22 @@ load_items(Regions, UsersPerRegion, CategoriesAndItems, Properties) ->
                 item_max_bids => maps:get(item_max_bids, Properties, 0),
                 item_max_comments => maps:get(item_max_comments, Properties, 0),
                 comment_max_len => maps:get(comment_max_len, Properties, 0)
-            })
+            }),
+
+            {ToWait, ItemKey, NBids, _NComments, _CommentsLen, BidProps} = Ret,
+            {ToWaitBids, MaxBid} = load_bids(Region, ItemKey, NBids, Regions, UsersPerRegion, BidProps),
+
+            %% Update the max_bid for the item id
+            {_, _, ItemId} = ItemKey,
+            ok = grb_oplog_vnode:append_direct_vnode(
+                async,
+                grb_dc_utils:key_location(Region),
+                #{
+                    {Region, items, ItemId, max_bid} => grb_crdt:make_op(grb_maxtuple, MaxBid)
+                }
+            ),
+
+            ToWait + ToWaitBids + 1
         end, NumberOfItems)
     end, CategoriesAndItems),
     ok.
@@ -174,12 +189,13 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
     ClosedPercentage = maps:get(item_closed_percentage, ItemProperties, 0),
     Closed = (rand:uniform(100) =< ClosedPercentage),
 
-    %% fixme(borja): generate this
-    %% MaxBids = maps:get(item_max_bids, ItemProperties),
-    %% MaxComments = maps:get(item_max_comments, ItemProperties),
-    %% CommentLength = maps:get(comment_max_len, ItemProperties),
-    %% BidsN = rand:uniform(10),
-    %% MaxBid = rand:uniform(10),
+    MaxBids = maps:get(item_max_bids, ItemProperties),
+    BidsN = if MaxBids =:= 0 -> 0; true -> rand:uniform(MaxBids) end,
+
+    MaxComments = maps:get(item_max_comments, ItemProperties),
+    MaxCommentLength = maps:get(comment_max_len, ItemProperties),
+    CommentsN = if MaxComments =:= 0 -> 0; true -> rand:uniform(MaxComments) end,
+    CommentsLength = if MaxCommentLength =:= 0 -> 0; true -> rand:uniform(MaxCommentLength) end,
 
     ItemKey = {Region, Table, ItemId},
     ok = grb_oplog_vnode:put_direct_vnode(
@@ -199,8 +215,8 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
             {Region, Table, ItemId, buy_now} => {grb_lww, BuyNow},
             {Region, Table, ItemId, closed} => {grb_lww, Closed},
 
-            %% Will be overwirten later, should be kept the same as the index size
-            {Region, Table, ItemId, bids_number} => {grb_gcounter, 0},
+            %% Can do this already, we know how many we'll generate
+            {Region, Table, ItemId, bids_number} => {grb_gcounter, BidsN},
 
             %% Junk info
             {Region, Table, ItemId, name} => {grb_lww, Name},
@@ -226,7 +242,86 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
         }
     ),
 
-    3.
+    BidProperties = #{item_initial_price => InitialPrice, item_max_quantity => Quantity},
+    {3, ItemKey, BidsN, CommentsN, CommentsLength, BidProperties}.
+
+load_bids(ItemRegion, ItemKey, NBids, Regions, UsersPerRegion, BidProps) ->
+    load_bids_(NBids, ItemRegion, ItemKey, length(Regions), Regions, UsersPerRegion, BidProps, {0, {ignore, -1}}).
+
+load_bids_(0, _, _, _, _, _, _, Acc) ->
+    Acc;
+load_bids_(Id, ItemRegion, ItemKey, NRegions, Regions, UsersPerRegion, BidProps, {ToWait0, Max0}) ->
+    BidderRegion = lists:nth(rand:uniform(NRegions), Regions),
+    BidderId = rand:uniform(UsersPerRegion),
+    BidderKey = {BidderRegion, users, list_to_binary(io_lib:format("~s/user/preload_~b", [BidderRegion, BidderId]))},
+    {MsgsToWait, BidKey, Amount} = store_bid(ItemRegion, ItemKey, BidderKey, Id, BidProps),
+    NewMax = case Max0 of
+        {_, OldAmount} when Amount > OldAmount -> {BidKey, Amount};
+        _ -> Max0
+    end,
+    load_bids_(Id - 1, ItemRegion, ItemKey, NRegions, Regions, UsersPerRegion, BidProps, {ToWait0 + MsgsToWait, NewMax}).
+
+%% Have to index by item and by user
+%% Store the nickname for the user in the BIDS_item index.
+%% Since the user key is {Region, users, Nickname}, simply extract it
+%% Store amount in BIDS_user, so we don't have to do cross-partiton
+%% Update number of bids? (or do it outside)
+%% Update max bid for item
+-spec store_bid(Region :: binary(),
+                ItemKey :: {binary(), atom(), binary()},
+                UserKey :: {binary(), atom(), binary()},
+                Id :: non_neg_integer(),
+                BidProperties :: map()) -> { ToWait :: non_neg_integer(), BidAmount :: non_neg_integer()}.
+store_bid(Region, ItemKey={Region, _, ItemId}, UserKey={UserRegion, _, _}, Id, BidProperties) ->
+    %% Fields:
+    %% nickname of bidder (user id)
+    %% item key
+    %% bid amount
+    %% quantity of item
+    Table = bids,
+
+    #{ item_initial_price := ItemInitalPrice } = BidProperties,
+    BidAmount = ItemInitalPrice + rand:uniform((ItemInitalPrice div 2)),
+
+    #{ item_max_quantity := ItemMaxQty } = BidProperties,
+    BidQty = rand:uniform(ItemMaxQty),
+
+    %% Ensure id partitioning during load so we can do it in parallel
+    BidId = list_to_binary(io_lib:format("~s/bid/preload_~b", [ItemId, Id])),
+
+    %% Main bid object
+    BidKey = {Region, Table, BidId},
+    ok = grb_oplog_vnode:put_direct_vnode(
+        async,
+        grb_dc_utils:key_location(Region),
+        #{
+            BidKey => {grb_lww, BidKey},
+            {Region, Table, BidId, bidder} => {grb_lww, UserKey},
+            {Region, Table, BidId, item} => {grb_lww, ItemKey},
+            {Region, Table, BidId, amount} => {grb_lww, BidAmount},
+            {Region, Table, BidId, quantity} => {grb_lww, BidQty}
+        }
+    ),
+
+    %% Append to user_id -> {bid_id, bid_amount} index, colocated with the bidder
+    ok = grb_oplog_vnode:append_direct_vnode(
+        async,
+        grb_dc_utils:key_location(UserRegion),
+        #{
+            {UserRegion, bids_user, UserKey} => grb_crdt:make_op(grb_gset, {BidKey, BidAmount})
+        }
+    ),
+
+    %% Append to item_id -> {bid_id, user_id} index, colocated with the item
+    ok = grb_oplog_vnode:append_direct_vnode(
+        async,
+        grb_dc_utils:key_location(Region),
+        #{
+            {Region, bids_item, ItemKey} => grb_crdt:make_op(grb_gset, {BidKey, UserKey})
+        }
+    ),
+
+    {3, BidKey, BidAmount}.
 
 %%%===================================================================
 %%% Random Utils
@@ -275,7 +370,6 @@ pmap_limit(Fun, Total) ->
     end,
 
     ok = Receive(ToWait, ok).
-
 
 -spec pmap(fun(), list()) -> list().
 pmap(F, L) ->
