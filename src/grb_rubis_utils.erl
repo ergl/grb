@@ -1,8 +1,8 @@
 -module(grb_rubis_utils).
 
 %% API
--export([preload/2]).
--export([preload_sync/1]).
+-export([preload/2, preload_sync/1]).
+-ignore_xref([preload_sync/1]).
 
 -define(global_indices, <<"global_index">>).
 
@@ -61,15 +61,7 @@ load_items(Regions, UsersPerRegion, CategoriesAndItems, Properties) ->
             Region = lists:nth(rand:uniform(NRegions), Regions),
             UserId = rand:uniform(UsersPerRegion),
             UserKey = {Region, users, list_to_binary(io_lib:format("~s/user/preload_~b", [Region, UserId]))},
-            Ret = store_item(Region, UserKey, Category, Id, #{
-                item_max_quantity => maps:get(item_max_quantity, Properties),
-                item_reserve_percentage => maps:get(item_reserve_percentage, Properties, 0),
-                item_buy_now_percentage => maps:get(item_buy_now_percentage, Properties, 0),
-                item_closed_percentage => maps:get(item_closed_percentage, Properties, 0),
-                item_max_bids => maps:get(item_max_bids, Properties, 0),
-                item_max_comments => maps:get(item_max_comments, Properties, 0)
-            }),
-
+            Ret = store_item(Region, UserKey, Category, Id, Properties),
             {ToWait, ItemKey, NBids, NComments, BidProps} = Ret,
             {ToWaitBids, MaxBid} = load_bids(Region, ItemKey, NBids, Regions, UsersPerRegion, BidProps),
 
@@ -83,9 +75,7 @@ load_items(Regions, UsersPerRegion, CategoriesAndItems, Properties) ->
                 }
             ),
 
-            ToWaitComments = load_comments(Region, UserKey, ItemKey, NComments, Regions, UsersPerRegion, #{
-                comment_max_len => maps:get(comment_max_len, Properties, 10)
-            }),
+            ToWaitComments = load_comments(Region, UserKey, ItemKey, NComments, Regions, UsersPerRegion, Properties),
             ToWait + ToWaitBids + 1 + ToWaitComments
         end, NumberOfItems)
     end, CategoriesAndItems),
@@ -116,11 +106,12 @@ store_user(Region, Id) ->
     Table = users,
     %% Ensure nickname partitioning during load so we can do it in parallel
     NickName =  list_to_binary(io_lib:format("~s/user/preload_~b", [Region, Id])),
-    FirstName = random_binary(20),
-    LastName = random_binary(20),
+    %% Set it to the nickname so we can guess it at the client to authenticate
     Password = NickName,
+
+    FirstName = list_to_binary(io_lib:format("User_~b", [Id])),
+    LastName = list_to_binary(io_lib:format("McUser_~b", [Id])),
     Email = random_email(20),
-    Rating = random_rating(),
 
     UserKey = {Region, Table, NickName},
     %% Create user object
@@ -133,7 +124,7 @@ store_user(Region, Id) ->
             {Region, Table, NickName, lastname} => {grb_lww, LastName},
             {Region, Table, NickName, password} => {grb_lww, Password},
             {Region, Table, NickName, email} => {grb_lww, Email},
-            {Region, Table, NickName, rating} => {grb_gcounter, Rating}
+            {Region, Table, NickName, rating} => {grb_gcounter, 0}
         }
     ),
 
@@ -153,34 +144,34 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
     %% Ensure id partitioning during load so we can do it in parallel
     ItemId = list_to_binary(io_lib:format("~s/items/preload_~b", [Category, Id])),
 
-    Name = random_binary(50),
-    Description = random_binary(100),
+    Name = ItemId,
+
+    #{
+        item_description_max_len := MaxDescription,
+        item_max_quantity := MaxQuantity,
+        item_reserve_percentage := ReservedPercentage,
+        item_buy_now_percentage := BuyNowPercentage,
+        item_closed_percentage := ClosedPercentage,
+        item_max_bids := MaxBids,
+        item_max_comments := MaxComments
+    } = ItemProperties,
+    Description = safe_uniform(MaxDescription),
 
     InitialPrice = rand:uniform(100),
-
-    MaxQuantity = maps:get(item_max_quantity, ItemProperties),
     Quantity = safe_uniform(MaxQuantity),
+    Closed = (rand:uniform(100) =< ClosedPercentage),
+    BidsN = safe_uniform(MaxBids),
+    CommentsN = safe_uniform(MaxComments),
 
-    ReservedPercentage = maps:get(item_reserve_percentage, ItemProperties, 0),
     ReservePrice = case (rand:uniform(100) =< ReservedPercentage) of
         true -> InitialPrice + rand:uniform(10);
         false -> 0
     end,
 
-    BuyNowPercentage = maps:get(item_buy_now_percentage, ItemProperties, 0),
     BuyNow = case (rand:uniform(100) =< BuyNowPercentage) of
         true -> InitialPrice + ReservePrice + rand:uniform(10);
         false -> 0
     end,
-
-    ClosedPercentage = maps:get(item_closed_percentage, ItemProperties, 0),
-    Closed = (rand:uniform(100) =< ClosedPercentage),
-
-    MaxBids = maps:get(item_max_bids, ItemProperties),
-    BidsN = safe_uniform(MaxBids),
-
-    MaxComments = maps:get(item_max_comments, ItemProperties),
-    CommentsN = safe_uniform(MaxComments),
 
     ItemKey = {Region, Table, ItemId},
     ok = grb_oplog_vnode:put_direct_vnode(
