@@ -147,7 +147,7 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
     Name = ItemId,
 
     #{
-        item_description_max_len := MaxDescription,
+        item_description_max_len := MaxDescriptionLen,
         item_max_quantity := MaxQuantity,
         item_reserve_percentage := ReservedPercentage,
         item_buy_now_percentage := BuyNowPercentage,
@@ -155,7 +155,6 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
         item_max_bids := MaxBids,
         item_max_comments := MaxComments
     } = ItemProperties,
-    Description = safe_uniform(MaxDescription),
 
     InitialPrice = rand:uniform(100),
     Quantity = safe_uniform(MaxQuantity),
@@ -171,6 +170,11 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
     BuyNow = case (rand:uniform(100) =< BuyNowPercentage) of
         true -> InitialPrice + ReservePrice + rand:uniform(10);
         false -> 0
+    end,
+
+    Description = case safe_uniform(safe_uniform(MaxDescriptionLen)) of
+        N when N >= 1 -> random_binary(N);
+        _ -> <<>>
     end,
 
     ItemKey = {Region, Table, ItemId},
