@@ -133,6 +133,16 @@ handle_request('OpRequest', Args = #{operation := Operation}, Context, State) ->
     ok = grb:update(Partition, TxId, Key, Operation),
     try_read(Partition, TxId, Key, grb_crdt:op_type(Operation), ReadAgain, SnapshotVC, Context, State);
 
+handle_request('OpRequest', Args = #{read_operation := ReadOperation}, Context, State) ->
+     #{
+        partition := Partition,
+        transaction_id := TxId,
+        key := Key,
+        read_again := ReadAgain,
+        snapshot_vc := SnapshotVC
+    } = Args,
+    try_read_operation(Partition, TxId, Key, ReadOperation, ReadAgain, SnapshotVC, Context, State);
+
 handle_request('OpRequest', Args, Context, State) ->
     #{
         partition := Partition,
@@ -152,6 +162,10 @@ handle_request('OpRequestPartition', Args = #{reads := Reads}, Context, _State) 
         read_again := ReadAgain
     } = Args,
     try_multikey_read(grb_promise:new(self(), Context), Partition, TxId, SVC, ReadAgain, Reads);
+
+handle_request('OpRequestPartition', _Args = #{read_ops := _ReadOps}, Context, State) ->
+    %% todo(borja, crdt): Implement
+    reply_to_client(#{}, Context, State);
 
 handle_request('OpRequestPartition', Args = #{operations := Ops}, Context, _State) ->
     #{
@@ -214,6 +228,27 @@ try_read(Partition, TxId, Key, Type, false, SnapshotVC, Context, State) ->
             reply_to_client(grb:key_snapshot_bypass(Partition, TxId, Key, Type, SnapshotVC), Context, State);
         false ->
             grb:key_snapshot(grb_promise:new(self(), Context), Partition, TxId, Key, Type, SnapshotVC)
+    end.
+
+-spec try_read_operation(partition_id(), term(), key(), operation(), boolean(), vclock(), proto_context(), state()) -> ok.
+try_read_operation(Partition, TxId, Key, ReadOp, true, SnapshotVC, Context, State) ->
+    reply_to_client(
+        grb:read_operation_bypass(Partition, TxId, Key, grb_crdt:op_type(ReadOp), ReadOp, SnapshotVC),
+        Context,
+        State
+    );
+
+try_read_operation(Partition, TxId, Key, ReadOp, false, SnapshotVC, Context, State) ->
+    Type = grb_crdt:op_type(ReadOp),
+    case grb:partition_ready(Partition, SnapshotVC) of
+        true ->
+            reply_to_client(
+                grb:read_operation_bypass(Partition, TxId, Key, Type, ReadOp, SnapshotVC),
+                Context,
+                State
+            );
+        false ->
+            grb:read_operation(grb_promise:new(self(), Context), Partition, TxId, Key, Type, ReadOp, SnapshotVC)
     end.
 
 -spec try_multikey_read(grb_promise:t(), partition_id(), term(), vclock(), boolean(), [{key(), crdt()}]) -> ok.

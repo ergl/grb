@@ -171,7 +171,10 @@ empty_read_test(C) ->
     Replica = random_replica(ClusterMap),
     Key = ?random_key,
     {Partition, Node} = key_location(Key, Replica, ClusterMap),
-    {<<>>, _} = read_only_transaction(Node, Partition, tx_1, Key, grb_lww, #{}).
+    {<<>>, _} = read_only_transaction(Node, Partition, tx_1, Key, grb_lww, #{}),
+    {0, _} = read_only_operation_transaction(Node, Partition, tx_2, Key, grb_crdt:wrap_op(grb_gset, grb_gset:count_op()), #{}),
+    {false, _} = read_only_operation_transaction(Node, Partition, tx_2, Key, grb_crdt:wrap_op(grb_gset, grb_gset:member_op(test)), #{}),
+    {[], _} = read_only_operation_transaction(Node, Partition, tx_2, Key, grb_crdt:wrap_op(grb_gset, grb_gset:limit_op(10)), #{}).
 
 read_your_writes_test(C) ->
     ClusterMap = ?config(cluster_info, C),
@@ -377,10 +380,16 @@ advance_clock_single(Node, P, Replicas, ClockName) ->
 uniform_barrier(_Replica, Node, Partition, Clock) ->
     ok = erpc:call(Node, grb, sync_uniform_barrier, [Partition, Clock]).
 
--spec read_only_transaction(node(), partition_id(), term(), key(), term(), vclock()) -> {snapshot(), vclock()}.
+-spec read_only_transaction(node(), partition_id(), term(), key(), crdt(), vclock()) -> {snapshot(), vclock()}.
 read_only_transaction(Node, Partition, TxId, Key, Type, Clock) ->
     SVC = erpc:call(Node, grb, start_transaction, [Partition, Clock]),
     {ok, Val} = erpc:call(Node, grb, sync_key_vsn, [Partition, TxId, Key, Type, SVC]),
+    {Val, SVC}.
+
+-spec read_only_operation_transaction(node(), partition_id(), term(), key(), operation(), vclock()) -> {term(), vclock()}.
+read_only_operation_transaction(Node, Partition, TxId, Key, Operation, Clock) ->
+    SVC = erpc:call(Node, grb, start_transaction, [Partition, Clock]),
+    {ok, Val} = erpc:call(Node, grb, sync_key_operation, [Partition, TxId, Key, Operation, SVC]),
     {Val, SVC}.
 
 -spec update_transaction(replica_id(), node(), partition_id(), term(), key(), operation(), vclock()) -> vclock().

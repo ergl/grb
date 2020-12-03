@@ -22,6 +22,10 @@
          key_snapshot/6,
          key_snapshot_bypass/5]).
 
+%% Read operation API
+-export([read_operation/7,
+         read_operation_bypass/6]).
+
 %% Multi-read API
 -export([multikey_snapshot/5,
          multikey_snapshot_bypass/5]).
@@ -40,6 +44,7 @@
 -ifdef(TEST).
 -export([sync_uniform_barrier/2,
          sync_key_vsn/5,
+         sync_key_operation/5,
          sync_commit_red/5]).
 -endif.
 
@@ -156,6 +161,15 @@ key_snapshot(Promise, Partition, TxId, Key, Type, SnapshotVC) ->
 key_snapshot_bypass(Partition, TxId, Key, Type, SnapshotVC) ->
     grb_oplog_vnode:get_key_snapshot(Partition, TxId, Key, Type, SnapshotVC).
 
+-spec read_operation(grb_promise:t(), partition_id(), term(), key(), crdt(), operation(), vclock()) -> ok.
+read_operation(Promise, Partition, TxId, Key, Type, ReadOp, SnapshotVC) ->
+    grb_oplog_reader:async_key_operation(Promise, Partition, TxId, Key, Type, ReadOp, SnapshotVC).
+
+-spec read_operation_bypass(partition_id(), term(), key(), crdt(), operation(), vclock()) -> {ok, term()}.
+read_operation_bypass(Partition, TxId, Key, Type, ReadOp, SnapshotVC) ->
+    Vsn = grb_oplog_vnode:get_key_version(Partition, TxId, Key, Type, SnapshotVC),
+    {ok, grb_crdt:apply_read_op(ReadOp, Vsn)}.
+
 -spec multikey_snapshot(Promise :: grb_promise:t(),
                         Partition :: partition_id(),
                         TxId :: term(),
@@ -252,6 +266,16 @@ sync_key_vsn(Partition, TxId, Key, Type, VC) ->
     ok = read_snapshot_prologue(Partition, VC),
     Ref = make_ref(),
     key_snapshot(grb_promise:new(self(), Ref), Partition, TxId, Key, Type, VC),
+    receive
+        {'$grb_promise_resolve', Result, Ref} ->
+            Result
+    end.
+
+-spec sync_key_operation(partition_id(), term(), key(), operation(), vclock()) -> {ok, term()}.
+sync_key_operation(Partition, TxId, Key, Operation, VC) ->
+    ok = read_snapshot_prologue(Partition, VC),
+    Ref = make_ref(),
+    read_operation(grb_promise:new(self(), Ref), Partition, TxId, Key, grb_crdt:op_type(Operation), Operation, VC),
     receive
         {'$grb_promise_resolve', Result, Ref} ->
             Result

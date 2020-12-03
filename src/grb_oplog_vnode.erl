@@ -26,6 +26,7 @@
 
 %% Public API
 -export([get_key_snapshot/5,
+         get_key_version/5,
          put_client_op/4,
          prepare_blue/3,
          decide_blue_ready/2,
@@ -261,30 +262,33 @@ put_client_op(Partition, TxId, Key, Operation) ->
 
 -spec get_key_snapshot(partition_id(), term(), key(), crdt(), vclock()) -> {ok, snapshot()}.
 get_key_snapshot(Partition, TxId, Key, Type, SnapshotVC) ->
-    case ets:lookup(op_log_table(Partition), Key) of
-        [] ->
-            apply_tx_ops(Partition, TxId, Key, grb_crdt:new(Type));
+    {ok, grb_crdt:value(get_key_version(Partition, TxId, Key, Type, SnapshotVC))}.
 
-        [{Key, VersionLog}] ->
-            Found = case grb_version_log:snapshot_lower(SnapshotVC, VersionLog) of
-                {not_found, Base} ->
-                    %% todo(borja): Log miss?
-                    Base;
-                {ok, Snapshot} ->
-                    Snapshot
-            end,
-            apply_tx_ops(Partition, TxId, Key, Found)
+-spec get_key_version(partition_id(), term(), key(), crdt(), vclock()) -> grb_crdt:t().
+get_key_version(Partition, TxId, Key, Type, SnapshotVC) ->
+    case find_key_version(Partition, Key, Type, SnapshotVC) of
+        {not_found, Base} ->
+            %% todo(borja): Log miss?
+            apply_tx_ops(Partition, TxId, Key, Base);
+
+        {ok, KeyVersion} ->
+            apply_tx_ops(Partition, TxId, Key, KeyVersion)
     end.
 
--spec apply_tx_ops(partition_id(), term(), key(), grb_crdt:t()) -> {ok, snapshot()}.
+-spec find_key_version(partition_id(), key(), crdt(), vclock()) -> {ok, grb_crdt:t()} | {not_found, grb_crdt:t()}.
+find_key_version(Partition, Key, Type, SnapshotVC) ->
+    case ets:lookup(op_log_table(Partition), Key) of
+        [] -> {not_found, grb_crdt:new(Type)};
+        [{Key, VersionLog}] -> grb_version_log:snapshot_lower(SnapshotVC, VersionLog)
+    end.
+
+-spec apply_tx_ops(partition_id(), term(), key(), grb_crdt:t()) -> grb_crdt:t().
 apply_tx_ops(Partition, TxId, Key, Snapshot) ->
     case ets:lookup(pending_ops_table(Partition), {TxId, Key}) of
-        [] ->
-            {ok, grb_crdt:value(Snapshot)};
-        [{_, Operation}] ->
-            %% We don't care about metadata for the operation here, since we now
-            %% our operations always come after the snapshot
-            {ok, grb_crdt:value(grb_crdt:apply_op_raw(Operation, Snapshot))}
+        [] -> Snapshot;
+        %% We don't care about metadata for the operation here, since we now
+        %% our operations always come after the snapshot
+        [{_, Operation}] -> grb_crdt:apply_op_raw(Operation, Snapshot)
     end.
 
 -spec prepare_blue(partition_id(), term(), vclock()) -> grb_time:ts().
