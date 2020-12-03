@@ -370,6 +370,8 @@ safe_uniform(0) -> 0;
 safe_uniform(X) when X >= 1 -> rand:uniform(X).
 
 -spec random_binary(Size :: non_neg_integer()) -> binary().
+random_binary(0) ->
+    <<>>;
 random_binary(N) ->
     list_to_binary(random_string_(N)).
 
