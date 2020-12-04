@@ -6,6 +6,9 @@
 
 -define(global_indices, <<"global_index">>).
 
+%% Negative so it always wins. Empty binary so we can filter out later
+-define(base_maxtuple, {-1, <<>>}).
+
 -spec preload(grb_promise:t(), map()) -> ok.
 preload(Promise, Properties) ->
     _ = spawn_link(fun() ->
@@ -191,7 +194,7 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
             ItemKey => {grb_lww, ItemKey},
             {Region, Table, ItemId, seller} => {grb_lww, Seller},
             {Region, Table, ItemId, category} => {grb_lww, Category},
-            {Region, Table, ItemId, max_bid} => {grb_maxtuple, {0, <<>>}},
+            {Region, Table, ItemId, max_bid} => {grb_maxtuple, ?base_maxtuple},
 
             %% Meat. Quantity can be LWW since it is only modified in a red transaction
             {Region, Table, ItemId, initial_price} => {grb_lww, InitialPrice},
@@ -231,7 +234,7 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
     {3, ItemKey, BidsN, CommentsN, BidProperties}.
 
 load_bids(ItemRegion, ItemKey, NBids, Regions, UsersPerRegion, BidProps) ->
-    load_bids_(NBids, ItemRegion, ItemKey, length(Regions), Regions, UsersPerRegion, BidProps, {0, {ignore, -1}}).
+    load_bids_(NBids, ItemRegion, ItemKey, length(Regions), Regions, UsersPerRegion, BidProps, {0, ?base_maxtuple}).
 
 load_bids_(0, _, _, _, _, _, _, Acc) ->
     Acc;
@@ -241,7 +244,7 @@ load_bids_(Id, ItemRegion, ItemKey, NRegions, Regions, UsersPerRegion, BidProps,
     BidderKey = {BidderRegion, users, list_to_binary(io_lib:format("~s/user/preload_~b", [BidderRegion, BidderId]))},
     {MsgsToWait, BidKey, Amount} = store_bid(ItemRegion, ItemKey, BidderKey, Id, BidProps),
     NewMax = case Max0 of
-        {_, OldAmount} when Amount > OldAmount -> {BidKey, Amount};
+        {OldAmount, _} when Amount > OldAmount -> {Amount, {BidKey, BidderKey}};
         _ -> Max0
     end,
     load_bids_(Id - 1, ItemRegion, ItemKey, NRegions, Regions, UsersPerRegion, BidProps, {ToWait0 + MsgsToWait, NewMax}).
