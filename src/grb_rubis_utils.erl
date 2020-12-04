@@ -147,6 +147,7 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
     Name = ItemId,
 
     #{
+        item_max_initial_price := MaxInitialPrice,
         item_description_max_len := MaxDescriptionLen,
         item_max_quantity := MaxQuantity,
         item_reserve_percentage := ReservedPercentage,
@@ -156,20 +157,24 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
         item_max_comments := MaxComments
     } = ItemProperties,
 
-    InitialPrice = rand:uniform(100),
+    InitialPrice = safe_uniform(MaxInitialPrice),
     Quantity = safe_uniform(MaxQuantity),
     Closed = (rand:uniform(100) =< ClosedPercentage),
     BidsN = safe_uniform(MaxBids),
     CommentsN = safe_uniform(MaxComments),
 
-    ReservePrice = case (rand:uniform(100) =< ReservedPercentage) of
-        true -> InitialPrice + rand:uniform(10);
-        false -> 0
+    ReservePrice = InitialPrice + begin
+        case (rand:uniform(100) =< ReservedPercentage) of
+            true -> rand:uniform(10);
+            false -> 0
+        end
     end,
 
-    BuyNow = case (rand:uniform(100) =< BuyNowPercentage) of
-        true -> InitialPrice + ReservePrice + rand:uniform(10);
-        false -> 0
+    BuyNow = ReservePrice + begin
+        case (rand:uniform(100) =< BuyNowPercentage) of
+            true -> rand:uniform(10);
+            false -> 0
+        end
     end,
 
     Description = case safe_uniform(safe_uniform(MaxDescriptionLen)) of
