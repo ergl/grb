@@ -73,7 +73,7 @@ cluster_info() ->
 
 -spec inter_dc_ip_port() -> {inet:ip_address(), inet:port_number()}.
 inter_dc_ip_port() ->
-    {ok, IPString} = application:get_env(grb, bounded_ip),
+    {ok, IPString} = application:get_env(grb, inter_dc_ip),
     {ok, IP} = inet:parse_address(IPString),
     {ok, Port} = application:get_env(grb, inter_dc_port),
     {IP, Port}.

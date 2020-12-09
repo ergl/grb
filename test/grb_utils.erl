@@ -125,7 +125,7 @@ start_node(Name, Config) ->
             %% GRB Config
             {ok, Addrs} = inet:getif(),
             IP = element(1, hd(Addrs)),
-            ok = erpc:call(Node, application, set_env, [grb, bounded_ip, inet:ntoa(IP)]),
+            ok = erpc:call(Node, application, set_env, [grb, inter_dc_ip, inet:ntoa(IP)]),
             ok = erpc:call(Node, application, set_env, [grb, tcp_port, Port + 1]),
             ok = erpc:call(Node, application, set_env, [grb, tcp_id_len_bits, 16]),
             ok = erpc:call(Node, application, set_env, [grb, inter_dc_port, Port + 2]),

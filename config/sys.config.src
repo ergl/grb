@@ -37,10 +37,8 @@
 
   {grb, [
     %% Configuration for GRB coming form the command line
-    %% The IP of this node. We can get this using inet:getif,
-    %% but we already told the node which IP to use use in vm.args,
-    %% so might as well use that one, too.
-    {bounded_ip, "${IP}"},
+    %% The (public) IP of this node. We could also get this using inet:getif
+    {inter_dc_ip, "${INTER_DC_IP}"},
 
     %% The port to listen for client commands (default is 7878)
     {tcp_port, ${TCP_LIST_PORT}},
