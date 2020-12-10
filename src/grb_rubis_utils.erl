@@ -373,7 +373,7 @@ store_comment(RecipientRegion, RecipientKey={_, _, RecipientId}, ItemKey={_, _, 
 %%% Random Utils
 %%%===================================================================
 
--spec safe_uniform(pos_integer()) -> pos_integer().
+-spec safe_uniform(non_neg_integer()) -> non_neg_integer().
 safe_uniform(0) -> 0;
 safe_uniform(X) when X >= 1 -> rand:uniform(X).
 
