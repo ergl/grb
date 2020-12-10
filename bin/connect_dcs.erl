@@ -6,12 +6,14 @@
 
 -export([main/1]).
 
+-type node_config() :: ip_address | node_name.
+
 -spec usage() -> no_return().
 usage() ->
     Name = filename:basename(escript:script_name()),
     io:fwrite(
         standard_error,
-        "Usage: ~s [-d] [-f config_file] | 'node_1@host_1' ... 'node_n@host_n' ~n",
+        "Usage: ~s [-d] [-i -p inter_dc_port] [-f config_file] | 'node_1@host_1' ... 'node_n@host_n' ~n",
         [Name]
     ),
     halt(1).
@@ -24,11 +26,19 @@ main(Args) ->
             halt(1);
         {ok, Map} ->
             erlang:put(dry_run, maps:get(dry_run, Map, false)),
+            NodeConfig = case maps:get(use_public_ip, Map, false) of
+                false ->
+                    node_name;
+                true ->
+                    %% We know the key is defined, enforced in required/2
+                    erlang:put(inter_dc_port, maps:get(inter_dc_port, Map)),
+                    ip_address
+            end,
             prepare(
                 validate(
                     case Map of
-                        #{config := ConfigFile} -> parse_node_config(ConfigFile);
-                        #{rest := Nodes} -> parse_node_list(Nodes)
+                        #{config := ConfigFile} -> parse_node_config(NodeConfig, ConfigFile);
+                        #{rest := Nodes} -> parse_node_list(NodeConfig, Nodes)
                     end
                 )
             )
@@ -37,8 +47,8 @@ main(Args) ->
 %% @doc Parse node names from config file
 %%
 %% The config file is the same as the cluster definition.
--spec parse_node_config(ConfigFilePath :: string()) -> {ok, [atom()]} | error.
-parse_node_config(ConfigFilePath) ->
+-spec parse_node_config(NodeConfig :: node_config(), ConfigFilePath :: string()) -> {ok, term()} | error.
+parse_node_config(NodeConfig, ConfigFilePath) ->
     case file:consult(ConfigFilePath) of
         {ok, Terms} ->
             {clusters, ClusterMap} = lists:keyfind(clusters, 1, Terms),
@@ -46,7 +56,7 @@ parse_node_config(ConfigFilePath) ->
             {Leader, AllNodes} = maps:fold(
                 fun(ClusterKey, #{servers := Servers}, {LeaderMarker, AllNodesAcc}) ->
                     [MainNode | _] = lists:usort(Servers),
-                    NodeName = build_erlang_node_name(MainNode),
+                    NodeName = build_node_name(NodeConfig, MainNode),
                     case ClusterKey of
                         LeaderCluster ->
                             {NodeName, [NodeName | AllNodesAcc]};
@@ -57,31 +67,42 @@ parse_node_config(ConfigFilePath) ->
                 {undefined, []},
                 ClusterMap
             ),
-            {ok, {config, Leader, AllNodes}};
+            {ok, {config, NodeConfig, Leader, AllNodes}};
         _ ->
             error
     end.
 
--spec build_erlang_node_name(atom()) -> atom().
-build_erlang_node_name(Node) ->
+-spec build_node_name(node_config(), term()) -> term().
+build_node_name(node_name, Node) ->
+    %% Assumes a route to the Addr
     {ok, Addr} = inet:getaddr(Node, inet),
     IPString = inet:ntoa(Addr),
-    list_to_atom("grb@" ++ IPString).
+    list_to_atom("grb@" ++ IPString);
 
-parse_node_list([]) ->
+build_node_name(ip_address, IP) ->
+    IP.
+
+-spec parse_node_list(node_config(), [term()]) -> {ok, {config | list, node_config(), [term()]}} | {error, atom()}.
+parse_node_list(_, []) ->
     {error, emtpy_node_list};
-parse_node_list([Node]) ->
-    {ok, {node_list, [list_to_atom(Node)]}};
-parse_node_list([_ | _] = NodeListString) ->
+parse_node_list(node_name=C, [Node]) ->
+    {ok, {list, C, [list_to_atom(Node)]}};
+parse_node_list(ip_address=C, [IP]) ->
+    {ok, {list, C, [IP]}};
+parse_node_list(Config, [_ | _] = NodeListString) ->
     try
         Nodes = lists:foldl(
             fun(NodeString, Acc) ->
-                [list_to_atom(NodeString) | Acc]
+                N = case Config of
+                    node_name -> list_to_atom(NodeString);
+                    ip_address -> NodeString
+                end,
+                [N | Acc]
             end,
             [],
             NodeListString
         ),
-        {ok, {node_list, lists:reverse(Nodes)}}
+        {ok, {list, Config, lists:reverse(Nodes)}}
     catch
         Err -> {error, Err}
     end.
@@ -96,16 +117,16 @@ validate({error, Reason}) ->
 validate({ok, Payload}) ->
     {ok, Payload}.
 
--spec prepare({ok, term()}) -> ok | no_return().
-prepare({ok, {config, undefined, All}}) -> prepare(hd(All), All);
-prepare({ok, {config, Leader, All}}) -> prepare(Leader, All);
-prepare({ok, {node_list, Nodes}}) -> prepare(hd(Nodes), Nodes).
+-spec prepare({ok, {config | list, node_config(), [term()]}}) -> ok | no_return().
+prepare({ok, {config, NodeConfig, undefined, All}}) -> prepare(NodeConfig, hd(All), All);
+prepare({ok, {config, NodeConfig, Leader, All}}) -> prepare(NodeConfig, Leader, All);
+prepare({ok, {list, NodeConfig, Nodes}}) -> prepare(NodeConfig, hd(Nodes), Nodes).
 
-prepare(Leader, AllNodes) ->
-    io:format("Starting clustering at leader ~w of nodes ~w~n", [Leader, AllNodes]),
+prepare(Config, Leader, AllNodes) ->
+    io:format("[~p] Starting clustering at leader ~p of nodes ~p~n", [Config, Leader, AllNodes]),
     Res =
         case erlang:get(dry_run) of
-            false -> erpc:call(Leader, grb_dc_manager, create_replica_groups, [AllNodes]);
+            false -> do_connect(Config, Leader, AllNodes);
             true -> {error, dry_run}
         end,
     case Res of
@@ -113,9 +134,24 @@ prepare(Leader, AllNodes) ->
             io:fwrite(standard_error, "Error connecting clusters: ~p~n", [Reason]),
             halt(1);
         {ok, Descriptors} ->
-            io:format("Joined clusters ~w~n", [Descriptors]),
+            io:format("Joined clusters ~p~n", [Descriptors]),
             ok
     end.
+
+do_connect(node_name, Leader, AllNodes) ->
+    erpc:call(Leader, grb_dc_manager, create_replica_groups, [AllNodes]);
+do_connect(ip_address, LeaderIP, AllIPs) ->
+    Port = erlang:get(inter_dc_port),
+    {ok, Socket} = gen_tcp:connect(LeaderIP, Port, [binary, {active, false}, {nodelay, true}, {packet, 4}]),
+    ok = gen_tcp:send(Socket, <<0:8, 17:8, (term_to_binary(AllIPs))/binary>>),
+    Resp = case gen_tcp:recv(Socket, 0) of
+        {ok, Bin} ->
+            binary_to_term(Bin);
+        {error, Reason} ->
+            {error, Reason}
+    end,
+    ok = gen_tcp:close(Socket),
+    Resp.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% getopt
@@ -139,6 +175,12 @@ parse_args_inner([[$- | Flag] | Args], Acc) ->
             parse_flag(Flag, Args, fun(Arg) -> Acc#{config => Arg} end);
         [$d] ->
             parse_args_inner(Args, Acc#{dry_run => true});
+        [$i] ->
+            parse_args_inner(Args, Acc#{use_public_ip => true});
+        [$p] ->
+            parse_flag(Flag, Args, fun(Arg) -> Acc#{inter_dc_port => list_to_integer(Arg)} end);
+        "-port" ->
+            parse_flag(Flag, Args, fun(Arg) -> Acc#{inter_dc_port => list_to_integer(Arg)} end);
         [$h] ->
             usage(),
             halt(0);
@@ -157,6 +199,17 @@ parse_flag(Flag, Args, Fun) ->
 required(Required, Opts) ->
     Valid = lists:all(fun(F) -> maps:is_key(F, Opts) end, Required),
     case Valid of
-        true -> {ok, Opts};
+        true ->
+            case maps:get(use_public_ip, Opts, false) of
+                false ->
+                    {ok, Opts};
+                true ->
+                    if
+                        is_map_key(inter_dc_port, Opts) ->
+                            {ok, Opts};
+                        true ->
+                            {error, "IP addresses, but no id len of port specified"}
+                    end
+            end;
         false -> {error, "Missing required fields"}
     end.

@@ -94,7 +94,7 @@ if [ -z "$IP" ]; then
 fi
 
 if [ -z "$INTER_DC_IP" ]; then
-  export INTER_DC_IP="127.0.0.1"
+  export INTER_DC_IP="${IP}"
 fi
 
 if [ -z "$INSTANCE_NAME" ]; then

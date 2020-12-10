@@ -66,6 +66,55 @@ terminate(_Reason, #state{socket=Socket, transport=Transport}) ->
     ok.
 
 handle_info(
+    {tcp, Socket, <<?VERSION:?VERSION_BITS, ?DC_CREATE:?MSG_KIND_BITS,
+                    IPsBin/binary>>},
+    State = #state{socket=Socket, transport=Transport}
+) ->
+    IPs = binary_to_term(IPsBin, [safe]),
+    Resp = grb_dc_manager:create_replica_groups(ip_addresses, IPs),
+    Transport:send(Socket, term_to_binary(Resp)),
+    Transport:setopts(Socket, [{active, once}]),
+    {noreply, State};
+
+handle_info(
+    {tcp, Socket, <<?VERSION:?VERSION_BITS, ?DC_GET_DESCRIPTOR:?MSG_KIND_BITS>>},
+    State = #state{socket=Socket, transport=Transport}
+) ->
+    Transport:send(Socket, term_to_binary(grb_dc_manager:replica_descriptor())),
+    Transport:setopts(Socket, [{active, once}]),
+    {noreply, State};
+
+handle_info(
+    {tcp, Socket, <<?VERSION:?VERSION_BITS, ?DC_CONNECT_TO_DESCR:?MSG_KIND_BITS,
+                    Payload/binary>>},
+    State = #state{socket=Socket, transport=Transport}
+) ->
+    Descriptors = binary_to_term(Payload),
+    Res = grb_dc_manager:connect_to_replicas(Descriptors),
+    Transport:send(Socket, term_to_binary(Res)),
+    Transport:setopts(Socket, [{active, once}]),
+    {noreply, State};
+
+handle_info(
+    {tcp, Socket, <<?VERSION:?VERSION_BITS, ?DC_START_BLUE_PROCESSES:?MSG_KIND_BITS>>},
+    State = #state{socket=Socket, transport=Transport}
+) ->
+    Transport:send(Socket, term_to_binary(grb_dc_manager:start_propagation_processes())),
+    Transport:setopts(Socket, [{active, once}]),
+    {noreply, State};
+
+handle_info(
+    {tcp, Socket, <<?VERSION:?VERSION_BITS, ?DC_START_RED_FOLLOWER:?MSG_KIND_BITS,
+                    LeaderIdB/binary>>},
+    State = #state{socket=Socket, transport=Transport}
+) ->
+    LeaderId = binary_to_term(LeaderIdB),
+    ok = grb_dc_manager:start_paxos_follower(LeaderId),
+    Transport:send(Socket, <<>>),
+    Transport:setopts(Socket, [{active, once}]),
+    {noreply, State};
+
+handle_info(
     {tcp, Socket, <<?VERSION:?VERSION_BITS, ?DC_PING:?MSG_KIND_BITS,
                     P:?PARTITION_BITS/big-unsigned-integer,
                     Payload/binary>>},

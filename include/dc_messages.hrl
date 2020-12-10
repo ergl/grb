@@ -29,11 +29,17 @@
 -define(FWD_BLUE_HB_KIND, 12).
 -define(FWD_BLUE_TX_KIND, 13).
 
-%% Ping
--define(DC_PING, 14).
+%% Vector Replication
+-define(REPL_TX_4_KIND, 14).
+-define(REPL_TX_8_KIND, 15).
 
--define(REPL_TX_4_KIND, 15).
--define(REPL_TX_8_KIND, 16).
+%% Control Plane Messages
+-define(DC_PING, 16).
+-define(DC_CREATE, 17).
+-define(DC_GET_DESCRIPTOR, 18).
+-define(DC_CONNECT_TO_DESCR, 19).
+-define(DC_START_BLUE_PROCESSES, 20).
+-define(DC_START_RED_FOLLOWER, 21).
 
 -record(blue_heartbeat, {
     timestamp :: grb_time:ts()
