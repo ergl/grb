@@ -79,7 +79,7 @@ connect_to(#replica_descriptor{replica_id=ReplicaID, remote_addresses=RemoteNode
             ),
             {LocalPartition, Conn}
         end, grb_dc_utils:my_partitions()),
-        ?LOG_INFO("DC connections: ~p", [Connections]),
+        ?LOG_DEBUG("DC connections: ~p", [Connections]),
         ok = add_replica_connections(ReplicaID, Connections),
         ok
     catch Exn -> Exn

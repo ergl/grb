@@ -350,7 +350,7 @@ start_propagation_processes() ->
     RemoteReplicas = grb_dc_connection_manager:connected_replicas(),
 
     {ok, MyGroups} = compute_groups(MyReplicaId, RemoteReplicas),
-    ?LOG_INFO("Fault tolerant groups: ~p~n", [MyGroups]),
+    ?LOG_DEBUG("Fault tolerant groups: ~p~n", [MyGroups]),
 
     Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, {learn_dc_groups, MyGroups}),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res1),
@@ -432,7 +432,7 @@ persist_replica_info() ->
     RemoteReplicas = grb_dc_connection_manager:connected_replicas(),
     ok = persistent_term:put({?MODULE, ?REMOTE_REPLICAS}, RemoteReplicas),
     ok = persistent_term:put({?MODULE, ?ALL_REPLICAS}, [MyReplicaId | RemoteReplicas]),
-    ?LOG_INFO("Persisted all replicas: ~p~n", [RemoteReplicas]),
+    ?LOG_DEBUG("Persisted all replicas: ~p~n", [RemoteReplicas]),
     ok.
 
 -spec stop_background_processes() -> ok.
@@ -507,7 +507,7 @@ connect_to_replicas([Desc | Rest], LocalId, LocalNodes, LocalNum) ->
             ?LOG_ERROR("Cannot join DC ~p, partition mismatch ~p =/= ~p", [RemoteId, RemoteNum, LocalNum]),
             {error, {partition_mismatch, RemoteNum, LocalNum}};
         true ->
-            ?LOG_INFO("Starting join DC ~p", [RemoteId]),
+            ?LOG_DEBUG("Starting join DC ~p", [RemoteId]),
             case connect_nodes_to_descriptor(LocalNodes, Desc) of
                 {error, Reason} ->
                     {error, {bad_remote_connect, Reason}};
