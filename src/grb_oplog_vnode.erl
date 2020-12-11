@@ -640,14 +640,11 @@ decide_blue_internal(TxId, VC, #state{all_replicas=AllReplicas,
 
     WS = take_transaction_writeset(PendingOps, TxId),
     ok = append_writeset(AllReplicas, WS, VC, OpLog, LogSize),
-    ok = remove_from_prepared(PreparedBlue, PreparedIdx, TxId),
-    KnownTime = compute_new_known_time(PreparedBlue),
     case ShouldAppend of
-        true ->
-            grb_propagation_vnode:append_blue_commit(SelfPartition, KnownTime, WS, VC);
-        false ->
-            grb_propagation_vnode:handle_self_blue_heartbeat(SelfPartition, KnownTime)
+        false -> ok;
+        true -> grb_propagation_vnode:append_blue_commit(SelfPartition, WS, VC)
     end,
+    ok = remove_from_prepared(PreparedBlue, PreparedIdx, TxId),
     ok.
 
 -spec take_transaction_writeset(cache_id(), term()) -> writeset().

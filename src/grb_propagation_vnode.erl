@@ -23,7 +23,7 @@
          stable_vc/1,
          stable_red/1,
          update_stable_vc_sync/2,
-         append_blue_commit/4,
+         append_blue_commit/3,
          append_remote_blue_commit/5,
          append_remote_blue_commit_no_hb/4,
          handle_blue_heartbeat/3,
@@ -258,10 +258,10 @@ update_stable_vc_sync(Partition, SVC) ->
                                         ?master,
                                         infinity).
 
--spec append_blue_commit(partition_id(), grb_time:ts(), writeset(), vclock()) -> ok.
-append_blue_commit(Partition, KnownTime, WS, CommitVC) ->
+-spec append_blue_commit(partition_id(), writeset(), vclock()) -> ok.
+append_blue_commit(Partition, WS, CommitVC) ->
     riak_core_vnode_master:sync_command({Partition, node()},
-                                        {append_blue, KnownTime, WS, CommitVC},
+                                        {append_blue, WS, CommitVC},
                                         ?master,
                                         infinity).
 
@@ -495,10 +495,7 @@ handle_command({remote_clock_heartbeat_update, FromReplicaId, KnownVC, StableVC}
     ok = update_known_vc(FromReplicaId, Timestamp, ClockCache),
     {noreply, update_clocks(FromReplicaId, KnownVC, StableVC, S)};
 
-handle_command({append_blue, KnownTime, WS, CommitVC}, _Sender, S=#state{self_log=Log,
-                                                                               local_replica=ReplicaId,
-                                                                               clock_cache=ClockTable})->
-    ok = update_known_vc(ReplicaId, KnownTime, ClockTable),
+handle_command({append_blue, WS, CommitVC}, _Sender, S=#state{self_log=Log})->
     {reply, ok, S#state{self_log=grb_blue_commit_log:insert(WS, CommitVC, Log)}};
 
 handle_command({uniform_barrier, Promise, Timestamp}, _Sender, S=#state{pending_barriers=Barriers}) ->
