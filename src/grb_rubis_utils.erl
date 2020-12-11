@@ -61,7 +61,7 @@ load_items(Regions, UsersPerRegion, CategoriesAndItems, Properties) ->
     NRegions = length(Regions),
     _ = pmap(fun({Category, NumberOfItems}) ->
         pmap_limit(fun(Id) ->
-            Region = lists:nth((Id rem NRegions), Regions),
+            Region = lists:nth(((Id rem NRegions) + 1), Regions),
             UserId = rand:uniform(UsersPerRegion),
             UserKey = {Region, users, list_to_binary(io_lib:format("~s/user/preload_~b", [Region, UserId]))},
             Ret = store_item(Region, UserKey, Category, Id, Properties),
