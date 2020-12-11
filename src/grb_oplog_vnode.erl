@@ -66,6 +66,7 @@
 -define(OP_LOG_TABLE, op_log_table).
 -define(OP_LOG_LAST_VC, op_log_last_vc_table).
 -define(PREPARED_TABLE, prepared_blue_table).
+-define(PREPARED_TABLE_IDX, prepared_blue_table_idx).
 -define(PENDING_TX_OPS, pending_tx_ops).
 
 -type op_log() :: cache(key(), grb_version_log:t()).
@@ -80,6 +81,7 @@
     replicas_n :: non_neg_integer(),
 
     prepared_blue :: cache_id(),
+    prepared_blue_idx :: cache_id(),
 
     blue_tick_interval :: non_neg_integer(),
     blue_tick_pid = undefined :: pid() | undefined,
@@ -163,6 +165,10 @@ last_vc_table(Partition) ->
 -spec prepared_blue_table(partition_id()) -> cache_id().
 prepared_blue_table(Partition) ->
     persistent_term:get({?MODULE, Partition, ?PREPARED_TABLE}).
+
+-spec prepared_blue_idx_table(partition_id()) -> cache_id().
+prepared_blue_idx_table(Partition) ->
+    persistent_term:get({?MODULE, Partition, ?PREPARED_TABLE_IDX}).
 
 -ifdef(TEST).
 -spec transaction_ops(partition_id(), term()) -> non_neg_integer().
@@ -417,10 +423,14 @@ init([Partition]) ->
     PreparedBlue = ets:new(?PREPARED_TABLE, [ordered_set, public, {write_concurrency, true}]),
     ok = persistent_term:put({?MODULE, Partition, ?PREPARED_TABLE}, PreparedBlue),
 
+    PreparedIdx = ets:new(?PREPARED_TABLE_IDX, [set, public, {write_concurrency, true}]),
+    ok = persistent_term:put({?MODULE, Partition, ?PREPARED_TABLE_IDX}, PreparedIdx),
+
     State = #state{partition = Partition,
                    all_replicas=[], %% ok to do this, we'll overwrite it later
                    replicas_n=NumReaders,
                    prepared_blue=PreparedBlue,
+                   prepared_blue_idx=PreparedIdx,
                    blue_tick_interval=BlueTickInterval,
                    op_log_size = KeyLogSize,
                    op_log = OpLogTable,
@@ -553,6 +563,10 @@ handle_info(Msg, State) ->
 insert_prepared(Partition, TxId, PrepareTime) ->
     true = ets:insert(prepared_blue_table(Partition),
                       {{PrepareTime, TxId}}),
+
+    true = ets:insert(prepared_blue_idx_table(Partition),
+                      {TxId, PrepareTime}),
+
     ok.
 
 -spec handle_remote_tx_internal(replica_id(), #{}, grb_time:ts(), vclock(), state()) -> ok.
@@ -619,13 +633,14 @@ decide_blue_internal(TxId, VC, #state{all_replicas=AllReplicas,
                                       op_log_size=LogSize,
                                       pending_client_ops=PendingOps,
                                       prepared_blue=PreparedBlue,
+                                      prepared_blue_idx=PreparedIdx,
                                       should_append_commit=ShouldAppend}) ->
 
     ?LOG_DEBUG("~p(~p, ~p)", [?FUNCTION_NAME, TxId, VC]),
 
     WS = take_transaction_writeset(PendingOps, TxId),
     ok = append_writeset(AllReplicas, WS, VC, OpLog, LogSize),
-    ok = remove_from_prepared(PreparedBlue, TxId),
+    ok = remove_from_prepared(PreparedBlue, PreparedIdx, TxId),
     KnownTime = compute_new_known_time(PreparedBlue),
     case ShouldAppend of
         true ->
@@ -643,9 +658,10 @@ take_transaction_writeset(PendingOps, TxId) ->
         WS#{Key => Op}
     end, #{}, Tuples).
 
--spec remove_from_prepared(cache_id(), term()) -> ok.
-remove_from_prepared(PreparedBlue, TxId) ->
-    _ = ets:select_delete(PreparedBlue, [{ {{'_', TxId}}, [], [true] }]),
+-spec remove_from_prepared(cache_id(), cache_id(), term()) -> ok.
+remove_from_prepared(PreparedBlue, PreparedBlueIdx, TxId) ->
+    [{TxId, PrepTime}] = ets:take(PreparedBlueIdx, TxId),
+    true = ets:delete(PreparedBlue, {PrepTime, TxId}),
     ok.
 
 -spec append_writeset(AtReplicas :: [all_replica_id()],
@@ -785,37 +801,40 @@ handle_overload_info(_, _Idx) ->
 
 grb_oplog_vnode_compute_new_known_time_test() ->
     _ = ets:new(?PREPARED_TABLE, [ordered_set, named_table]),
-    true = ets:insert(?PREPARED_TABLE, [{{1, tx_1}},
-                                        {{3, tx_2}},
-                                        {{10, tx_4}},
-                                        {{50, tx_5}},
-                                        {{5, tx_3}}]),
+    _ = ets:new(?PREPARED_TABLE_IDX, [set, named_table]),
+
+    Entries = [{tx_1, 1}, {tx_2, 3}, {tx_3, 5}, {tx_4, 10}, {tx_5, 50}],
+    [begin
+        true = ets:insert(?PREPARED_TABLE, {{PrepTime, Tx}}),
+        true = ets:insert(?PREPARED_TABLE_IDX, {Tx, PrepTime})
+    end || {Tx, PrepTime} <- Entries],
 
     ?assertEqual(0, compute_new_known_time(?PREPARED_TABLE)),
 
     %% If we remove the lowest, now tx_2 is the lowest tx in the queue
-    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, tx_1)),
+    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, ?PREPARED_TABLE_IDX, tx_1)),
     ?assertEqual(2, compute_new_known_time(?PREPARED_TABLE)),
 
     %% tx_3 was removed earlier, but it has a higher ts than tx_2, so tx_2 is still the lowest
-    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, tx_3)),
+    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, ?PREPARED_TABLE_IDX, tx_3)),
     ?assertEqual(2, compute_new_known_time(?PREPARED_TABLE)),
 
     %% now, tx_4 is the next in the queue, at ts 10-1
-    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, tx_2)),
+    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, ?PREPARED_TABLE_IDX, tx_2)),
     ?assertEqual(9, compute_new_known_time(?PREPARED_TABLE)),
 
     %% same with tx_5
-    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, tx_4)),
+    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, ?PREPARED_TABLE_IDX, tx_4)),
     ?assertEqual(49, compute_new_known_time(?PREPARED_TABLE)),
 
-    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, tx_5)),
+    ?assertMatch(ok, remove_from_prepared(?PREPARED_TABLE, ?PREPARED_TABLE_IDX, tx_5)),
     %% Now that the queue is empty, the time is the current clock
     Ts = grb_time:timestamp(),
     Lowest = compute_new_known_time(?PREPARED_TABLE),
     ?assert(Ts =< Lowest),
 
     ets:delete(?PREPARED_TABLE),
+    ets:delete(?PREPARED_TABLE_IDX),
     ok.
 
 -endif.
