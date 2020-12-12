@@ -52,8 +52,12 @@
 
     known_barrier_wait_ms :: non_neg_integer(),
     pending_decides = #{} :: #{term() => vclock()},
+    %% Note(borja): Only the transaction is used as identifier, which could cause issues if
+    %% the same transaction issues two multi-key reads to the same partition.
+    %% However, this shouldn't be a problem, because issuing two concurrent multi-key
+    %% requests on the same partition should be extremely rare.
     pending_reads = #{} :: #{term() => pending_reads() | waiting_reads()},
-    simple_waiting_reads = #{} :: #{term() => { grb_promise:t(), vclock(), key(), crdt(), {ok, operation()} | undefined }}
+    simple_waiting_reads = #{} :: #{{grb_promise:t(), term()} => { vclock(), key(), crdt(), {ok, operation()} | undefined }}
 }).
 
 -type state() :: #state{}.
@@ -157,8 +161,8 @@ handle_cast({key_snapshot, Promise, TxId, Key, Type, VC}, S0=#state{partition=Pa
 
     S = case grb_propagation_vnode:partition_ready(Partition, ReplicaId, VC) of
         not_ready ->
-            erlang:send_after(WaitMs, self(), {retry_partition_wait, TxId}),
-            S0#state{simple_waiting_reads=WaitingReads#{TxId => {Promise, VC, Key, Type, undefined}}};
+            erlang:send_after(WaitMs, self(), {retry_partition_wait, Promise, TxId}),
+            S0#state{simple_waiting_reads=WaitingReads#{{Promise, TxId} => {VC, Key, Type, undefined}}};
         ready ->
             grb_promise:resolve(grb_oplog_vnode:get_key_snapshot(Partition, TxId, Key, Type, VC),
                                 Promise),
@@ -173,8 +177,8 @@ handle_cast({key_version, Promise, TxId, Key, Type, ReadOp, VC}, S0=#state{parti
 
     S = case grb_propagation_vnode:partition_ready(Partition, ReplicaId, VC) of
         not_ready ->
-            erlang:send_after(WaitMs, self(), {retry_partition_wait, TxId}),
-            S0#state{simple_waiting_reads=WaitingReads#{TxId => {Promise, VC, Key, Type, {ok, ReadOp}}}};
+            erlang:send_after(WaitMs, self(), {retry_partition_wait, Promise, TxId}),
+            S0#state{simple_waiting_reads=WaitingReads#{{Promise, TxId} => {VC, Key, Type, {ok, ReadOp}}}};
         ready ->
             Version = grb_oplog_vnode:get_key_version(Partition, TxId, Key, Type, VC),
             grb_promise:resolve({ok, grb_crdt:apply_read_op(ReadOp, Version)}, Promise),
@@ -234,14 +238,15 @@ handle_cast(Request, State) ->
     ?LOG_WARNING("Unhandled cast ~p", [Request]),
     {noreply, State}.
 
-handle_info({retry_partition_wait, TxId}, S0=#state{partition=Partition,
-                                                    replica_id=ReplicaId,
-                                                    known_barrier_wait_ms=WaitMs,
-                                                    simple_waiting_reads=WaitingReads}) ->
-    {Promise, VC, Key, Type, ReadOp} = maps:get(TxId, WaitingReads),
+handle_info({retry_partition_wait, Promise, TxId}, S0=#state{partition=Partition,
+                                                             replica_id=ReplicaId,
+                                                             known_barrier_wait_ms=WaitMs,
+                                                             simple_waiting_reads=WaitingReads}) ->
+
+    {VC, Key, Type, ReadOp} = maps:get({Promise, TxId}, WaitingReads),
     S = case grb_propagation_vnode:partition_ready(Partition, ReplicaId, VC) of
             not_ready ->
-                erlang:send_after(WaitMs, self(), {retry_partition_wait, TxId}),
+                erlang:send_after(WaitMs, self(), {retry_partition_wait, Promise, TxId}),
                 S0;
             ready ->
                 Version = grb_oplog_vnode:get_key_version(Partition, TxId, Key, Type, VC),
@@ -250,7 +255,7 @@ handle_info({retry_partition_wait, TxId}, S0=#state{partition=Partition,
                     {ok, Op} -> grb_crdt:apply_read_op(Op, Version)
                 end,
                 grb_promise:resolve({ok, Result}, Promise),
-                S0#state{simple_waiting_reads=maps:remove(TxId, WaitingReads)}
+                S0#state{simple_waiting_reads=maps:remove({Promise, TxId}, WaitingReads)}
         end,
     {noreply, S};
 
