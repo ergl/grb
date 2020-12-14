@@ -1,4 +1,5 @@
 -module(grb_rubis_utils).
+-include_lib("kernel/include/logger.hrl").
 
 %% API
 -export([preload/2, preload_sync/1]).
@@ -11,8 +12,14 @@
 
 -spec preload(grb_promise:t(), map()) -> ok.
 preload(Promise, Properties) ->
-    _ = spawn_link(fun() ->
-        grb_promise:resolve(preload_sync(Properties), Promise)
+    _ = spawn(fun() ->
+        try
+            ok = preload_sync(Properties),
+            ?LOG_INFO("Preload finished")
+        catch Error:Kind:Stck ->
+            ?LOG_ERROR("Preload failed!: ~p", [{Error, Kind, Stck}])
+        end,
+        grb_promise:resolve(ok, Promise)
     end),
     ok.
 
@@ -25,12 +32,18 @@ preload_sync(Properties) ->
     Categories = [ C || {C, _} <- CategoriesAndItems ],
 
     ok = load_regions(Regions),
+    ?LOG_INFO("Finished loading regions"),
     ok = load_categories(Categories),
+    ?LOG_INFO("Finished loading categories"),
 
     UsersPerRegion = (TotalUsers div length(Regions)),
     ok = load_users(Regions, UsersPerRegion),
+    ?LOG_INFO(
+        "Finished loading users (total ~b, per region ~b)",
+        [(UsersPerRegion * length(Regions)), UsersPerRegion]
+    ),
     ok = load_items(Regions, TotalUsers, CategoriesAndItems, Properties),
-
+    ?LOG_INFO("Finished loading items"),
     ok.
 
 -spec load_regions(Regions :: [binary()]) -> ok.
