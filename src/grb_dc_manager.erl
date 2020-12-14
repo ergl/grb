@@ -128,8 +128,7 @@ create_replica_groups(Config, Nodes) ->
 
 -spec create_replica_groups_state(nodes | ip_addresses, term()) -> replica_groups_state().
 create_replica_groups_state(nodes, Nodes) ->
-    [Leader | _] =  lists:sort(Nodes),
-    {nodes, Leader, Nodes};
+    {nodes, node(), Nodes};
 create_replica_groups_state(ip_addresses, IPs) ->
     %% Mark ourselves as the leader DC
     {MyIP, MyPort} = grb_dc_utils:inter_dc_ip_port(),
