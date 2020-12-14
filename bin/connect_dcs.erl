@@ -13,7 +13,7 @@ usage() ->
     Name = filename:basename(escript:script_name()),
     io:fwrite(
         standard_error,
-        "Usage: ~s [-d] [-i -p inter_dc_port] [-f config_file] | 'node_1@host_1' ... 'node_n@host_n' ~n",
+        "Usage: ~s [-d] [-i -p inter_dc_port] [-l leader_ip] [-f config_file] | 'node_1@host_1' ... 'node_n@host_n' ~n",
         [Name]
     ),
     halt(1).
@@ -33,6 +33,13 @@ main(Args) ->
                     %% We know the key is defined, enforced in required/2
                     erlang:put(inter_dc_port, maps:get(inter_dc_port, Map)),
                     ip_address
+            end,
+            case maps:get(leader_ip, Map, undefined) of
+                undefined ->
+                    ok;
+                IP ->
+                    erlang:put(leader_ip, IP),
+                    ok
             end,
             prepare(
                 validate(
@@ -118,9 +125,18 @@ validate({ok, Payload}) ->
     {ok, Payload}.
 
 -spec prepare({ok, {config | list, node_config(), [term()]}}) -> ok | no_return().
-prepare({ok, {config, NodeConfig, undefined, All}}) -> prepare(NodeConfig, hd(All), All);
-prepare({ok, {config, NodeConfig, Leader, All}}) -> prepare(NodeConfig, Leader, All);
-prepare({ok, {list, NodeConfig, Nodes}}) -> prepare(NodeConfig, hd(Nodes), Nodes).
+prepare({ok, {config, NodeConfig, undefined, All}}) ->
+    prepare(NodeConfig, hd(All), All);
+
+prepare({ok, {config, NodeConfig, Leader, All}}) ->
+    prepare(NodeConfig, Leader, All);
+
+prepare({ok, {list, NodeConfig, Nodes}}) ->
+    Leader = case erlang:get(leader_ip) of
+        undefined -> hd(Nodes);
+        IP -> IP
+    end,
+    prepare(NodeConfig, Leader, Nodes).
 
 prepare(Config, Leader, AllNodes) ->
     io:format("[~p] Starting clustering at leader ~p of nodes ~p~n", [Config, Leader, AllNodes]),
@@ -177,6 +193,8 @@ parse_args_inner([[$- | Flag] | Args], Acc) ->
             parse_args_inner(Args, Acc#{dry_run => true});
         [$i] ->
             parse_args_inner(Args, Acc#{use_public_ip => true});
+        [$l] ->
+            parse_flag(Flag, Args, fun(Arg) -> Acc#{leader_ip => Arg} end);
         [$p] ->
             parse_flag(Flag, Args, fun(Arg) -> Acc#{inter_dc_port => list_to_integer(Arg)} end);
         "-port" ->
