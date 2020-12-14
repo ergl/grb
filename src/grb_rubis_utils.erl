@@ -178,7 +178,8 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
         item_buy_now_percentage := BuyNowPercentage,
         item_closed_percentage := ClosedPercentage,
         item_max_bids := MaxBids,
-        item_max_comments := MaxComments
+        item_max_comments := MaxComments,
+        bid_max_quantity := MaxBidQuantity
     } = ItemProperties,
 
     InitialPrice = safe_uniform(MaxInitialPrice),
@@ -243,7 +244,8 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
         }
     ),
 
-    BidProperties = #{item_initial_price => InitialPrice, item_max_quantity => Quantity},
+    BidQuantity = erlang:min(MaxBidQuantity, Quantity),
+    BidProperties = #{item_initial_price => InitialPrice, item_max_quantity => BidQuantity},
     {ItemKey, BidsN, CommentsN, BidProperties}.
 
 load_bids(ItemRegion, ItemKey, NBids, Regions, UsersPerRegion, BidProps) ->
