@@ -48,22 +48,22 @@ preload_sync(Properties) ->
 
 -spec load_regions(Regions :: [binary()]) -> ok.
 load_regions(Regions) ->
-    pmap(fun store_region/1, Regions),
+    ok = pfor(fun store_region/1, Regions),
     ok.
 
 -spec load_categories(Categories :: [binary()]) -> ok.
 load_categories(Categories) ->
-    pmap(fun store_category/1, Categories),
+    ok = pfor(fun store_category/1, Categories),
     ok.
 
 -spec load_users(Regions :: [binary()], PerRegion :: non_neg_integer()) -> ok.
 load_users(Regions, PerRegion) ->
-    _ = pmap(fun(Region) ->
-        pmap_limit(fun(Id) ->
-            store_user(Region, Id)
-        end, PerRegion)
-    end, Regions),
-    ok.
+    ok = pfor(
+        fun(Region) ->
+            foreach_limit(fun(Id) -> store_user(Region, Id) end, PerRegion)
+        end,
+        Regions
+    ).
 
 -spec load_items(Regions :: [binary()],
                  PerRegion :: non_neg_integer(),
@@ -72,29 +72,33 @@ load_users(Regions, PerRegion) ->
 
 load_items(Regions, UsersPerRegion, CategoriesAndItems, Properties) ->
     NRegions = length(Regions),
-    _ = pmap(fun({Category, NumberOfItems}) ->
-        pmap_limit(fun(Id) ->
-            Region = lists:nth(((Id rem NRegions) + 1), Regions),
-            UserId = rand:uniform(UsersPerRegion),
-            UserKey = {Region, users, list_to_binary(io_lib:format("~s/user/preload_~b", [Region, UserId]))},
-            Ret = store_item(Region, UserKey, Category, Id, Properties),
-            {ToWait, ItemKey, NBids, NComments, BidProps} = Ret,
-            {ToWaitBids, MaxBid} = load_bids(Region, ItemKey, NBids, Regions, UsersPerRegion, BidProps),
-
-            %% Update the max_bid for the item id
-            {_, _, ItemId} = ItemKey,
-            ok = grb_oplog_vnode:append_direct_vnode(
-                async,
-                grb_dc_utils:key_location(Region),
-                #{
-                    {Region, items, ItemId, max_bid} => grb_crdt:make_op(grb_maxtuple, MaxBid)
-                }
-            ),
-
-            ToWaitComments = load_comments(Region, UserKey, ItemKey, NComments, Regions, UsersPerRegion, Properties),
-            ToWait + ToWaitBids + 1 + ToWaitComments
-        end, NumberOfItems)
-    end, CategoriesAndItems),
+    ok = pfor(
+        fun({Category, NumberOfItems}) ->
+            foreach_limit(
+                fun(Id) ->
+                    Region = lists:nth(((Id rem NRegions) + 1), Regions),
+                    UserId = rand:uniform(UsersPerRegion),
+                    UserKey = {Region, users, list_to_binary(io_lib:format("~s/user/preload_~b", [Region, UserId]))},
+                    Ret = store_item(Region, UserKey, Category, Id, Properties),
+                    {ItemKey, NBids, NComments, BidProps} = Ret,
+                    MaxBid = load_bids(Region, ItemKey, NBids, Regions, UsersPerRegion, BidProps),
+                    %% Update the max_bid for the item id
+                    {_, _, ItemId} = ItemKey,
+                    ok = grb_oplog_vnode:append_direct_vnode(
+                        sync,
+                        grb_dc_utils:key_location(Region),
+                        #{
+                            {Region, items, ItemId, max_bid} => grb_crdt:make_op(grb_maxtuple, MaxBid)
+                        }
+                    ),
+                    ok = load_comments(Region, UserKey, ItemKey, NComments, Regions, UsersPerRegion, Properties),
+                    ok
+                end,
+                NumberOfItems
+            )
+        end,
+        CategoriesAndItems
+    ),
     ok.
 
 -spec store_region(binary()) -> ok.
@@ -117,7 +121,7 @@ store_category(Category) ->
         }
     ).
 
--spec store_user(Region :: binary(), Id :: non_neg_integer()) -> ToAck :: non_neg_integer().
+-spec store_user(Region :: binary(), Id :: non_neg_integer()) -> ok.
 store_user(Region, Id) ->
     Table = users,
     %% Ensure nickname partitioning during load so we can do it in parallel
@@ -132,7 +136,7 @@ store_user(Region, Id) ->
     UserKey = {Region, Table, NickName},
     %% Create user object
     ok = grb_oplog_vnode:put_direct_vnode(
-        async,
+        sync,
         grb_dc_utils:key_location(Region),
         #{
             UserKey => {grb_lww, NickName},
@@ -146,15 +150,19 @@ store_user(Region, Id) ->
 
     %% Update username index
     ok = grb_oplog_vnode:put_direct_vnode(
-        async,
+        sync,
         grb_dc_utils:key_location(NickName),
         #{
             NickName => {grb_lww, UserKey}
         }
-    ),
+    ).
 
-    2.
-
+-spec store_item(Region :: binary(),
+                 Seller :: term(),
+                 Category :: binary(),
+                 Id :: non_neg_integer(),
+                 ItemProperties :: #{}
+                 ) -> { ItemKey :: term(), BidsN :: non_neg_integer(), CommentsN :: non_neg_integer(), BidProperties :: #{}}.
 store_item(Region, Seller, Category, Id, ItemProperties) ->
     Table = items,
     %% Ensure id partitioning during load so we can do it in parallel
@@ -200,7 +208,7 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
 
     ItemKey = {Region, Table, ItemId},
     ok = grb_oplog_vnode:put_direct_vnode(
-        async,
+        sync,
         grb_dc_utils:key_location(Region),
         #{
             %% primary key and foreign keys
@@ -225,42 +233,34 @@ store_item(Region, Seller, Category, Id, ItemProperties) ->
         }
     ),
 
-    %% Append to user_id -> item_id index
+    %% Append to user_id -> item_id index and to (region_id, category_id) -> item_id index
     ok = grb_oplog_vnode:append_direct_vnode(
-        async,
+        sync,
         grb_dc_utils:key_location(Region),
         #{
-            {Region, items_seller, Seller} => grb_crdt:make_op(grb_gset, ItemKey)
-        }
-    ),
-
-    %% Append to (region_id, category_id) -> item_id index
-    ok = grb_oplog_vnode:append_direct_vnode(
-        async,
-        grb_dc_utils:key_location(Region),
-        #{
+            {Region, items_seller, Seller} => grb_crdt:make_op(grb_gset, ItemKey),
             {Region, items_region_category, Category} => grb_crdt:make_op(grb_gset, ItemKey)
         }
     ),
 
     BidProperties = #{item_initial_price => InitialPrice, item_max_quantity => Quantity},
-    {3, ItemKey, BidsN, CommentsN, BidProperties}.
+    {ItemKey, BidsN, CommentsN, BidProperties}.
 
 load_bids(ItemRegion, ItemKey, NBids, Regions, UsersPerRegion, BidProps) ->
-    load_bids_(NBids, ItemRegion, ItemKey, length(Regions), Regions, UsersPerRegion, BidProps, {0, ?base_maxtuple}).
+    load_bids_(NBids, ItemRegion, ItemKey, length(Regions), Regions, UsersPerRegion, BidProps, ?base_maxtuple).
 
 load_bids_(0, _, _, _, _, _, _, Acc) ->
     Acc;
-load_bids_(Id, ItemRegion, ItemKey, NRegions, Regions, UsersPerRegion, BidProps, {ToWait0, Max0}) ->
+load_bids_(Id, ItemRegion, ItemKey, NRegions, Regions, UsersPerRegion, BidProps, Max0) ->
     BidderRegion = lists:nth(rand:uniform(NRegions), Regions),
     BidderId = rand:uniform(UsersPerRegion),
     BidderKey = {BidderRegion, users, list_to_binary(io_lib:format("~s/user/preload_~b", [BidderRegion, BidderId]))},
-    {MsgsToWait, BidKey, Amount} = store_bid(ItemRegion, ItemKey, BidderKey, Id, BidProps),
+    {BidKey, Amount} = store_bid(ItemRegion, ItemKey, BidderKey, Id, BidProps),
     NewMax = case Max0 of
         {OldAmount, _} when Amount > OldAmount -> {Amount, {BidKey, BidderKey}};
         _ -> Max0
     end,
-    load_bids_(Id - 1, ItemRegion, ItemKey, NRegions, Regions, UsersPerRegion, BidProps, {ToWait0 + MsgsToWait, NewMax}).
+    load_bids_(Id - 1, ItemRegion, ItemKey, NRegions, Regions, UsersPerRegion, BidProps, NewMax).
 
 %% Have to index by item and by user
 %% Store the nickname for the user in the BIDS_item index.
@@ -273,7 +273,7 @@ load_bids_(Id, ItemRegion, ItemKey, NRegions, Regions, UsersPerRegion, BidProps,
                 UserKey :: {binary(), atom(), binary()},
                 Id :: non_neg_integer(),
                 BidProperties :: map()
-                ) -> { ToWait :: non_neg_integer(), BidKey :: {binary(), atom(), binary()}, BidAmount :: non_neg_integer()}.
+                ) -> {BidKey :: {binary(), atom(), binary()}, BidAmount :: non_neg_integer()}.
 
 store_bid(Region, ItemKey={Region, _, ItemId}, UserKey={UserRegion, _, _}, Id, BidProperties) ->
     %% Fields:
@@ -295,7 +295,7 @@ store_bid(Region, ItemKey={Region, _, ItemId}, UserKey={UserRegion, _, _}, Id, B
     %% Main bid object
     BidKey = {Region, Table, BidId},
     ok = grb_oplog_vnode:put_direct_vnode(
-        async,
+        sync,
         grb_dc_utils:key_location(Region),
         #{
             BidKey => {grb_lww, BidKey},
@@ -308,7 +308,7 @@ store_bid(Region, ItemKey={Region, _, ItemId}, UserKey={UserRegion, _, _}, Id, B
 
     %% Append to user_id -> {bid_id, bid_amount} index, colocated with the bidder
     ok = grb_oplog_vnode:append_direct_vnode(
-        async,
+        sync,
         grb_dc_utils:key_location(UserRegion),
         #{
             {UserRegion, bids_user, UserKey} => grb_crdt:make_op(grb_gset, {BidKey, BidAmount})
@@ -317,24 +317,24 @@ store_bid(Region, ItemKey={Region, _, ItemId}, UserKey={UserRegion, _, _}, Id, B
 
     %% Append to item_id -> {bid_id, user_id} index, colocated with the item
     ok = grb_oplog_vnode:append_direct_vnode(
-        async,
+        sync,
         grb_dc_utils:key_location(Region),
         #{
             {Region, bids_item, ItemKey} => grb_crdt:make_op(grb_gset, {BidKey, UserKey})
         }
     ),
 
-    {3, BidKey, BidAmount}.
+    {BidKey, BidAmount}.
 
 load_comments(Region, SellerKey, ItemKey, NComments, Regions, UsersPerRegion, CommentProps) ->
-    load_comments_(NComments, Region, SellerKey, ItemKey, length(Regions), Regions, UsersPerRegion, CommentProps, 0).
+    load_comments_(NComments, Region, SellerKey, ItemKey, length(Regions), Regions, UsersPerRegion, CommentProps).
 
-load_comments_(0, _, _, _, _, _, _, _, Acc) ->
-    Acc;
-load_comments_(Id, RecipientRegion, RecipientKey, ItemKey, NRegions, Regions, UsersPerRegion, CommentProps, Acc) ->
+load_comments_(0, _, _, _, _, _, _, _) ->
+    ok;
+load_comments_(Id, RecipientRegion, RecipientKey, ItemKey, NRegions, Regions, UsersPerRegion, CommentProps) ->
     SenderKey = rand_user_key_different(RecipientKey, NRegions, Regions, UsersPerRegion),
-    MsgsToWait = store_comment(RecipientRegion, RecipientKey, ItemKey, SenderKey, Id, CommentProps),
-    load_comments_(Id - 1, RecipientRegion, RecipientKey, ItemKey, NRegions, Regions, UsersPerRegion, CommentProps, Acc + MsgsToWait).
+    ok = store_comment(RecipientRegion, RecipientKey, ItemKey, SenderKey, Id, CommentProps),
+    load_comments_(Id - 1, RecipientRegion, RecipientKey, ItemKey, NRegions, Regions, UsersPerRegion, CommentProps).
 
 %% comments objects are colocated with the recipient key
 %% and there's the COMMENTS_to_user index also colocated with the recipient
@@ -358,7 +358,7 @@ store_comment(RecipientRegion, RecipientKey={_, _, RecipientId}, ItemKey={_, _, 
     CommentId = list_to_binary(io_lib:format("~s/comment/preload_~b", [ItemId, Id])),
     CommentKey = {RecipientRegion, Table, CommentId},
     ok = grb_oplog_vnode:put_direct_vnode(
-        async,
+        sync,
         grb_dc_utils:key_location(RecipientRegion),
         #{
             CommentKey => {grb_lww, CommentKey},
@@ -372,7 +372,7 @@ store_comment(RecipientRegion, RecipientKey={_, _, RecipientId}, ItemKey={_, _, 
 
     %% Append to users_id -> comment_id index, and modify recipient rating
     ok = grb_oplog_vnode:append_direct_vnode(
-        async,
+        sync,
         grb_dc_utils:key_location(RecipientRegion),
         #{
             {RecipientRegion, comments_to_user, RecipientKey} => grb_crdt:make_op(grb_gset, CommentKey),
@@ -380,7 +380,7 @@ store_comment(RecipientRegion, RecipientKey={_, _, RecipientId}, ItemKey={_, _, 
         }
     ),
 
-    2.
+    ok.
 
 %%%===================================================================
 %%% Random Utils
@@ -436,34 +436,34 @@ rand_user_key_different({UserRegion, _, UserId}=UserKey, NRegions, Regions, User
 %%% Util
 %%%===================================================================
 
--spec pmap_limit(fun((non_neg_integer()) -> non_neg_integer()), non_neg_integer()) -> ok.
-pmap_limit(Fun, Total) ->
-    Send = fun
-       S(0, Acc) -> Acc;
-       S(Id, Acc) ->
-           S(Id - 1, Acc + Fun(Id))
-    end,
+-spec foreach_limit(fun((non_neg_integer()) -> ok), non_neg_integer()) -> ok.
+foreach_limit(_, 0) ->
+    ok;
+foreach_limit(Fun, Total) ->
+    _ = Fun(Total),
+    foreach_limit(Fun, Total - 1).
 
-    ToWait = Send(Total, 0),
-
-    Receive = fun
-        R(0, ok) -> ok;
-        R(Id, ok) -> receive ok -> R(Id - 1, ok) end
-    end,
-
-    ok = Receive(ToWait, ok).
-
--spec pmap(fun(), list()) -> list().
-pmap(F, L) ->
+-spec pfor(fun(), list()) -> ok | {error, term()}.
+pfor(F, L) ->
     Parent = self(),
     Reference = make_ref(),
     lists:foldl(
         fun(X, N) ->
-            spawn_link(fun() ->
-                           Parent ! {pmap, Reference, N, F(X)}
-                       end),
+            spawn_link(
+                fun() ->
+                    Res = try
+                        {ok, F(X)}
+                    catch Error:Kind:Stck ->
+                        {error, {Error, Kind, Stck}}
+                    end,
+                    Parent ! {pfor, Reference, Res}
+                end),
             N+1
         end, 0, L),
-    L2 = [receive {pmap, Reference, N, R} -> {N, R} end || _ <- L],
-    {_, L3} = lists:unzip(lists:keysort(1, L2)),
-    L3.
+    L2 = [receive {pfor, Reference, R} -> R end || _ <- L],
+    case lists:keyfind(error, 1, L2) of
+        false ->
+            ok;
+        {error, Reason} ->
+            {error, Reason}
+    end.
