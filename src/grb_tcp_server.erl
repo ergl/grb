@@ -209,14 +209,14 @@ handle_request('ConnectRequest', _, Context, State) ->
 handle_request('PutConflictRelations', #{payload := Conflicts}, Context, State) ->
     reply_to_client(grb:put_conflicts(Conflicts), Context, State);
 
-handle_request('Load', #{bin_size := Size}, Context, State) ->
-    reply_to_client(grb:load(Size), Context, State);
-
 handle_request('PutDirect', #{partition := Partition, payload := WS}, Context, State) ->
     reply_to_client(grb:put_direct(Partition, WS), Context, State);
 
 handle_request('Preload', #{payload := Properties}, Context, _State) ->
-    grb_rubis_utils:preload(grb_promise:new(self(), Context), Properties).
+    grb_load_utils:preload_micro(grb_promise:new(self(), Context), Properties);
+
+handle_request('RubisPreload', #{payload := Properties}, Context, _State) ->
+    grb_load_utils:preload_rubis(grb_promise:new(self(), Context), Properties).
 
 -spec try_read(partition_id(), term(), key(), crdt(), boolean(), vclock(), proto_context(), state()) -> ok.
 try_read(Partition, TxId, Key, Type, true, SnapshotVC, Context, State) ->

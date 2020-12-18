@@ -8,7 +8,6 @@
 
 %% Util API
 -export([connect/0,
-         load/1,
          put_direct/2,
          put_conflicts/1,
          partition_ready/2]).
@@ -65,32 +64,6 @@ stop() ->
 -spec connect() -> {ok, replica_id(), non_neg_integer(), [index_node()]}.
 connect() ->
     grb_dc_utils:cluster_info().
-
--spec load(non_neg_integer()) -> ok.
-load(Size) ->
-    Value = crypto:strong_rand_bytes(Size),
-    BaseSnapshot = grb_crdt:apply_op_raw(
-        grb_crdt:make_op(grb_lww, Value),
-        grb_crdt:new(grb_lww)
-    ),
-
-    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    LocalNodes = riak_core_ring:all_members(Ring),
-
-    Res = erpc:multicall(LocalNodes, grb_dc_utils, set_default_snapshot, [BaseSnapshot]),
-    ok = lists:foreach(fun({_, ok}) -> ok end, Res),
-
-    Res1 = lists:zip(LocalNodes, erpc:multicall(LocalNodes, grb_dc_utils, get_default_snapshot, [])),
-    true = lists:all(fun({Node, {ok, DefaultSnapshot}}) ->
-        case grb_crdt:value(DefaultSnapshot) =:= Value of
-            true ->
-                true;
-            false ->
-                ?LOG_WARNING("Couldn't load at node ~p", [Node]),
-                false
-        end
-    end, Res1),
-    ok.
 
 -spec put_direct(partition_id(), writeset()) -> ok.
 put_direct(Partition, WS) ->

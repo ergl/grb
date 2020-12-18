@@ -1,20 +1,44 @@
--module(grb_rubis_utils).
+-module(grb_load_utils).
 -include_lib("kernel/include/logger.hrl").
 
-%% API
--export([preload/2, preload_sync/1]).
--ignore_xref([preload_sync/1]).
+%% Microbenchmark API
+-export([preload_micro/2,
+         preload_micro_sync/1]).
+
+%% Rubis API
+-export([preload_rubis/2,
+         preload_rubis_sync/1]).
+
+-ignore_xref([preload_micro_sync/1,
+              preload_rubis_sync/1]).
 
 -define(global_indices, <<"global_index">>).
 
 %% Negative so it always wins. Empty binary so we can filter out later
 -define(base_maxtuple, {-1, <<>>}).
 
--spec preload(grb_promise:t(), map()) -> ok.
-preload(Promise, Properties) ->
+%%%===================================================================
+%%% API
+%%%===================================================================
+
+-spec preload_micro(grb_promise:t(), map()) -> ok.
+preload_micro(Promise, Properties) ->
+     _ = spawn(fun() ->
+        try
+            ok = preload_micro_sync(Properties),
+            ?LOG_INFO("GRB preload finished")
+        catch Error:Kind:Stck ->
+            ?LOG_ERROR("GRB preload failed!: ~p", [{Error, Kind, Stck}])
+        end,
+        grb_promise:resolve(ok, Promise)
+    end),
+    ok.
+
+-spec preload_rubis(grb_promise:t(), map()) -> ok.
+preload_rubis(Promise, Properties) ->
     _ = spawn(fun() ->
         try
-            ok = preload_sync(Properties),
+            ok = preload_rubis_sync(Properties),
             ?LOG_INFO("Preload finished")
         catch Error:Kind:Stck ->
             ?LOG_ERROR("Preload failed!: ~p", [{Error, Kind, Stck}])
@@ -23,8 +47,50 @@ preload(Promise, Properties) ->
     end),
     ok.
 
--spec preload_sync(map()) -> ok.
-preload_sync(Properties) ->
+%%%===================================================================
+%%% Micro Internal
+%%%===================================================================
+
+preload_micro_sync(#{key_limit := KeyLimit, val_size := ValueSize}) ->
+    AllIdx = grb_dc_utils:get_index_nodes(),
+    {_, Preprocess} = lists:foldl(
+        fun(Idx, {Nth, Acc}) ->
+            {Nth + 1, [ {Idx, Nth} | Acc ]}
+        end,
+        {0, []},
+        AllIdx
+    ),
+
+    Size = length(AllIdx),
+    Value = crypto:strong_rand_bytes(ValueSize),
+    ok = pfor(
+        fun({IndexNode, StartKey}) ->
+            BuildKeys = fun S(Key, N, Acc) ->
+                if
+                    Key > KeyLimit ->
+                        Acc;
+                    true ->
+                        NextKey = StartKey + (N * Size),
+                        S(NextKey, N + 1, Acc#{Key => {grb_lww, Value}})
+                end
+            end,
+            PartitionKeys = BuildKeys(StartKey, 1, #{}),
+            ok = grb_oplog_vnode:put_direct_vnode(
+                sync,
+                IndexNode,
+                PartitionKeys
+            )
+        end,
+        Preprocess
+    ),
+    ok.
+
+%%%===================================================================
+%%% Rubis Internal
+%%%===================================================================
+
+-spec preload_rubis_sync(map()) -> ok.
+preload_rubis_sync(Properties) ->
     #{ regions := Regions,
        categories := CategoriesAndItems,
        user_total := TotalUsers } = Properties,

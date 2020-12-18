@@ -2,9 +2,7 @@
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
--export([get_default_snapshot/0,
-         set_default_snapshot/1,
-         cluster_info/0,
+-export([cluster_info/0,
          inter_dc_ip_port/0,
          my_partitions/0,
          get_index_nodes/0,
@@ -28,9 +26,7 @@
 -export([convert_key/1]).
 
 %% Called via `erpc` or for debug purposes
--ignore_xref([set_default_snapshot/1,
-              get_default_snapshot/0,
-              is_ring_owner/0,
+-ignore_xref([is_ring_owner/0,
               key_location/1,
               inter_dc_ip_port/0,
               pending_ring_changes/0,
@@ -38,7 +34,6 @@
               get_index_nodes/0]).
 
 -define(BUCKET, <<"grb">>).
--define(BOTTOM, bottom_value_key).
 
 -spec is_ring_owner() -> boolean().
 is_ring_owner() ->
@@ -55,14 +50,6 @@ pending_ring_changes() ->
 ready_ring_members() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     riak_core_ring:ready_members(Ring).
-
--spec get_default_snapshot() -> snapshot().
-get_default_snapshot() ->
-    persistent_term:get({?MODULE, ?BOTTOM}, grb_crdt:new(grb_lww)).
-
--spec set_default_snapshot(snapshot()) -> ok.
-set_default_snapshot(Snapshot) ->
-    persistent_term:put({?MODULE, ?BOTTOM}, Snapshot).
 
 -spec cluster_info() -> {ok, replica_id(), non_neg_integer(), [index_node()]}.
 cluster_info() ->
