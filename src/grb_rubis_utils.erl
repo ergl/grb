@@ -72,11 +72,24 @@ load_users(Regions, PerRegion) ->
 
 load_items(Regions, UsersPerRegion, CategoriesAndItems, Properties) ->
     NRegions = length(Regions),
-    ok = pfor(
-        fun({Category, NumberOfItems}) ->
-            foreach_limit(
-                fun(Id) ->
+    PreprocessedItems = lists:foldl(
+        fun({Category, NumberOfItems}, Acc) ->
+            fold_limit(
+                fun(Id, InAcc) ->
                     Region = lists:nth(((Id rem NRegions) + 1), Regions),
+                    PrevIds = maps:get(Region, InAcc, []),
+                    InAcc#{Region => [ {Category, Id} | PrevIds ]}
+                end,
+                Acc,
+                NumberOfItems
+            )
+        end,
+        #{}, CategoriesAndItems
+    ),
+    ok = pfor(
+        fun({Region, ItemTuples}) ->
+            lists:foreach(
+                fun({Category, Id}) ->
                     UserId = rand:uniform(UsersPerRegion),
                     UserKey = {Region, users, list_to_binary(io_lib:format("~s/user/preload_~b", [Region, UserId]))},
                     Ret = store_item(Region, UserKey, Category, Id, Properties),
@@ -94,10 +107,10 @@ load_items(Regions, UsersPerRegion, CategoriesAndItems, Properties) ->
                     ok = load_comments(Region, UserKey, ItemKey, NComments, Regions, UsersPerRegion, Properties),
                     ok
                 end,
-                NumberOfItems
+                ItemTuples
             )
         end,
-        CategoriesAndItems
+        maps:to_list(PreprocessedItems)
     ),
     ok.
 
@@ -444,6 +457,12 @@ foreach_limit(_, 0) ->
 foreach_limit(Fun, Total) ->
     _ = Fun(Total),
     foreach_limit(Fun, Total - 1).
+
+-spec fold_limit(fun((non_neg_integer(), term()) -> term()), term(), non_neg_integer()) -> term().
+fold_limit(_, Acc, 0) ->
+    Acc;
+fold_limit(Fun, Acc, Total) ->
+    fold_limit(Fun, Fun(Total, Acc), Total - 1).
 
 -spec pfor(fun(), list()) -> ok | {error, term()}.
 pfor(F, L) ->
