@@ -34,10 +34,19 @@
 -export([clock_table/1,
          handle_blue_heartbeat_unsafe/3]).
 
--ifdef(BASIC_REPLICATION).
+-ifdef(STABLE_SNAPSHOT).
 %% Basic Replication API
 -export([merge_remote_stable_vc/2,
          merge_into_stable_vc/2]).
+-endif.
+
+%% For CURE-FT
+-export([handle_clock_update/3,
+         handle_clock_heartbeat_update/3]).
+
+-ifndef(STABLE_SNAPSHOT).
+-ignore_xref([handle_clock_update/3,
+              handle_clock_heartbeat_update/3]).
 -endif.
 
 %% Uniform Replication API
@@ -126,7 +135,7 @@
     pending_barriers = [] :: uniform_barriers()
 }).
 
--ifdef(BASIC_REPLICATION).
+-ifdef(NO_FWD_REPLICATION).
 -define(timers_unset, #state{replication_timer=undefined}).
 -else.
 -define(timers_unset, #state{replication_timer=undefined, uniform_timer=undefined, prune_timer=undefined}).
@@ -281,7 +290,7 @@ append_remote_blue_commit_no_hb(ReplicaId, Partition, WS, CommitVC) ->
 %%% basic replication api
 %%%===================================================================
 
--ifdef(BASIC_REPLICATION).
+-ifdef(STABLE_SNAPSHOT).
 %% @doc Update the stableVC at all replicas but the current one, return result
 -spec merge_remote_stable_vc(partition_id(), vclock()) -> vclock().
 merge_remote_stable_vc(Partition, VC) ->
@@ -348,6 +357,19 @@ handle_self_blue_heartbeat(Partition, Ts) ->
 handle_blue_heartbeat_unsafe(ReplicaId, Time, Table) ->
     true = ets:insert(Table, {?known_key(ReplicaId), Time}),
     ok.
+
+-spec handle_clock_update(partition_id(), replica_id(), vclock()) -> ok.
+handle_clock_update(Partition, FromReplicaId, KnownVC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {remote_clock_update, FromReplicaId, KnownVC},
+                                   ?master).
+
+%% @doc Same as handle_clock_update/3, but treat knownVC as a blue heartbeat
+-spec handle_clock_heartbeat_update(partition_id(), replica_id(), vclock()) -> ok.
+handle_clock_heartbeat_update(Partition, FromReplicaId, KnownVC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {remote_clock_heartbeat_update, FromReplicaId, KnownVC},
+                                   ?master).
 
 -spec handle_clock_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
 handle_clock_update(Partition, FromReplicaId, KnownVC, StableVC) ->
@@ -504,6 +526,14 @@ handle_command({uniform_barrier, Promise, Timestamp}, _Sender, S=#state{pending_
 handle_command({red_uniform_barrier, Pid, TxId, Timestamp}, _Sender, S=#state{pending_barriers=Barriers}) ->
     {noreply, S#state{pending_barriers=insert_red_uniform_barrier(Pid, TxId, Timestamp, Barriers)}};
 
+handle_command({remote_clock_update, FromReplicaId, KnownVC}, _Sender, S) ->
+    {noreply, update_clocks(FromReplicaId, KnownVC, S)};
+
+handle_command({remote_clock_heartbeat_update, FromReplicaId, KnownVC}, _Sender, S=#state{clock_cache=ClockCache}) ->
+    Timestamp = grb_vclock:get_time(FromReplicaId, KnownVC),
+    ok = update_known_vc(FromReplicaId, Timestamp, ClockCache),
+    {noreply, update_clocks(FromReplicaId, KnownVC, S)};
+
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("~p unhandled_command ~p", [?MODULE, Message]),
     {noreply, State}.
@@ -585,7 +615,7 @@ stop_propagation_timers(State) -> stop_propagation_timers_internal(State).
 -spec start_propagation_timers_internal(state()) -> state().
 -spec stop_propagation_timers_internal(state()) -> state().
 
--ifdef(BASIC_REPLICATION).
+-ifdef(NO_FWD_REPLICATION).
 
 start_propagation_timers_internal(State) ->
     State#state{
@@ -663,7 +693,7 @@ recompute_stable_vc(NewStableVC, ClockTable) ->
 -endif.
 
 -spec recompute_local_uniform_vc(vclock(), state()) -> state().
--ifdef(BASIC_REPLICATION).
+-ifdef(STABLE_SNAPSHOT).
 
 recompute_local_uniform_vc(_, State) -> State.
 
@@ -715,6 +745,12 @@ lift_pending_uniform_barriers(Cutoff, [{Ts, DataList} | Rest]) when Ts =< Cutoff
 lift_pending_uniform_barriers(Cutoff, [{Ts, _} | _]=Remaining) when Ts > Cutoff ->
     Remaining.
 
+%% For FT-CURE only
+-spec update_clocks(replica_id(), vclock(), state()) -> state().
+update_clocks(FromReplicaId, KnownVC, S=#state{global_known_matrix=KnownMatrix0}) ->
+    KnownMatrix = update_known_matrix(FromReplicaId, KnownVC, KnownMatrix0),
+    S#state{global_known_matrix=KnownMatrix}.
+
 -spec update_clocks(replica_id(), vclock(), vclock(), state()) -> state().
 update_clocks(FromReplicaId, KnownVC, StableVC, S=#state{local_replica=LocalId,
                                                          clock_cache=ClockCache,
@@ -732,7 +768,7 @@ update_clocks(FromReplicaId, KnownVC, StableVC, S=#state{local_replica=LocalId,
             pending_barriers=PendingBarriers}.
 
 -spec replicate_internal(state()) -> state().
--ifdef(BASIC_REPLICATION).
+-ifdef(NO_FWD_REPLICATION).
 
 replicate_internal(S=#state{self_log=LocalLog0,
                             partition=Partition,

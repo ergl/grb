@@ -41,6 +41,10 @@
 -define(DC_START_BLUE_PROCESSES, 20).
 -define(DC_START_RED_FOLLOWER, 21).
 
+%% Cure-FT Messages
+-define(UPDATE_CLOCK_CURE_KIND, 22).
+-define(UPDATE_CLOCK_CURE_HEARTBEAT_KIND, 23).
+
 -record(blue_heartbeat, {
     timestamp :: grb_time:ts()
 }).
@@ -76,6 +80,14 @@
 -record(update_clocks_heartbeat, {
     known_vc :: vclock(),
     stable_vc :: vclock()
+}).
+
+-record(update_clocks_cure, {
+    known_vc :: vclock()
+}).
+
+-record(update_clocks_cure_heartbeat, {
+    known_vc :: vclock()
 }).
 
 -record(forward_heartbeat, {
@@ -164,6 +176,8 @@
                          | #red_already_decided{}
                          | #red_heartbeat{}
                          | #red_heartbeat_ack{}
-                         | #red_heartbeat_decide{}.
+                         | #red_heartbeat_decide{}
+                         | #update_clocks_cure{}
+                         | #update_clocks_cure_heartbeat{}.
 
 -export_type([replica_message/0]).

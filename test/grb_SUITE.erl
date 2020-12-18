@@ -297,7 +297,7 @@ known_replicas_test(C) ->
         ok = knows_replicas(Node, Partitions, Replicas, uniform_vc)
     end).
 
--ifdef(BASIC_REPLICATION).
+-ifdef(STABLE_SNAPSHOT).
 advance_clocks_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     Replicas = lists:sort(maps:keys(ClusterMap)),
@@ -309,7 +309,7 @@ advance_clocks_test(C) ->
     end,
     advance_clocks_test(ClusterMap, TestFun, ?repeat_test_limit).
 -else.
--ifdef(UNIFORM_BLUE).
+-ifdef(UNIFORM_SNAPSHOT).
 advance_clocks_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     Replicas = lists:sort(maps:keys(ClusterMap)),

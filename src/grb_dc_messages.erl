@@ -6,6 +6,14 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
+%% For CURE-FT
+-export([clocks/1,
+         clocks_heartbeat/1]).
+
+-ifndef(STABLE_SNAPSHOT).
+-ignore_xref([clocks/1, clocks_heartbeat/1]).
+-endif.
+
 %% Msg API
 -export([ping/2,
          blue_heartbeat/1,
@@ -55,9 +63,17 @@ transaction_array(Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8) ->
     encode_msg(#replicate_tx_8{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4,
                                tx_5=Tx5, tx_6=Tx6, tx_7=Tx7, tx_8=Tx8}).
 
+-spec clocks(vclock()) -> binary().
+clocks(KnownVC) ->
+    encode_msg(#update_clocks_cure{known_vc=KnownVC}).
+
 -spec clocks(vclock(), vclock()) -> binary().
 clocks(KnownVC, StableVC) ->
     encode_msg(#update_clocks{known_vc=KnownVC, stable_vc=StableVC}).
+
+-spec clocks_heartbeat(vclock()) -> binary().
+clocks_heartbeat(KnownVC) ->
+    encode_msg(#update_clocks_cure_heartbeat{known_vc=KnownVC}).
 
 -spec clocks_heartbeat(vclock(), vclock()) -> binary().
 clocks_heartbeat(KnownVC, StableVC) ->
@@ -170,7 +186,14 @@ encode_payload(#red_heartbeat_ack{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
     {?RED_HB_ACK_KIND, term_to_binary({B, Id, Ts})};
 
 encode_payload(#red_heartbeat_decide{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
-    {?RED_HB_DECIDE_KIND, term_to_binary({B, Id, Ts})}.
+    {?RED_HB_DECIDE_KIND, term_to_binary({B, Id, Ts})};
+
+%% FT-CURE Payloads
+encode_payload(#update_clocks_cure{known_vc=KnownVC}) ->
+    {?UPDATE_CLOCK_CURE_KIND, term_to_binary(KnownVC)};
+
+encode_payload(#update_clocks_cure_heartbeat{known_vc=KnownVC}) ->
+    {?UPDATE_CLOCK_CURE_HEARTBEAT_KIND, term_to_binary(KnownVC)}.
 
 -spec decode_payload(binary()) -> replica_message().
 decode_payload(<<?BLUE_HB_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
@@ -236,7 +259,13 @@ decode_payload(<<?RED_HB_ACK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
 
 decode_payload(<<?RED_HB_DECIDE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {B, Id, Ts} = binary_to_term(Payload),
-    #red_heartbeat_decide{ballot=B, heartbeat_id=Id, timestamp=Ts}.
+    #red_heartbeat_decide{ballot=B, heartbeat_id=Id, timestamp=Ts};
+
+decode_payload(<<?UPDATE_CLOCK_CURE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
+    #update_clocks_cure{known_vc=binary_to_term(Payload)};
+
+decode_payload(<<?UPDATE_CLOCK_CURE_HEARTBEAT_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
+    #update_clocks_cure_heartbeat{known_vc=binary_to_term(Payload)}.
 
 %% Util functions
 
@@ -273,8 +302,13 @@ grb_dc_message_utils_test() ->
             tx_7 = {#{foo => bar}, VC},
             tx_8 = {#{foo => bar}, VC}
         },
+
         #update_clocks{known_vc=VC, stable_vc=VC},
         #update_clocks_heartbeat{known_vc=VC, stable_vc=VC},
+
+        #update_clocks_cure{known_vc=VC},
+        #update_clocks_cure_heartbeat{known_vc=VC},
+
         #forward_heartbeat{replica=ReplicaId, timestamp=10},
         #forward_transaction{replica=ReplicaId, writeset=#{foo => bar}, commit_vc=VC},
 

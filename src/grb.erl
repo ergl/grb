@@ -74,7 +74,7 @@ put_conflicts(Conflicts) ->
     grb_paxos_vnode:put_conflicts_all(Conflicts).
 
 -spec uniform_barrier(grb_promise:t(), partition_id(), vclock()) -> ok.
--ifdef(BASIC_REPLICATION).
+-ifdef(UBARRIER_NOOP).
 
 uniform_barrier(Promise, _Partition, _CVC) ->
     grb_promise:resolve(ok, Promise).
@@ -97,14 +97,14 @@ uniform_barrier(Promise, Partition, CVC) ->
 -endif.
 
 -spec start_transaction(partition_id(), vclock()) -> vclock().
--ifdef(BASIC_REPLICATION).
+-ifdef(STABLE_SNAPSHOT).
 
 start_transaction(Partition, ClientVC) ->
     UpdatedStableVC = grb_propagation_vnode:merge_remote_stable_vc(Partition, ClientVC),
     grb_vclock:max(ClientVC, UpdatedStableVC).
 
 -else.
--ifdef(UNIFORM_BLUE).
+-ifdef(UNIFORM_SNAPSHOT).
 
 start_transaction(Partition, ClientVC) ->
     UpdatedUniformVC = grb_propagation_vnode:merge_remote_uniform_vc(Partition, ClientVC),
@@ -212,7 +212,7 @@ commit_red(Promise, TargetPartition, TxId, Label, SnapshotVC, Prepares) ->
 %%%===================================================================
 
 -spec read_snapshot_prologue(partition_id(), vclock()) -> ok.
--ifdef(BASIC_REPLICATION).
+-ifdef(STABLE_SNAPSHOT).
 read_snapshot_prologue(Partition, SnapshotVC) ->
     grb_propagation_vnode:merge_into_stable_vc(Partition, SnapshotVC).
 -else.

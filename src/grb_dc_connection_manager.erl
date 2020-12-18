@@ -44,6 +44,10 @@
               connect_to/1,
               close/1]).
 
+-ifndef(NO_FWD_REPLICATION).
+-ignore_xref([send_heartbeat/3]).
+-endif.
+
 %% Supervisor
 -export([start_link/0]).
 
@@ -177,17 +181,26 @@ forward_tx(ToId, FromId, Partition, WS, VC) ->
                   KnownVC :: vclock(),
                   StableVC :: vclock()) -> ok | {error, term()}.
 
+-ifdef(STABLE_SNAPSHOT).
+send_clocks(ToId, Partition, KnownVC, _StableVC) ->
+    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:clocks(KnownVC)).
+-else.
 send_clocks(ToId, Partition, KnownVC, StableVC) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:clocks(KnownVC, StableVC)).
+-endif.
 
 %% @doc Same as send_clocks/5, but let the remote node to use knownVC as a heartbeat
 -spec send_clocks_heartbeat(ToId :: replica_id(),
                             Partition :: partition_id(),
                             KnownVC :: vclock(),
                             StableVC :: vclock()) -> ok | {error, term()}.
-
+-ifdef(STABLE_SNAPSHOT).
+send_clocks_heartbeat(ToId, Partition, KnownVC, _StableVC) ->
+    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:clocks_heartbeat(KnownVC)).
+-else.
 send_clocks_heartbeat(ToId, Partition, KnownVC, StableVC) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:clocks_heartbeat(KnownVC, StableVC)).
+-endif.
 
 -spec send_red_prepare(ToId :: replica_id(),
                        Coordinator :: red_coord_location(),

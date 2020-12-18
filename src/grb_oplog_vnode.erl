@@ -320,7 +320,7 @@ decide_blue(Partition, TxId, CommitVC) ->
                                         infinity).
 
 -spec update_prepare_clocks(partition_id(), vclock()) -> ok.
--ifdef(BASIC_REPLICATION).
+-ifdef(STABLE_SNAPSHOT).
 update_prepare_clocks(Partition, SnapshotVC) ->
     grb_propagation_vnode:merge_into_stable_vc(Partition, SnapshotVC).
 -else.
@@ -570,7 +570,7 @@ insert_prepared(Partition, TxId, PrepareTime) ->
     ok.
 
 -spec handle_remote_tx_internal(replica_id(), #{}, grb_time:ts(), vclock(), state()) -> ok.
--ifdef(NO_REMOTE_APPEND).
+-ifdef(NO_FWD_REPLICATION).
 handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{all_replicas=AllReplicas,
                                                                     partition=Partition,
                                                                     op_log=OperationLog,
@@ -592,7 +592,7 @@ handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, #state{all_replicas
 -endif.
 
 -spec handle_remote_tx_array_internal(replica_id(), tx_entry(), tx_entry(), tx_entry(), tx_entry(), state()) -> ok.
--ifdef(NO_REMOTE_APPEND).
+-ifdef(NO_FWD_REPLICATION).
 
 handle_remote_tx_array_internal(SourceReplica, {WS1, VC1}, {WS2, VC2}, {WS3, VC3}, {WS4, VC4},
         #state{all_replicas=AllReplicas, partition=Partition, op_log=OperationLog, op_log_size=LogSize}) ->

@@ -24,19 +24,24 @@ check_binaries:
 
 xref:
 	- $(REBAR) xref skip_deps=true
-	- $(REBAR) as basic_replication xref skip_deps=true
+	- $(REBAR) as cure xref skip_deps=true
+	- $(REBAR) as ft_cure xref skip_deps=true
 	- $(REBAR) as uniform_blue xref skip_deps=true
 
 dialyzer:
 	- $(REBAR) dialyzer
-	- $(REBAR) as basic_replication dialyzer
+	- $(REBAR) as cure xref skip_deps=true
+	- $(REBAR) as ft_cure xref skip_deps=true
 	- $(REBAR) as uniform_blue dialyzer
 
 debug:
 	$(REBAR) as debug_log compile
 
 cure:
-	$(REBAR) as basic_replication compile
+	$(REBAR) as cure compile
+
+ft_cure:
+	$(REBAR) as ft_cure compile
 
 uniform:
 	$(REBAR) as uniform_blue compile
@@ -51,7 +56,10 @@ debugrel:
 	$(REBAR) as debug_log release -n grb
 
 curerel:
-	$(REBAR) as basic_replication release -n grb
+	$(REBAR) as cure release -n grb
+
+ft_curerel:
+	$(REBAR) as ft_cure release -n grb
 
 unirel:
 	$(REBAR) as uniform_blue release -n grb
@@ -79,19 +87,22 @@ attach:
 
 test:
 	${REBAR} eunit skip_deps=true
-	${REBAR} as basic_replication eunit skip_deps=true
+	${REBAR} as cure eunit skip_deps=true
+	${REBAR} as ft_cure eunit skip_deps=true
 	${REBAR} as uniform_blue eunit skip_deps=true
 
 ct:
 	$(REBAR) ct --fail_fast
 
 full_ct: ct
-	$(REBAR) as basic_replication ct
+	$(REBAR) as cure ct
+	$(REBAR) as ct_cure ct
 	$(REBAR) as uniform_blue ct
 
 ct_clean:
 	rm -rf $(BASEDIR)/_build/test/logs
-	rm -rf $(BASEDIR)/_build/basic_replication+test/logs
+	rm -rf $(BASEDIR)/_build/cure+test/logs
+	rm -rf $(BASEDIR)/_build/ft_cure+test/logs
 	rm -rf $(BASEDIR)/_build/uniform_blue+test/logs
 
 dev1-rel:

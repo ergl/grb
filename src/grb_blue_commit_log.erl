@@ -24,7 +24,7 @@
          get_bigger/2,
          remove_leq/2]).
 
--ifdef(BASIC_REPLICATION).
+-ifdef(NO_FWD_REPLICATION).
 -export([remove_bigger/2]).
 -endif.
 
@@ -51,7 +51,7 @@ get_bigger(Cutoff, [{Key, _} | _], Acc) when abs(Key) =< Cutoff ->
 get_bigger(Cutoff, [{Key, Val} | Rest], Acc) when abs(Key) > Cutoff ->
     get_bigger(Cutoff, Rest, [Val | Acc]).
 
--ifdef(BASIC_REPLICATION).
+-ifdef(NO_FWD_REPLICATION).
 %% @doc Remove all entries with commit time at the created replica bigger than `Timestamp`
 %%
 %%      Entries are returned in increasing commit time order
@@ -132,7 +132,7 @@ grb_blue_commit_log_get_bigger_unordered_test() ->
     SomeMatches = grb_blue_commit_log:get_bigger(5, Log),
     ?assertEqual(lists:sublist(SortedList, 6, 9), SomeMatches).
 
--ifdef(BASIC_REPLICATION).
+-ifdef(NO_FWD_REPLICATION).
 grb_blue_commit_log_remove_bigger_ordered_test() ->
     MyReplicaID = '$dc_id',
     Entries = lists:map(fun(V) ->
