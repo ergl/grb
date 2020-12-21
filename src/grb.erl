@@ -18,6 +18,7 @@
 
 %% Regular read / write API
 -export([update/4,
+         partition_wait/4,
          key_snapshot/6,
          key_snapshot_bypass/5]).
 
@@ -183,6 +184,10 @@ multikey_update_bypass(Promise, Partition, TxId, SnapshotVC, KeyOps) ->
 -spec update(partition_id(), term(), key(), operation()) -> ok.
 update(Partition, TxId, Key, Operation) ->
     grb_oplog_vnode:put_client_op(Partition, TxId, Key, Operation).
+
+-spec partition_wait(grb_promise:t(), partition_id(), term(), vclock()) -> ok.
+partition_wait(Promise, Partition, TxId, SnapshotVC) ->
+    grb_oplog_reader:empty_wait(Promise, Partition, TxId, SnapshotVC).
 
 -spec prepare_blue(partition_id(), term(), vclock()) -> non_neg_integer().
 prepare_blue(Partition, TxId, VC) ->

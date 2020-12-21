@@ -131,7 +131,7 @@ handle_request('OpRequest', Args = #{operation := Operation}, Context, State) ->
         snapshot_vc := SnapshotVC
     } = Args,
     ok = grb:update(Partition, TxId, Key, Operation),
-    try_read(Partition, TxId, Key, grb_crdt:op_type(Operation), ReadAgain, SnapshotVC, Context, State);
+    try_partition_wait(Partition, TxId, ReadAgain, SnapshotVC, Context, State);
 
 handle_request('OpRequest', Args = #{read_operation := ReadOperation}, Context, State) ->
      #{
@@ -228,6 +228,18 @@ try_read(Partition, TxId, Key, Type, false, SnapshotVC, Context, State) ->
             reply_to_client(grb:key_snapshot_bypass(Partition, TxId, Key, Type, SnapshotVC), Context, State);
         false ->
             grb:key_snapshot(grb_promise:new(self(), Context), Partition, TxId, Key, Type, SnapshotVC)
+    end.
+
+-spec try_partition_wait(partition_id(), term(), boolean(), vclock(), proto_context(), state()) -> ok.
+try_partition_wait(_Partition, _TxId, true, _SnapshotVC, Context, State) ->
+    reply_to_client({ok, <<>>}, Context, State);
+
+try_partition_wait(Partition, TxId, false, SnapshotVC, Context, State) ->
+    case grb:partition_ready(Partition, SnapshotVC) of
+        true ->
+            reply_to_client({ok, <<>>}, Context, State);
+        false ->
+            grb:partition_wait(grb_promise:new(self(), Context), Partition, TxId, SnapshotVC)
     end.
 
 -spec try_read_operation(partition_id(), term(), key(), operation(), boolean(), vclock(), proto_context(), state()) -> ok.
