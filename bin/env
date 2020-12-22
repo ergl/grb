@@ -88,7 +88,7 @@ if [ -z "$RED_COORD_POOL_SIZE" ]; then
 fi
 
 if [ -z "$VISIBILITY_RATE" ]; then
-  export VISIBILITY_RATE=100
+  export VISIBILITY_RATE=1000
 fi
 
 # Node config
