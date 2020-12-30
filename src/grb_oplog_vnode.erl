@@ -173,87 +173,33 @@ check_visible(Partition, Replica, Time) ->
 visibility_table(Partition) ->
     persistent_term:get({?MODULE, Partition, ?VISIBILITY_TABLE}).
 
--spec visibility_metrics() -> #{replica_id() := #{ min := non_neg_integer(),
-                                                   max := non_neg_integer(),
-                                                   avg := non_neg_integer(),
-                                                   median := non_neg_integer(),
-                                                   total := non_neg_integer()} }.
+-spec visibility_metrics() -> #{replica_id() := [non_neg_integer()] }.
 visibility_metrics() ->
     RemoteReplicas = grb_dc_manager:remote_replicas(),
     lists:foldl(fun(Replica, Acc) ->
-        Bottom = {undefined, 0, [], 0, 0},
-        ForReplica = lists:foldl(
+        ReplicaValues = lists:foldl(
             fun(Partition, InnerAcc) ->
-                aggregate_visibility(Partition, Replica, InnerAcc)
+                partition_visibility(Partition, Replica, InnerAcc)
             end,
-            Bottom,
+            [],
             grb_dc_utils:my_partitions()
         ),
-        {ReplicaMin, ReplicaMax, ReplicaValues, ReplicaSum, ReplicaN} = ForReplica,
         case ReplicaValues of
-            [] ->
-                Acc;
-            [Single] ->
-                Acc#{
-                    Replica => #{ min => ReplicaMin,
-                                  max => ReplicaMax,
-                                  avg => Single,
-                                  median => Single,
-                                  total => ReplicaN}
-                };
-
-            All ->
-                Avg = ReplicaSum div ReplicaN,
-                Median = lists:nth((ReplicaN div 2), lists:sort(All)),
-                Acc#{
-                    Replica => #{ min => ReplicaMin,
-                                  max => ReplicaMax,
-                                  avg => Avg,
-                                  median => Median,
-                                  total => ReplicaN}
-                }
+            [] -> Acc;
+            Values -> Acc#{Replica => Values}
         end
     end, #{}, RemoteReplicas).
 
--spec aggregate_visibility(partition_id(), replica_id(), {
-    atom() | non_neg_integer(),
-    non_neg_integer(),
-    [non_neg_integer()],
-    non_neg_integer(),
-    non_neg_integer()
-}) -> {
-    non_neg_integer(),
-    non_neg_integer(),
-    [non_neg_integer()],
-    non_neg_integer(),
-    non_neg_integer()
-}.
-aggregate_visibility(Partition, Replica, {TotalMin, TotalMax, Values, Sum, TotalValues}=Acc) ->
+-spec partition_visibility(partition_id(), replica_id(), [non_neg_integer()]) -> [non_neg_integer()].
+partition_visibility(Partition, Replica, Acc) ->
     Table = visibility_table(Partition),
     case ets:select(Table, [{ {{Replica, '_'}, '$1'}, [], ['$1'] }]) of
         [] ->
             Acc;
 
-        [Single] ->
-            {
-                erlang:min(TotalMin, Single),
-                erlang:max(TotalMax, Single),
-                [Single | Values],
-                Sum + 1,
-                TotalValues + 1
-            };
-
         All ->
             lists:foldl(
-                fun(Elt, {Min0, Max0, Vs, Sum0, Len0}) ->
-                    {
-                        erlang:min(Elt, Min0),
-                        erlang:max(Elt, Max0),
-                        [Elt | Vs],
-                        Sum0 + Elt,
-                        Len0 + 1
-                    }
-                end,
+                fun(Elt, Vs) -> [Elt | Vs] end,
                 Acc,
                 All
             )

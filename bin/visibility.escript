@@ -136,12 +136,21 @@ do_visibility(Nodes, Path) ->
     Results = erpc:multicall(Nodes, grb_oplog_vnode, visibility_metrics, []),
     Folded = lists:foldl(
       fun
-        ({ok, ReplicaMaps}, Acc) ->
-          [ReplicaMaps | Acc];
+        ({ok, RemoteMap}, Acc) ->
+          maps:fold(
+            fun(Replica, Values, Acc) ->
+              case Acc of
+                #{Replica := Old} -> Acc#{Replica => Values ++ Old};
+                #{} -> Acc#{Replica => Values}
+              end
+            end,
+            Acc,
+            RemoteMap
+          );
         (_, Acc) ->
             Acc
       end,
-      [],
+      #{},
       Results
     ),
     file:write_file(Path, term_to_binary(Folded)).
