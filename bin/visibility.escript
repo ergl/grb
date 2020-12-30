@@ -136,8 +136,8 @@ do_visibility(Nodes, Path) ->
     Results = erpc:multicall(Nodes, grb_oplog_vnode, visibility_metrics, []),
     Folded = lists:foldl(
       fun
-        ({ok, PartitionMaps}, Acc) ->
-          PartitionMaps ++ Acc;
+        ({ok, ReplicaMaps}, Acc) ->
+          [ReplicaMaps | Acc];
         (_, Acc) ->
             Acc
       end,
