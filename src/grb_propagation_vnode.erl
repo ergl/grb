@@ -853,11 +853,11 @@ replicate_internal(S=#state{self_log=LocalLog,
                 ?LOG_DEBUG("send clocks/heartbeat to ~p: ~p~n", [Target, HBRes]),
                 ok;
             Transactions ->
+                ok = send_transactions(Target, Partition, Transactions),
                 %% can't merge with other messages here, send one before
                 %% we could piggy-back on top of the first tx, but w/ever
                 ClockRes = grb_dc_connection_manager:send_clocks(Target, Partition, KnownVC, StableVC),
-                ?LOG_DEBUG("send clocks to ~p: ~p~n", [Target, ClockRes]),
-                ok = send_transactions(Target, Partition, Transactions)
+                ?LOG_DEBUG("send clocks to ~p: ~p~n", [Target, ClockRes])
         end,
         AccMatrix#{{Target, LocalId} => LocalTime}
     end, Matrix0, grb_dc_connection_manager:connected_replicas()),
