@@ -189,14 +189,14 @@ get_first_committed(LastDelivered, Table) ->
 buffered_between(From, To, Table) ->
     case ets:next(Table, {{From, 0}}) of
         '$end_of_table' -> false;
-        {MarkerTime, _} -> MarkerTime < To
+        {MarkerTime, _} -> MarkerTime =< To
     end.
 
 -spec prep_committed_between(grb_time:ts(), grb_time:ts(), cache_id()) -> boolean().
 prep_committed_between(From, To, Table) ->
     0 =/= ets:select_count(Table, ets:fun2ms(
         fun(#index_entry{key={Ts, _}, state=prepared, vote=ok})
-            when Ts > From andalso Ts < To ->
+            when Ts > From andalso Ts =< To ->
             true
         end)
     ).
@@ -699,8 +699,13 @@ grb_paxos_state_tx_clash_test() ->
         {ok, F2} = grb_paxos_state:accept(0, tx_2, <<>>, [], #{a => 1}, ok, VC(5), F1),
 
         {ok, F3} = grb_paxos_state:decision(0, tx_1, ok, VC(5), F2),
+
+        %% If we allow to deliver tx_1, we would overtake tx_2 and prevent it from ever being delivered
+        ?assertEqual(false, grb_paxos_state:get_next_ready(0, F3) ),
+
         {ok, F4} = grb_paxos_state:decision(0, tx_2, ok, VC(5), F3),
 
+        %% Now we can deliver, since tx_2 moved out of the prepare queue
         ?assertEqual({5, [ {<<>>, #{a => 0}, VC(5)},
                            {<<>>, #{a => 1}, VC(5)} ]}, grb_paxos_state:get_next_ready(0, F4) )
     end).
@@ -882,6 +887,7 @@ grb_paxos_state_decision_reserve_test() ->
         TxId1 = tx_1, Label1 = <<>>, RS1 = [a], WS1 = #{a => <<"hello">>}, CVC1 = #{?RED_REPLICA => 1},
         HB = {?heartbeat, 0}, Ts = 2,
         TxId2 = tx_2, Label2 = <<>>, RS2 = [b], WS2 = #{b => <<"another update">>}, CVC2 = #{?RED_REPLICA => 5},
+        TxId3 = tx_3, Label3 = <<>>, RS3 = [c], WS3 = #{c => <<"and another">>}, CVC3 = #{?RED_REPLICA => 5},
 
         %% If we get a commit decision for a transaction that hasn't been accepted,
         %% it should "reserve its spot" in the commit order, or another transaction could be
@@ -893,10 +899,13 @@ grb_paxos_state_decision_reserve_test() ->
         ?assertMatch(not_prepared, grb_paxos_state:decision_hb(0, HB, Ts, F0)),
         ok = grb_paxos_state:reserve_decision(HB, ok, Ts, F0),
 
-        {ok, F1} = grb_paxos_state:accept(0, TxId2, Label2, RS2, WS2, ok, CVC2, F0),
-        {ok, F2} = grb_paxos_state:decision(0, TxId2, ok, CVC2, F1),
+        %% Same with a transaction with the same commit time
+        ok = grb_paxos_state:reserve_decision(TxId2, ok, CVC2, F0),
 
-        %% Although we tx_2 is ready to deliver, we have a pending ACCEPT for tx_1
+        {ok, F1} = grb_paxos_state:accept(0, TxId3, Label3, RS3, WS3, ok, CVC3, F0),
+        {ok, F2} = grb_paxos_state:decision(0, TxId3, ok, CVC3, F1),
+
+        %% Although tx_3 is ready to deliver, we have a pending ACCEPT for tx_1 and tx_2
         ?assertMatch(false, grb_paxos_state:get_next_ready(0, F2)),
 
         {ok, F3} = grb_paxos_state:accept(0, TxId1, Label1, RS1, WS1, ok, CVC1, F2),
@@ -904,15 +913,23 @@ grb_paxos_state_decision_reserve_test() ->
 
         %% Now that tx_1 is complete, it can be delivered
         ?assertMatch({1, [{Label1, WS1, CVC1}]}, grb_paxos_state:get_next_ready(0, F4)),
-        %% but trying to deliver tx_2 will fail as we still have the heartbeat in the queue
+        %% but trying to deliver tx_3 will fail as we still have the heartbeat in the queue
         ?assertMatch(false, grb_paxos_state:get_next_ready(1, F4)),
 
         {ok, F5} = grb_paxos_state:accept_hb(0, HB, Ts, F4),
         {ok, F6} = grb_paxos_state:decision_hb(0, HB, Ts, F5),
 
-        %% Finally, we can deliver the heartbeat and tx_2
+        %% Finally, we can deliver the heartbeat
         ?assertMatch({2, [?heartbeat]}, grb_paxos_state:get_next_ready(1, F6)),
-        ?assertMatch({5, [{Label2, WS2, CVC2}]}, grb_paxos_state:get_next_ready(2, F6))
+
+        %% tx_3 is still blocked by not receiving the accept on tx_2
+        ?assertMatch(false, grb_paxos_state:get_next_ready(2, F6)),
+
+        {ok, F7} = grb_paxos_state:accept(0, TxId2, Label2, RS2, WS2, ok, CVC2, F6),
+        {ok, F8} = grb_paxos_state:decision(0, TxId2, ok, CVC2, F7),
+
+        %% After moving tx_2 from prepared to decided, we can deliver both transactions
+        ?assertMatch({5, [{Label2, WS2, CVC2}, {Label3, WS3, CVC3}]}, grb_paxos_state:get_next_ready(2, F8))
     end).
 
 -endif.
