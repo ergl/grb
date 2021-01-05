@@ -12,13 +12,11 @@
 %% heartbeat api
 -export([prepare_heartbeat/2,
          accept_heartbeat/5,
-         broadcast_hb_decision/4,
          decide_heartbeat/4]).
 
 %% tx API
 -export([prepare/7,
          accept/9,
-         broadcast_decision/5,
          decide/5]).
 
 %% riak_core_vnode callbacks
@@ -128,16 +126,9 @@ accept_heartbeat(Partition, SourceReplica, Ballot, Id, Ts) ->
                                    {accept_hb, SourceReplica, Ballot, Id, Ts},
                                    ?master).
 
--spec broadcast_hb_decision(partition_id(), ballot(), term(), grb_time:ts()) -> ok.
-broadcast_hb_decision(Partition, Ballot, Id, Ts) ->
-    lists:foreach(fun(ReplicaId) ->
-        grb_dc_connection_manager:send_red_decide_heartbeat(ReplicaId, Partition, Ballot, Id, Ts)
-    end, grb_dc_connection_manager:connected_replicas()),
-    decide_heartbeat(Partition, Ballot, Id, Ts).
-
--spec decide_heartbeat(partition_id(), ballot(), term(), grb_time:ts()) -> ok.
-decide_heartbeat(Partition, Ballot, Id, Ts) ->
-    riak_core_vnode_master:command({Partition, node()},
+-spec decide_heartbeat(index_node(), ballot(), term(), grb_time:ts()) -> ok.
+decide_heartbeat(IndexNode, Ballot, Id, Ts) ->
+    riak_core_vnode_master:command(IndexNode,
                                    {decide_hb, Ballot, Id, Ts},
                                    ?master).
 
@@ -177,16 +168,9 @@ accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, Coord) ->
                                    Coord,
                                    ?master).
 
--spec broadcast_decision(partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-broadcast_decision(Partition, Ballot, TxId, Decision, CommitVC) ->
-    lists:foreach(fun(ReplicaId) ->
-        grb_dc_connection_manager:send_red_decision(ReplicaId, Partition, Ballot, TxId, Decision, CommitVC)
-    end, grb_dc_connection_manager:connected_replicas()),
-    decide(Partition, Ballot, TxId, Decision, CommitVC).
-
--spec decide(partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-decide(Partition, Ballot, TxId, Decision, CommitVC) ->
-    riak_core_vnode_master:command({Partition, node()},
+-spec decide(index_node(), ballot(), term(), red_vote(), vclock()) -> ok.
+decide(IndexNode, Ballot, TxId, Decision, CommitVC) ->
+    riak_core_vnode_master:command(IndexNode,
                                    {decision, Ballot, TxId, Decision, CommitVC},
                                    ?master).
 
@@ -364,16 +348,38 @@ handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{pa
 %%% leader / follower protocol messages
 %%%===================================================================
 
-handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S0=#state{partition=P}) ->
+handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S0=#state{partition=Partition,
+                                                               synod_state=SynodState}) ->
 
-    ?LOG_DEBUG("~p: HEARTBEAT_DECIDE(~b, ~p, ~b)", [P, Ballot, Id, Ts]),
+    ?LOG_DEBUG("~p: HEARTBEAT_DECIDE(~b, ~p, ~b)", [Partition, Ballot, Id, Ts]),
     {ok, S} = decide_hb_internal(Ballot, Id, Ts, S0),
+    case grb_paxos_state:role(SynodState) of
+        leader ->
+            %% forward decisions
+            lists:foreach(fun(ReplicaId) ->
+                grb_dc_connection_manager:send_red_decide_heartbeat(ReplicaId, Partition, Ballot, Id, Ts)
+            end, grb_dc_connection_manager:connected_replicas());
+        follower ->
+            %% if we're a follower, we're done
+            ok
+    end,
     {noreply, S};
 
-handle_command({decision, Ballot, TxId, Decision, CommitVC}, _Sender, S0=#state{partition=P}) ->
+handle_command({decision, Ballot, TxId, Decision, CommitVC}, _Sender, S0=#state{partition=Partition,
+                                                                                synod_state=SynodState}) ->
 
-    ?LOG_DEBUG("~p DECIDE(~b, ~p, ~p)", [P, Ballot, TxId, Decision]),
+    ?LOG_DEBUG("~p DECIDE(~b, ~p, ~p)", [Partition, Ballot, TxId, Decision]),
     {ok, S} = decide_internal(Ballot, TxId, Decision, CommitVC, S0),
+    case grb_paxos_state:role(SynodState) of
+        leader ->
+            %% forward decisions
+            lists:foreach(fun(ReplicaId) ->
+                grb_dc_connection_manager:send_red_decision(ReplicaId, Partition, Ballot, TxId, Decision, CommitVC)
+            end, grb_dc_connection_manager:connected_replicas());
+        follower ->
+            %% if we're a follower, we're done
+            ok
+    end,
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->

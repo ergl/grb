@@ -128,7 +128,8 @@ handle_ack(Partition, HeartbeatId, InBallot, InTimestamp, HeartbeatState, Active
                 HeartbeatState#active_hb{ballot=Ballot, timestamp=Timestamp, to_ack=ToAck0 - 1}};
         1 ->
             ?LOG_DEBUG("decided heartbeat ~w with timestamp ~b", [HeartbeatId, Timestamp]),
-            ok = grb_paxos_vnode:broadcast_hb_decision(Partition, Ballot, HeartbeatId, Timestamp),
+            %% We're always colocated in the same index node as the leader.
+            ok = grb_paxos_vnode:decide_heartbeat({Partition, node()}, Ballot, HeartbeatId, Timestamp),
             maps:remove(HeartbeatId, ActiveHeartbeats)
     end.
 

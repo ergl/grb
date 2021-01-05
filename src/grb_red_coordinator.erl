@@ -286,26 +286,21 @@ decide_transaction(VoteMap) ->
     end, undefined, VoteMap).
 
 -spec send_decision(partition_id(), leader_location(), ballot(), term(), red_vote(), vclock()) -> ok.
-send_decision(Partition, {proxy, LocalNode, _}, Ballot, TxId, Decision, CommitVC) ->
-    remote_broadcast(LocalNode, Partition, Ballot, TxId, Decision, CommitVC);
-
-send_decision(Partition, {local, {_, LocalNode}}, Ballot, TxId, Decision, CommitVC) ->
-    MyNode = node(),
-    case LocalNode of
-        MyNode -> local_broadcast(Partition, Ballot, TxId, Decision, CommitVC);
-        _ -> remote_broadcast(LocalNode, Partition, Ballot, TxId, Decision, CommitVC)
-    end;
-
-send_decision(Partition, {remote, _}, Ballot, TxId, Decision, CommitVC) ->
-    local_broadcast(Partition, Ballot, TxId, Decision, CommitVC).
-
--spec local_broadcast(partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-local_broadcast(Partition, Ballot, TxId, Decision, CommitVC) ->
-    grb_paxos_vnode:broadcast_decision(Partition, Ballot, TxId, Decision, CommitVC).
-
--spec remote_broadcast(node(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-remote_broadcast(Node, Partition, Ballot, TxId, Decision, CommitVC) ->
-    erpc:cast(Node, grb_paxos_vnode, broadcast_decision, [Partition, Ballot, TxId, Decision, CommitVC]).
+send_decision(Partition, LeaderLoc, Ballot, TxId, Decision, CommitVC) ->
+    case LeaderLoc of
+        {local, IndexNode} ->
+            %% leader is in the local cluster, go through vnode directly
+            ok = grb_paxos_vnode:decide(IndexNode, Ballot, TxId, Decision, CommitVC);
+        {remote, RemoteReplica} ->
+            %% leader is in another replica, and we have a direct inter_dc connection to it
+            ok = grb_dc_connection_manager:send_red_decision(RemoteReplica, Partition, Ballot,
+                                                             TxId, Decision, CommitVC);
+        {proxy, LocalNode, RemoteReplica} ->
+            %% leader is in another replica, but we don't have a direct inter_dc connection, have
+            %% to go through a cluster-local proxy at `LocalNode`
+            Msg = grb_dc_messages:red_decision(Ballot, Decision, TxId, CommitVC),
+            ok = erpc:cast(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
+    end.
 
 -spec reduce_vote(red_vote(), vclock(), {red_vote(), vclock()}) -> {red_vote(), vclock()}.
 reduce_vote(_, _, {{abort, _}, _}=Err) -> Err;

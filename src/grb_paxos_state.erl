@@ -67,12 +67,15 @@
 -type decision_error() :: bad_ballot | not_prepared | not_ready.
 -type t() :: #state{}.
 
--export_type([t/0, prepare_result/0, prepare_hb_result/0, decision_error/0]).
+-export_type([t/0, status/0, prepare_result/0, prepare_hb_result/0, decision_error/0]).
 
 %% constructors
 -export([leader/0,
          follower/0,
          delete/1]).
+
+%% check our status
+-export([role/1]).
 
 %% ready / prune api
 -export([get_next_ready/2,
@@ -130,6 +133,14 @@ delete(#state{index=Index, pending_reads=PendingReads, writes_cache=Writes, pend
     true = ets:delete(Writes),
     true = ets:delete(PendingData),
     ok.
+
+%%%===================================================================
+%%% util
+%%%===================================================================
+
+-spec role(t()) -> status().
+role(#state{status=S}) ->
+    S.
 
 %%%===================================================================
 %%% ready / prune
@@ -902,30 +913,6 @@ grb_paxos_state_decision_reserve_test() ->
         %% Finally, we can deliver the heartbeat and tx_2
         ?assertMatch({2, [?heartbeat]}, grb_paxos_state:get_next_ready(1, F6)),
         ?assertMatch({5, [{Label2, WS2, CVC2}]}, grb_paxos_state:get_next_ready(2, F6))
-    end).
-
-grb_paxos_state_hengfeng_example_test() ->
-    with_states(grb_paxos_state:leader(), fun(F0) ->
-        RS = [], WS = #{}, Label1 = <<"1">>, Label2 = <<"2">>, Ballot = 0,
-        TxId1 = tx_1,
-        TxId2 = tx_2,
-
-        %% Replica receives the accept as strong = 1
-        {ok, F1} = grb_paxos_state:accept(Ballot, TxId1, Label1, RS, WS, ok, #{?RED_REPLICA => 1}, F0),
-
-        %% Client now decides with strong = 5, coming from another partition.
-        %% Sends decision to both leader (not pictured) and follower
-        {ok, F2} = grb_paxos_state:decision(Ballot, TxId1, ok, #{?RED_REPLICA => 5}, F1),
-
-        %% Since we haven't received the accept for tx_2 with a lower commit time, we can deliver
-        ?assertMatch({5, [{Label1, _, _}]}, grb_paxos_state:get_next_ready(Ballot, F2)),
-
-        {ok, F3} = grb_paxos_state:accept(Ballot, TxId2, Label2, RS, WS, ok, #{?RED_REPLICA => 2}, F2),
-        {ok, F4} = grb_paxos_state:decision(Ballot, TxId2, ok, #{?RED_REPLICA => 2}, F3),
-
-        %% Tx2 is stuck in the commit queue
-        ?assertEqual(false, grb_paxos_state:get_next_ready(5, F4)),
-        ?assertMatch({2, [{Label2, _, _}]}, grb_paxos_state:get_next_ready(0, F4))
     end).
 
 -endif.

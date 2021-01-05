@@ -202,7 +202,7 @@ handle_request(_, Partition, #red_accept_ack{target_node=Node, ballot=Ballot, tx
     end;
 
 handle_request(_, Partition, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->
-    grb_paxos_vnode:decide(Partition, Ballot, TxId, Decision, CommitVC);
+    grb_paxos_vnode:decide({Partition, node()}, Ballot, TxId, Decision, CommitVC);
 
 handle_request(_, _, #red_already_decided{target_node=Node, tx_id=TxId, decision=Vote, commit_vc=CommitVC}) ->
     MyNode = node(),
@@ -218,7 +218,7 @@ handle_request(_, Partition, #red_heartbeat_ack{ballot=B, heartbeat_id=Id, times
     grb_red_timer:handle_accept_ack(Partition, B, Id, Ts);
 
 handle_request(_, Partition, #red_heartbeat_decide{ballot=Ballot, heartbeat_id=Id, timestamp=Ts}) ->
-    grb_paxos_vnode:decide_heartbeat(Partition, Ballot, Id, Ts);
+    grb_paxos_vnode:decide_heartbeat({Partition, node()}, Ballot, Id, Ts);
 
 handle_request(ConnReplica, Partition, #update_clocks_cure{known_vc=KnownVC}) ->
     grb_propagation_vnode:handle_clock_update(Partition, ConnReplica, KnownVC);
