@@ -547,8 +547,9 @@ connect_nodes_to_descriptor(Nodes, Desc=#replica_descriptor{replica_id=RemoteId}
 -spec compute_groups(replica_id(), [replica_id()]) -> {ok, [[replica_id()]]} | {error, not_connected}.
 compute_groups(_LocalId, []) -> {error, not_connected};
 compute_groups(LocalId, RemoteReplicas) ->
-    %% Pick length(Replicas), since N=f+1, f = N-1
-    AllGroups = cnr(length(RemoteReplicas), [LocalId | RemoteReplicas]),
+    AllReplicas = [LocalId | RemoteReplicas],
+    GroupSize = floor(length(AllReplicas) / 2) + 1,
+    AllGroups = cnr(GroupSize, AllReplicas),
     {ok, lists:filter(fun(L) -> lists:member(LocalId, L) end, AllGroups)}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
