@@ -14,7 +14,8 @@
                   pvc_proto,
                   pvc_types,
                   runtime_tools,
-                  recon
+                  recon,
+                  observer_cli
                  ]},
   {mod, { grb_app, []}},
   {env, []}
