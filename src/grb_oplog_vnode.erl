@@ -193,7 +193,7 @@ visibility_metrics() ->
 -spec partition_visibility(partition_id(), replica_id(), [non_neg_integer()]) -> [non_neg_integer()].
 partition_visibility(Partition, Replica, Acc) ->
     Table = visibility_table(Partition),
-    case ets:select(Table, [{ {{Replica, '_'}, '$1'}, [], ['$1'] }]) of
+    case ets:select(Table, [{ {{Replica, '_', '_'}, '$1'}, [], ['$1'] }]) of
         [] ->
             Acc;
 
@@ -623,14 +623,15 @@ handle_info(Msg, State) ->
 
 -spec check_visible_internal(replica_id(), grb_time:ts(), cache_id()) -> ok.
 check_visible_internal(ReplicaId, Time, VisibilityTable) ->
+    Now = grb_time:timestamp(),
     Match = [{
         %% For all entries coming from this replica ...
-        {{ReplicaId, '$1'}},
+        {{ReplicaId, '$1', '$2'}},
         %% ... with a commit time lower than the given one (that is, they're already visible) ...
         [{'=<', '$1', Time}],
         %% ... add the difference in time as the value, excluding them from future checks
         %% we add const here, since ReplicaId is a tuple, it might be mistaken for a matchspec
-        [{{ {{{const, ReplicaId}, '$1'}}, {'-', Time, '$1'} }}]
+        [{{ {{{const, ReplicaId}, '$1', '$2'}}, {'-', Now, '$2'} }}]
     }],
     _ = ets:select_replace(VisibilityTable, Match),
     ok.
@@ -642,7 +643,7 @@ sample_transaction(SourceReplica, CommitTime, Incr, S=#state{visibility_sample_c
     N = N0 + Incr,
     if
         N >= Every ->
-             true = ets:insert(Table, {{SourceReplica, CommitTime}});
+             true = ets:insert(Table, {{SourceReplica, CommitTime, grb_time:timestamp()}});
          true ->
             ok
     end,
