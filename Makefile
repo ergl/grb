@@ -27,12 +27,14 @@ xref:
 	- $(REBAR) as cure xref skip_deps=true
 	- $(REBAR) as ft_cure xref skip_deps=true
 	- $(REBAR) as uniform_blue xref skip_deps=true
+	- $(REBAR) as redblue_naive xref skip_deps=true
 
 dialyzer:
 	- $(REBAR) dialyzer
-	- $(REBAR) as cure xref skip_deps=true
-	- $(REBAR) as ft_cure xref skip_deps=true
+	- $(REBAR) as cure dialyzer
+	- $(REBAR) as ft_cure dialyzer
 	- $(REBAR) as uniform_blue dialyzer
+	- $(REBAR) as redblue_naive dialyzer
 
 debug:
 	$(REBAR) as debug_log compile
@@ -90,6 +92,7 @@ test:
 	${REBAR} as cure eunit skip_deps=true
 	${REBAR} as ft_cure eunit skip_deps=true
 	${REBAR} as uniform_blue eunit skip_deps=true
+	${REBAR} as redblue_naive eunit skip_deps=true
 
 ct:
 	$(REBAR) ct --fail_fast
@@ -98,12 +101,14 @@ full_ct: ct
 	$(REBAR) as cure ct
 	$(REBAR) as ct_cure ct
 	$(REBAR) as uniform_blue ct
+	${REBAR} as redblue_naive ct
 
 ct_clean:
 	rm -rf $(BASEDIR)/_build/test/logs
 	rm -rf $(BASEDIR)/_build/cure+test/logs
 	rm -rf $(BASEDIR)/_build/ft_cure+test/logs
 	rm -rf $(BASEDIR)/_build/uniform_blue+test/logs
+	rm -rf $(BASEDIR)/_build/redblue_naive+test/logs
 
 dev1-rel:
 	$(REBAR) as $(DEV_PROFILE) release -n grb_local1
