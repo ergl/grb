@@ -348,7 +348,9 @@ start_propagation_processes() ->
     MyReplicaId = replica_id(),
     RemoteReplicas = grb_dc_connection_manager:connected_replicas(),
 
-    {ok, MyGroups} = compute_groups(MyReplicaId, RemoteReplicas),
+    %% How many replica failures can we tolerate?
+    {ok, VisibilityFactor} = application:get_env(grb, uniform_visibility_factor),
+    {ok, MyGroups} = compute_groups(MyReplicaId, RemoteReplicas, VisibilityFactor),
     ?LOG_DEBUG("Fault tolerant groups: ~p~n", [MyGroups]),
 
     Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, {learn_dc_groups, MyGroups}),
@@ -544,12 +546,10 @@ connect_nodes_to_descriptor(Nodes, Desc=#replica_descriptor{replica_id=RemoteId}
 %%      This may be expensive, but it is only computed once.
 %%
 %%      todo(borja): Change this if we ever support dynamic join of new replicas
--spec compute_groups(replica_id(), [replica_id()]) -> {ok, [[replica_id()]]} | {error, not_connected}.
-compute_groups(_LocalId, []) -> {error, not_connected};
-compute_groups(LocalId, RemoteReplicas) ->
-    AllReplicas = [LocalId | RemoteReplicas],
-    GroupSize = floor(length(AllReplicas) / 2) + 1,
-    AllGroups = cnr(GroupSize, AllReplicas),
+-spec compute_groups(replica_id(), [replica_id()], non_neg_integer()) -> {ok, [[replica_id()]]} | {error, not_connected}.
+compute_groups(_LocalId, [], _) -> {error, not_connected};
+compute_groups(LocalId, RemoteReplicas, F) ->
+    AllGroups = cnr(F + 1, [LocalId | RemoteReplicas]),
     {ok, lists:filter(fun(L) -> lists:member(LocalId, L) end, AllGroups)}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
