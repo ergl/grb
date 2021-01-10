@@ -252,7 +252,7 @@ handle_cast({decide_blue, TxId, VC}, S=#state{partition=Partition,
     case grb_oplog_vnode:decide_blue_ready(ReplicaId, VC) of
         not_ready ->
             %% todo(borja, efficiency): can we use hybrid clocks here?
-            erlang:send_after(WaitMs, self(), {retry_decide, TxId, VC});
+            erlang:send_after(WaitMs, self(), {retry_decide, TxId, VC, 1});
         ready ->
             grb_oplog_vnode:decide_blue(Partition, TxId, VC)
     end,
@@ -326,14 +326,18 @@ handle_info({'$grb_promise_resolve', {ok, Key, Snapshot}, TxId}, S0=#state{pendi
     end,
     {noreply, S};
 
-handle_info({retry_decide, TxId, VC}, S=#state{partition=Partition,
+handle_info({retry_decide, TxId, VC, Times}, S=#state{partition=Partition,
                                                replica_id=ReplicaId,
                                                known_barrier_wait_ms=WaitMs}) ->
 
     case grb_oplog_vnode:decide_blue_ready(ReplicaId, VC) of
         not_ready ->
+            ?LOG_WARNING(
+                "Tx ~p still not ready after ~b times (~p > ~p) ",
+                [TxId, Times, grb_vclock:get_time(ReplicaId, VC), grb_time:timestamp()]
+            ),
             %% todo(borja, efficiency): can we use hybrid clocks here?
-            erlang:send_after(WaitMs, self(), {retry_decide, TxId, VC});
+            erlang:send_after(WaitMs, self(), {retry_decide, TxId, VC, Times + 1});
         ready ->
             grb_oplog_vnode:decide_blue(Partition, TxId, VC)
     end,
