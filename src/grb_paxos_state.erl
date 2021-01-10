@@ -23,12 +23,6 @@
 -else.
 -endif.
 
-%% How many commit times to delete at once
-%% If this is too low, we could spend quite a bit of time deleting
-%% If the value is too high, we could hurt performance from copying too much
-%% todo(borja, red): Make config for this
--define(PRUNE_LIMIT, 50).
-
 %% We don't care about the structure too much, as long as the client ensures identifiers
 %% are unique (or at least, unique to the point of not reusing them before they call
 %% `prune_decided_before/2`
@@ -201,12 +195,29 @@ buffered_between(From, To, Table) ->
 
 -spec prep_committed_between(grb_time:ts(), grb_time:ts(), cache_id()) -> boolean().
 prep_committed_between(From, To, Table) ->
-    0 =/= ets:select_count(Table, ets:fun2ms(
-        fun(#index_entry{key={Ts, _}, state=prepared, vote=ok})
-            when Ts > From andalso Ts =< To ->
-            true
-        end)
-    ).
+    prep_committed_between(ets:next(Table, {From, 0}), From, To, Table).
+
+prep_committed_between(IdxKey={KeyTime, _}, From, To, Table) when KeyTime =:= From ->
+    %% skip while we have the same commit time
+    prep_committed_between(ets:next(Table, IdxKey), From, To, Table);
+
+prep_committed_between(IdxKey={KeyTime, _Id}, From, To, Table) when KeyTime > From andalso KeyTime =< To ->
+    %% when we're in range, check for a prepared commit
+    case ets:lookup_element(Table, IdxKey, #index_entry.state) of
+        prepared ->
+            case ets:lookup_element(Table, IdxKey, #index_entry.vote) of
+                ok ->
+                    true;
+                _ ->
+                    prep_committed_between(ets:next(Table, IdxKey), From, To, Table)
+            end;
+        _ ->
+            prep_committed_between(ets:next(Table, IdxKey), From, To, Table)
+    end;
+
+prep_committed_between(_Key, _From, _To, _Table) ->
+    %% if we went out of range, bail out
+    false.
 
 -spec data_for_id(record_id(), #{record_id() => tx_data()}) -> ?heartbeat | {tx_label(), #{}, vclock()}.
 data_for_id({?heartbeat, _}, _) -> ?heartbeat;
@@ -224,28 +235,33 @@ data_for_id(Id, EntryMap) ->
 %%
 -spec prune_decided_before(grb_time:ts(), t()) -> t().
 prune_decided_before(MinLastDelivered, State=#state{index=Idx}) ->
-    Result = ets:select(Idx, ets:fun2ms(
-        fun(#index_entry{key={Ts, Id}, state=decided, vote=Decision})
-            when Ts < MinLastDelivered ->
-                {Ts, Id, Decision}
-        end),
-        ?PRUNE_LIMIT
-    ),
-    prune_decided_before_continue(State, Result).
+    prune_decided_before(ets:first(Idx), MinLastDelivered, State).
 
--spec prune_decided_before_continue(State :: t(),
-                                    Match :: ( {[{grb_time:ts(), record_id()}], ets:continuation()}
-                                               | '$end_of_table') ) -> t().
+-spec prune_decided_before(record_id() | '$end_of_table', grb_time:ts(), t()) -> t().
+prune_decided_before(Key={CommitTime, Id}, MinLastDelivered, S=#state{index=Idx})
+    when CommitTime < MinLastDelivered ->
+        case ets:lookup_element(Idx, Key, #index_entry.state) of
+            prepared ->
+                %% Ignore prepared transactions
+                prune_decided_before(ets:next(Idx, Key), MinLastDelivered, S);
+            decided ->
+                Decision = ets:lookup_element(Idx, Key, #index_entry.vote),
+                prune_decided_before(
+                    ets:next(Idx, Key),
+                    MinLastDelivered,
+                    prune_decided_transaction(Id, CommitTime, Decision, S)
+                )
+        end;
 
-prune_decided_before_continue(S, '$end_of_table') -> S;
-prune_decided_before_continue(S=#state{index=Idx, entries=EntryMap0, writes_cache=Writes}, {Objects, Cont}) ->
-    EntryMap = lists:foldl(fun({Time, Id, Decision}, AccMap) ->
-        {#tx_data{label=Label, write_keys=WrittenKeys}, NewAcc} = maps:take(Id, AccMap),
-        ok = clear_pending(Id, Label, Decision, WrittenKeys, Writes),
-        true = ets:delete(Idx, {Time, Id}),
-        NewAcc
-    end, EntryMap0, Objects),
-    prune_decided_before_continue(S#state{entries=EntryMap}, ets:select(Cont)).
+prune_decided_before(_Key, _MinLastDelivered, S) ->
+    S.
+
+-spec prune_decided_transaction(record_id(), grb_time:ts(), red_vote(), t()) -> t().
+prune_decided_transaction(Id, Time, Decision, S=#state{index=Idx, entries=EntryMap0, writes_cache=Writes}) ->
+    {#tx_data{label=Label, write_keys=WrittenKeys}, EntryMap} = maps:take(Id, EntryMap0),
+    ok = clear_pending(Id, Label, Decision, WrittenKeys, Writes),
+    true = ets:delete(Idx, {Time, Id}),
+    S#state{entries=EntryMap}.
 
 -spec clear_pending(record_id(), tx_label(), red_vote(), [key()] | undefined, cache_id()) -> ok.
 clear_pending(_Id, _, {abort, _}, _WrittenKeys, _Writes) -> ok;
