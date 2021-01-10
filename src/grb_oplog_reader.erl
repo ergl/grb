@@ -186,6 +186,7 @@ handle_cast({key_snapshot, Promise, TxId, Key, Type, VC}, S0=#state{partition=Pa
     S = case grb_propagation_vnode:partition_ready(Partition, ReplicaId, VC) of
         not_ready ->
             erlang:send_after(WaitMs, self(), {retry_partition_wait, Promise, TxId}),
+            false = maps:is_key({Promise, TxId}, WaitingReads),
             S0#state{simple_waiting_reads=WaitingReads#{{Promise, TxId} => { VC, Key, Type }}};
 
         ready ->
@@ -203,6 +204,7 @@ handle_cast({key_version, Promise, TxId, Key, Type, ReadOp, VC}, S0=#state{parti
     S = case grb_propagation_vnode:partition_ready(Partition, ReplicaId, VC) of
         not_ready ->
             erlang:send_after(WaitMs, self(), {retry_partition_wait, Promise, TxId}),
+            false = maps:is_key({Promise, TxId}, WaitingReads),
             S0#state{simple_waiting_reads=WaitingReads#{{Promise, TxId} => { VC, Key, Type, ReadOp }}};
 
         ready ->
@@ -253,6 +255,7 @@ handle_cast({decide_blue, TxId, VC}, S0=#state{partition=Partition,
         not_ready ->
             %% todo(borja, efficiency): can we use hybrid clocks here?
             erlang:send_after(WaitMs, self(), {retry_decide, TxId}),
+            false = maps:is_key(TxId, Pending),
             S0#state{pending_decides=Pending#{TxId => VC}};
         ready ->
             grb_oplog_vnode:decide_blue(Partition, TxId, VC),
