@@ -564,8 +564,8 @@ insert_prepared(Partition, TxId, PrepareTime) ->
     true = ets:insert(prepared_blue_table(Partition),
                       {{PrepareTime, TxId}}),
 
-    true = ets:insert(prepared_blue_idx_table(Partition),
-                      {TxId, PrepareTime}),
+    true = ets:insert_new(prepared_blue_idx_table(Partition),
+                          {TxId, PrepareTime}),
 
     ok.
 
