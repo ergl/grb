@@ -52,7 +52,6 @@
     replica_id :: replica_id(),
 
     known_barrier_wait_ms :: non_neg_integer(),
-    pending_decides = #{} :: #{term() => vclock()},
     %% Note(borja): Only the transaction is used as identifier, which could cause issues if
     %% the same transaction issues two multi-key reads to the same partition.
     %% However, this shouldn't be a problem, because issuing two concurrent multi-key
@@ -246,20 +245,16 @@ handle_cast({multikey_snapshot, Promise, TxId, VC, KeyPayload}, S0=#state{partit
 handle_cast({multikey_snapshot_bypass, Promise, TxId, VC, KeyPayload}, State) ->
     {noreply, send_multi_read(Promise, TxId, VC, KeyPayload, State)};
 
-handle_cast({decide_blue, TxId, VC}, S0=#state{partition=Partition,
-                                               replica_id=ReplicaId,
-                                               pending_decides=Pending,
-                                               known_barrier_wait_ms=WaitMs}) ->
+handle_cast({decide_blue, TxId, VC}, S=#state{partition=Partition,
+                                              replica_id=ReplicaId,
+                                              known_barrier_wait_ms=WaitMs}) ->
 
-    S = case grb_oplog_vnode:decide_blue_ready(ReplicaId, VC) of
+    case grb_oplog_vnode:decide_blue_ready(ReplicaId, VC) of
         not_ready ->
             %% todo(borja, efficiency): can we use hybrid clocks here?
-            erlang:send_after(WaitMs, self(), {retry_decide, TxId}),
-            false = maps:is_key(TxId, Pending),
-            S0#state{pending_decides=Pending#{TxId => VC}};
+            erlang:send_after(WaitMs, self(), {retry_decide, TxId, VC});
         ready ->
-            grb_oplog_vnode:decide_blue(Partition, TxId, VC),
-            S0
+            grb_oplog_vnode:decide_blue(Partition, TxId, VC)
     end,
     {noreply, S};
 
@@ -331,19 +326,16 @@ handle_info({'$grb_promise_resolve', {ok, Key, Snapshot}, TxId}, S0=#state{pendi
     end,
     {noreply, S};
 
-handle_info({retry_decide, TxId}, S0=#state{partition=Partition,
-                                            replica_id=ReplicaId,
-                                            pending_decides=Pending,
-                                            known_barrier_wait_ms=WaitMs}) ->
-    #{TxId := VC} = Pending,
-    S = case grb_oplog_vnode:decide_blue_ready(ReplicaId, VC) of
+handle_info({retry_decide, TxId, VC}, S=#state{partition=Partition,
+                                               replica_id=ReplicaId,
+                                               known_barrier_wait_ms=WaitMs}) ->
+
+    case grb_oplog_vnode:decide_blue_ready(ReplicaId, VC) of
         not_ready ->
             %% todo(borja, efficiency): can we use hybrid clocks here?
-            erlang:send_after(WaitMs, self(), {retry_decide, TxId}),
-            S0;
+            erlang:send_after(WaitMs, self(), {retry_decide, TxId, VC});
         ready ->
-            grb_oplog_vnode:decide_blue(Partition, TxId, VC),
-            S0#state{pending_decides=maps:remove(TxId, Pending)}
+            grb_oplog_vnode:decide_blue(Partition, TxId, VC)
     end,
     {noreply, S};
 
