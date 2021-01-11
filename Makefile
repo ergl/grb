@@ -99,7 +99,7 @@ ct:
 
 full_ct: ct
 	$(REBAR) as cure ct
-	$(REBAR) as ct_cure ct
+	$(REBAR) as ft_cure ct
 	$(REBAR) as uniform_blue ct
 	${REBAR} as redblue_naive ct
 
