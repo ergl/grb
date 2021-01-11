@@ -87,6 +87,7 @@
 -define(prune_req, prune_event).
 -define(replication_req, replication_event).
 -define(uniform_req, uniform_replication_event).
+-define(clock_send_req, clock_send_event).
 
 -define(known_key(Replica), {known_vc, Replica}).
 -define(stable_red_key, stable_vc_red).
@@ -121,6 +122,10 @@
     uniform_interval :: non_neg_integer(),
     uniform_timer = undefined :: reference() | undefined,
 
+    %% send knownVC / stableVC to remote replicas
+    replicate_clocks_interval :: non_neg_integer(),
+    replicate_clocks_timer = undefined :: reference() | undefined,
+
     %% prune committedBlue
     prune_interval :: non_neg_integer(),
     prune_timer = undefined :: reference() | undefined,
@@ -138,7 +143,12 @@
 -ifdef(NO_FWD_REPLICATION).
 -define(timers_unset, #state{replication_timer=undefined}).
 -else.
+-ifdef(UNIFORM_SNAPSHOT).
+-define(timers_unset, #state{replication_timer=undefined, uniform_timer=undefined,
+                             replicate_clocks_timer=undefined, prune_timer=undefined}).
+-else.
 -define(timers_unset, #state{replication_timer=undefined, uniform_timer=undefined, prune_timer=undefined}).
+-endif.
 -endif.
 
 -type state() :: #state{}.
@@ -408,6 +418,7 @@ init([Partition]) ->
     {ok, ReplInt} = application:get_env(grb, basic_replication_interval),
     {ok, PruneInterval} = application:get_env(grb, prune_committed_blue_interval),
     {ok, UniformInterval} = application:get_env(grb, uniform_replication_interval),
+    {ok, SendClockInterval} = application:get_env(grb, remote_clock_broadcast_interval),
 
     ClockTable = ets:new(?PARTITION_CLOCK_TABLE, [ordered_set, public, {read_concurrency, true}]),
     ok = persistent_term:put({?MODULE, Partition, ?PARTITION_CLOCK_TABLE}, ClockTable),
@@ -423,6 +434,7 @@ init([Partition]) ->
                 prune_interval=PruneInterval,
                 replication_interval=ReplInt,
                 uniform_interval=UniformInterval,
+                replicate_clocks_interval=SendClockInterval,
                 clock_cache=ClockTable}}.
 
 terminate(_Reason, #state{clock_cache=ClockCache, remote_logs=RemoteLogs}) ->
@@ -562,6 +574,20 @@ handle_info(?prune_req, S0=#state{prune_timer=Timer,
     State = prune_commit_logs(S0),
     {ok, State#state{prune_timer=erlang:send_after(Interval, self(), ?prune_req)}};
 
+handle_info(?clock_send_req, State=#state{partition=Partition,
+                                          clock_cache=ClockTable,
+                                          replicate_clocks_timer=Timer,
+                                          replicate_clocks_interval=Interval}) ->
+    erlang:cancel_timer(Timer),
+
+    KnownVC = known_vc_internal(ClockTable),
+    StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
+    lists:foreach(fun(Target) ->
+        ok = grb_dc_connection_manager:send_clocks(Target, Partition, KnownVC, StableVC)
+    end, grb_dc_connection_manager:connected_replicas()),
+
+    {ok, State#state{replicate_clocks_timer=erlang:send_after(Interval, self(), ?clock_send_req)}};
+
 handle_info(Msg, State) ->
     ?LOG_WARNING("~p unhandled_info ~p", [?MODULE, Msg]),
     {ok, State}.
@@ -631,6 +657,30 @@ stop_propagation_timers_internal(State) ->
 
 -else.
 
+-ifdef(UNIFORM_SNAPSHOT).
+
+start_propagation_timers_internal(State) ->
+    State#state{
+        prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
+        uniform_timer=erlang:send_after(State#state.uniform_interval, self(), ?uniform_req),
+        replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req),
+        replicate_clocks_timer=erlang:send_after(State#state.replicate_clocks_interval, self(), ?clock_send_req)
+    }.
+
+stop_propagation_timers_internal(State) ->
+    erlang:cancel_timer(State#state.prune_timer),
+    erlang:cancel_timer(State#state.uniform_timer),
+    erlang:cancel_timer(State#state.replication_timer),
+    erlang:cancel_timer(State#state.replicate_clocks_timer),
+    State#state{
+        prune_timer=undefined,
+        uniform_timer=undefined,
+        replication_timer=undefined,
+        replicate_clocks_timer=undefined
+    }.
+
+-else.
+
 start_propagation_timers_internal(State) ->
     State#state{
         prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
@@ -648,6 +698,7 @@ stop_propagation_timers_internal(State) ->
         replication_timer=undefined
     }.
 
+-endif.
 -endif.
 
 -spec prune_commit_logs(state()) -> state().
@@ -796,6 +847,33 @@ replicate_internal(S=#state{self_log=LocalLog0,
     S#state{basic_last_sent=LocalTime, self_log=LocalLog}.
 
 -else.
+-ifdef(UNIFORM_SNAPSHOT).
+%% Difference here: don't send the clocks during heartbeats or transactions, use a different timer.
+%% (see clock_send_req)
+replicate_internal(S=#state{self_log=LocalLog,
+                            partition=Partition,
+                            local_replica=LocalId,
+                            clock_cache=ClockTable,
+                            global_known_matrix=Matrix0}) ->
+
+    LocalTime = known_time_internal(LocalId, ClockTable),
+    Matrix = lists:foldl(fun(Target, AccMatrix) ->
+        ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
+        ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
+        case ToSend of
+            [] ->
+                HBRes = grb_dc_connection_manager:send_heartbeat(Target, Partition, LocalTime),
+                ?LOG_DEBUG("send basic heartbeat to ~p: ~p~n", [Target, HBRes]),
+                ok;
+            Transactions ->
+                ok = send_transactions(Target, Partition, Transactions)
+        end,
+        AccMatrix#{{Target, LocalId} => LocalTime}
+    end, Matrix0, grb_dc_connection_manager:connected_replicas()),
+
+    S#state{global_known_matrix=Matrix}.
+
+-else.
 
 replicate_internal(S=#state{self_log=LocalLog,
                             partition=Partition,
@@ -827,6 +905,8 @@ replicate_internal(S=#state{self_log=LocalLog,
     end, Matrix0, grb_dc_connection_manager:connected_replicas()),
 
     S#state{global_known_matrix=Matrix}.
+
+-endif.
 
 -spec send_transactions(Target :: replica_id(),
                         Partition :: partition_id(),
