@@ -66,6 +66,11 @@
     %% How often do we replicate _our_ transactions to other replicas?
     {basic_replication_interval, ${REPLICATION_INTERVAL_MS}},
 
+    %% How often do we check for abandoned blue transactions in preparedBlue.
+    %% If a client never sends a decide, it might stall the entire system.
+    %% Set to 0 to disable this check.
+    {prepared_blue_stale_check_ms, ${PREPARED_BLUE_STALE_MS}},
+
     %% How often do we replicate _other's_ transactions to other replicas?
     %% This is done in case of replica failure, to ensure that if we receive a
     %% transaction, it will eventually get delivered to every replica.

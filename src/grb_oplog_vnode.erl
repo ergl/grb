@@ -62,6 +62,7 @@
 -define(master, grb_oplog_vnode_master).
 -define(blue_tick_req, blue_tick_event).
 -define(kill_timer_req, kill_timer_event).
+-define(blue_stall_check, blue_stall_check_event).
 
 -define(OP_LOG_TABLE, op_log_table).
 -define(OP_LOG_LAST_VC, op_log_last_vc_table).
@@ -85,6 +86,10 @@
 
     blue_tick_interval :: non_neg_integer(),
     blue_tick_pid = undefined :: pid() | undefined,
+
+    %% check if there are stalled transactions in preparedBlue
+    stalled_blue_check_interval :: non_neg_integer(),
+    stalled_blue_check_timer = undefined :: reference() | undefined,
 
     op_log :: op_log(),
     op_log_size :: non_neg_integer(),
@@ -426,12 +431,15 @@ init([Partition]) ->
     PreparedIdx = ets:new(?PREPARED_TABLE_IDX, [set, public, {write_concurrency, true}]),
     ok = persistent_term:put({?MODULE, Partition, ?PREPARED_TABLE_IDX}, PreparedIdx),
 
+    {ok, CheckStalledInterval} = application:get_env(grb, prepared_blue_stale_check_ms),
+
     State = #state{partition = Partition,
                    all_replicas=[], %% ok to do this, we'll overwrite it later
                    replicas_n=NumReaders,
                    prepared_blue=PreparedBlue,
                    prepared_blue_idx=PreparedIdx,
                    blue_tick_interval=BlueTickInterval,
+                   stalled_blue_check_interval=CheckStalledInterval,
                    op_log_size = KeyLogSize,
                    op_log = OpLogTable,
                    op_last_vc = LastKeyVC,
@@ -478,7 +486,9 @@ handle_command(disable_blue_append, _Sender, S) ->
 
 handle_command(start_blue_hb_timer, _From, S = #state{partition=Partition,
                                                       blue_tick_interval=Int,
-                                                      blue_tick_pid=undefined}) ->
+                                                      blue_tick_pid=undefined,
+                                                      stalled_blue_check_interval=StalledInt,
+                                                      stalled_blue_check_timer=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
     PrepTable = prepared_blue_table(Partition),
     RawClockTable = grb_propagation_vnode:clock_table(Partition),
@@ -493,7 +503,19 @@ handle_command(start_blue_hb_timer, _From, S = #state{partition=Partition,
                 Loop()
         end
     end),
-    {reply, ok, S#state{blue_tick_pid=TickProcess}};
+
+    TimerRef = if
+        StalledInt > 0 ->
+            ?LOG_INFO(
+                "Beware, ~p checking for stalled transactions every ~b milliseconds",
+                [Partition, StalledInt]
+            ),
+            erlang:send_after(StalledInt, self(), ?blue_stall_check);
+       true ->
+           undefined
+    end,
+
+    {reply, ok, S#state{blue_tick_pid=TickProcess, stalled_blue_check_timer=TimerRef}};
 
 handle_command(start_blue_hb_timer, _From, S = #state{blue_tick_pid=Pid}) when is_pid(Pid) ->
     {reply, ok, S};
@@ -512,9 +534,16 @@ handle_command(start_readers, _From, S = #state{partition=P,
 handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_pid=undefined}) ->
     {noreply, S};
 
-handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_pid=Pid}) when is_pid(Pid) ->
+handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_pid=Pid,
+                                                     stalled_blue_check_timer=Timer}) when is_pid(Pid) ->
     Pid ! ?kill_timer_req,
-    {noreply, S#state{blue_tick_pid=undefined}};
+    if
+        is_reference(Timer) ->
+            erlang:cancel_timer(Timer);
+        true ->
+            ok
+    end,
+    {noreply, S#state{blue_tick_pid=undefined, stalled_blue_check_timer=undefined}};
 
 handle_command(stop_readers, _From, S = #state{partition=P}) ->
     ok = grb_oplog_reader:stop_readers(P),
@@ -550,6 +579,15 @@ handle_command({handle_red_tx, Label, WS, VC}, _From, S=#state{all_replicas=AllR
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("~p unhandled_command ~p", [?MODULE, Message]),
     {noreply, State}.
+
+handle_info(?blue_stall_check, State=#state{partition=Partition,
+                                            prepared_blue=PreparedBlue,
+                                            prepared_blue_idx=PreparedBlueIdx,
+                                            stalled_blue_check_timer=Timer,
+                                            stalled_blue_check_interval=Interval}) ->
+    erlang:cancel_timer(Timer),
+    ok = remove_stalled_transactions(Partition, PreparedBlue, PreparedBlueIdx, Interval),
+    {ok, State#state{stalled_blue_check_timer=erlang:send_after(Interval, self(), ?blue_stall_check)}};
 
 handle_info(Msg, State) ->
     ?LOG_WARNING("~p unhandled_info ~p", [?MODULE, Msg]),
@@ -657,9 +695,13 @@ take_transaction_writeset(PendingOps, TxId) ->
 
 -spec remove_from_prepared(cache_id(), cache_id(), term()) -> ok.
 remove_from_prepared(PreparedBlue, PreparedBlueIdx, TxId) ->
-    [{TxId, PrepTime}] = ets:take(PreparedBlueIdx, TxId),
-    true = ets:delete(PreparedBlue, {PrepTime, TxId}),
-    ok.
+    case ets:take(PreparedBlueIdx, TxId) of
+        [{TxId, PrepTime}] ->
+            true = ets:delete(PreparedBlue, {PrepTime, TxId}),
+            ok;
+        _ ->
+            ok
+    end.
 
 -spec append_writeset(AtReplicas :: [all_replica_id()],
                       WS :: writeset(),
@@ -740,6 +782,38 @@ compute_new_known_time(PreparedBlue) ->
             ?LOG_DEBUG("knownVC[d] = min_prep (~b - 1)", [Ts]),
             Ts - 1
     end.
+
+-spec remove_stalled_transactions(partition_id(), cache_id(), cache_id(), non_neg_integer()) -> ok.
+remove_stalled_transactions(Partition, PreparedBlue, PreparedBlueIdx, After) ->
+    remove_stalled_transactions(
+        ets:first(PreparedBlue),
+        PreparedBlue,
+        PreparedBlueIdx,
+        grb_time:timestamp(),
+        After,
+        Partition
+    ).
+
+-spec remove_stalled_transactions(Key :: {grb_time:ts(), term()} | '$end_of_table',
+                                  PreparedBlue :: cache_id(),
+                                  PreparedBlueIdx :: cache_id(),
+                                  Now :: grb_time:ts(),
+                                  After :: non_neg_integer(),
+                                  AtPartition :: partition_id()) -> ok.
+
+remove_stalled_transactions(Key={Ts, TxId}, PreparedBlue, PreparedBlueIdx, Now, After, AtPartition)
+    when (Ts < Now) andalso ((Now - Ts) > After * 1000) ->
+        ok = grb_measurements:log_counter_always({?MODULE, AtPartition, ?FUNCTION_NAME}),
+        %% Transaction is old, and more than Interval ms have passed since this
+        %% transaction was prepared. We can remove this transaction, since it will
+        %% probably never be decided (client bailed out)
+        true = ets:delete(PreparedBlueIdx, TxId),
+        true = ets:delete(PreparedBlue, Key),
+        remove_stalled_transactions(ets:first(PreparedBlue), PreparedBlue, PreparedBlueIdx, Now, After, AtPartition);
+
+remove_stalled_transactions(_Key, _PrepBlue, _PrepBlueIdx, _Now, _After, _AtPartition) ->
+    %% we reached the end of the table, or the transaction is fresh enough.
+    ok.
 
 %%%===================================================================
 %%% Util Functions
