@@ -27,6 +27,7 @@
 
 -export([create_stat/1,
          log_counter/1,
+         log_counter_always/1,
          log_stat/2,
          log_queue_length/1,
          report_stats/0]).
@@ -60,6 +61,12 @@ log_counter(Key) ->
 log_counter(_) ->
     ok.
 -endif.
+
+-spec log_counter_always(term()) -> ok.
+log_counter_always(Key) ->
+    ets:update_counter(persistent_term:get({?MODULE, ?COUNTER_TABLE}),
+        Key, {#counter_entry.data, 1}, #counter_entry{key=Key}),
+    ok.
 
 -spec log_stat(term(), non_neg_integer()) -> ok.
 -ifdef(ENABLE_METRICS).
