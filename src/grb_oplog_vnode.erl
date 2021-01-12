@@ -319,10 +319,9 @@ decide_blue_ready(ReplicaId, CommitVC) ->
 
 -spec decide_blue(partition_id(), term(), vclock()) -> ok.
 decide_blue(Partition, TxId, CommitVC) ->
-    riak_core_vnode_master:sync_command({Partition, node()},
-                                        {decide_blue, TxId, CommitVC},
-                                        ?master,
-                                        infinity).
+    riak_core_vnode_master:command({Partition, node()},
+                                   {decide_blue, TxId, CommitVC},
+                                   ?master).
 
 -spec update_prepare_clocks(partition_id(), vclock()) -> ok.
 -ifdef(STABLE_SNAPSHOT).
