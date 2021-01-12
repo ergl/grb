@@ -108,8 +108,8 @@ start_transaction(Partition, ClientVC) ->
 -ifdef(UNIFORM_SNAPSHOT).
 
 start_transaction(Partition, ClientVC) ->
-    UpdatedUniformVC = grb_propagation_vnode:merge_remote_uniform_vc(Partition, ClientVC),
-    grb_vclock:max(ClientVC, UpdatedUniformVC).
+    UpdatedStableVC = grb_propagation_vnode:merge_remote_stable_vc(Partition, ClientVC),
+    grb_vclock:max(ClientVC, UpdatedStableVC).
 
 -else.
 
