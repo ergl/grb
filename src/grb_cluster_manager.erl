@@ -7,37 +7,37 @@
 -endif.
 
 %% API
--export([create_cluster/2]).
+-export([create_cluster/3]).
 
 %% All functions are called through erpc
--ignore_xref([create_cluster/2]).
+-ignore_xref([create_cluster/3]).
 
--spec create_cluster([node()], non_neg_integer()) -> ok | {error, term()}.
-create_cluster(Nodes, TreeFanout) ->
+-spec create_cluster([node()], term(), non_neg_integer()) -> ok | {error, term()}.
+create_cluster(Nodes, ClusterName, TreeFanout) ->
     case riak_core_ring:ring_ready() of
         true ->
-            join_nodes(Nodes, TreeFanout);
+            join_nodes(Nodes, ClusterName, TreeFanout);
         false ->
             {error, ring_not_ready}
     end.
 
-join_nodes(N=[SingleNode], Fanout) ->
+join_nodes(N=[SingleNode], ClusterName, Fanout) ->
     ?LOG_INFO("Checking that vnodes are ready...~n"),
     ok = wait_until_vnodes_ready(SingleNode),
     ?LOG_INFO("Node ready, starting background processes"),
-    erpc:call(SingleNode, grb_dc_manager, start_background_processes, []),
+    erpc:call(SingleNode, grb_dc_manager, start_background_processes, [ClusterName]),
     ?LOG_INFO("starting broadcast tree~n"),
     ok = start_broadcast_tree(N, Fanout),
     ok = wait_until_master_ready(SingleNode),
     ?LOG_INFO("Successfully joined nodes ~p", [N]),
     ok;
 
-join_nodes([MainNode | _] = Nodes, Fanout) ->
+join_nodes([MainNode | _] = Nodes, ClusterName, Fanout) ->
     lists:foreach(fun(N) -> erlang:set_cookie(N, grb_cookie) end, Nodes),
     ok = join_cluster(Nodes),
 
     ?LOG_INFO("Starting background processes"),
-    ok = start_background_processes(MainNode),
+    ok = start_background_processes(MainNode, ClusterName),
 
     ?LOG_INFO("Started background processes, starting broadcast tree"),
     ok = start_broadcast_tree(Nodes, Fanout),
@@ -48,12 +48,12 @@ join_nodes([MainNode | _] = Nodes, Fanout) ->
     ?LOG_INFO("Successfully joined nodes ~p", [Nodes]),
     ok.
 
--spec start_background_processes(node()) -> ok.
-start_background_processes(Node) ->
+-spec start_background_processes(node(), term()) -> ok.
+start_background_processes(Node, ClusterName) ->
     BackgroundReady = fun() ->
         ?LOG_INFO("start_background_processes"),
         try
-            ok = erpc:call(Node, grb_dc_manager, start_background_processes, []),
+            ok = erpc:call(Node, grb_dc_manager, start_background_processes, [ClusterName]),
             true
         catch _:_ ->
             ?LOG_INFO("Error on start_background_processes, retrying"),

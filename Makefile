@@ -202,13 +202,13 @@ dev4-stop:
 devstop: dev1-stop dev2-stop dev3-stop dev4-stop
 
 devfulljoin:
-	./bin/join_cluster_script.erl 'grb_local1@127.0.0.1' 'grb_local2@127.0.0.1'
-	./bin/join_cluster_script.erl 'grb_local3@127.0.0.1' 'grb_local4@127.0.0.1'
+	./bin/join_cluster_script.erl -c 'dev_test_1_2' 'grb_local1@127.0.0.1' 'grb_local2@127.0.0.1'
+	./bin/join_cluster_script.erl -c 'dev_test_3_4' 'grb_local3@127.0.0.1' 'grb_local4@127.0.0.1'
 	./bin/connect_dcs.erl 'grb_local1@127.0.0.1' 'grb_local3@127.0.0.1'
 
 devreplicas:
-	./bin/join_cluster_script.erl 'grb_local1@127.0.0.1'
-	./bin/join_cluster_script.erl 'grb_local2@127.0.0.1'
-	./bin/join_cluster_script.erl 'grb_local3@127.0.0.1'
-	./bin/join_cluster_script.erl 'grb_local4@127.0.0.1'
+	./bin/join_cluster_script.erl -c 'dev_test_1' 'grb_local1@127.0.0.1'
+	./bin/join_cluster_script.erl -c 'dev_test_2' 'grb_local2@127.0.0.1'
+	./bin/join_cluster_script.erl -c 'dev_test_3' 'grb_local3@127.0.0.1'
+	./bin/join_cluster_script.erl -c 'dev_test_4' 'grb_local4@127.0.0.1'
 	./bin/connect_dcs.erl 'grb_local1@127.0.0.1' 'grb_local2@127.0.0.1' 'grb_local3@127.0.0.1' 'grb_local4@127.0.0.1'

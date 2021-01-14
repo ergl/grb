@@ -35,7 +35,7 @@ init_single_node_dc(Suite, Config) ->
     ok = at_init_testsuite(),
 
     {ready, Node} =  start_node(dev1, Config),
-    ok = erpc:call(Node, grb_cluster_manager, create_cluster, [[Node], 2]),
+    ok = erpc:call(Node, grb_cluster_manager, create_cluster, [[Node], 'testing', 2]),
     {ok, _} = erpc:call(Node, grb_dc_manager, create_replica_groups, [[Node]]),
     ReplicaId = erpc:call(Node, grb_dc_manager, replica_id, []),
     Info = #{ReplicaId => #{nodes => [Node], main_node => Node}},
@@ -51,7 +51,7 @@ init_single_dc(Suite, NodeNames, Config) ->
         Node
     end, NodeNames),
 
-    ok = erpc:call(Main, grb_cluster_manager, create_cluster, [Nodes, 2]),
+    ok = erpc:call(Main, grb_cluster_manager, create_cluster, [Nodes, 'testing', 2]),
     {ok, _} = erpc:call(Main, grb_dc_manager, create_replica_groups, [[Main]]),
     ReplicaId = erpc:call(Main, grb_dc_manager, replica_id, []),
     Info = #{ReplicaId => #{nodes => Nodes, main_node => Main}},
@@ -66,7 +66,7 @@ init_multi_dc(Suite, ClusterSpec, Config) ->
             {ready, Node} = start_node(Name, Config),
             Node
         end, Names),
-        ok = erpc:call(Main, grb_cluster_manager, create_cluster, [ClusterNodes, 2]),
+        ok = erpc:call(Main, grb_cluster_manager, create_cluster, [ClusterNodes, Main, 2]),
         ReplicaId = erpc:call(Main, grb_dc_manager, replica_id, []),
         {ReplicaId, #{nodes => ClusterNodes, main_node => Main}}
     end, ClusterSpec),

@@ -13,7 +13,7 @@ usage() ->
     Name = filename:basename(escript:script_name()),
     io:fwrite(
         standard_error,
-        "Usage: ~s [-c --cluster cluster_name] [-f config_file] | 'node_1@host_1' ... 'node_n@host_n'~n",
+        "Usage: ~s [-c --cluster cluster_name] [-f config_file] 'node_1@host_1' ... 'node_n@host_n'~n",
         [Name]
     ),
     halt(1).
@@ -24,27 +24,27 @@ main(Args) ->
             io:fwrite(standard_error, "Wrong option: reason ~p~n", [Reason]),
             usage(),
             halt(1);
-        {ok, Opts} ->
-            io:format("~p~n", [Opts]),
-            case maps:is_key(config, Opts) of
-                true -> prepare_from_config(Opts);
-                false -> prepare_from_args(maps:get(rest, Opts))
-            end
+
+        {ok, #{cluster := ClusterName, config := Config}} ->
+            prepare(validate(parse_node_config(ClusterName, Config)));
+
+        {ok, #{cluster := ClusterName, rest := NodeListString}} ->
+            prepare(validate(parse_node_list(ClusterName, NodeListString)));
+
+        {ok, #{config := Config}} ->
+            prepare(validate(parse_node_config(Config)));
+
+        {ok, #{rest := _}} ->
+            io:fwrite(standard_error, "Nodes provided, but no cluster name~n", []),
+            usage(),
+            halt(1)
     end.
 
-prepare_from_args(NodeListString) ->
-    prepare(validate(parse_node_list(NodeListString))).
-
-prepare_from_config(#{config := Config, cluster := ClusterName}) ->
-    prepare(validate(parse_node_config(ClusterName, Config)));
-prepare_from_config(#{config := Config}) ->
-    prepare(validate(parse_node_config(Config))).
-
 %% @doc Parse a literal node list passed as argument
--spec parse_node_list(list(string())) -> {ok, [node()], non_neg_integer()} | error.
-parse_node_list([]) ->
+-spec parse_node_list(atom(), list(string())) -> {ok, atom(), [node()], non_neg_integer()} | error.
+parse_node_list(_, []) ->
     error;
-parse_node_list([_ | _] = NodeListString) ->
+parse_node_list(ClusterName, [_ | _] = NodeListString) ->
     try
         Nodes = lists:foldl(
             fun(NodeString, Acc) ->
@@ -54,13 +54,13 @@ parse_node_list([_ | _] = NodeListString) ->
             [],
             NodeListString
         ),
-        {ok, lists:reverse(Nodes), ?DEFAULT_TREE_FANOUT}
+        {ok, ClusterName, lists:reverse(Nodes), ?DEFAULT_TREE_FANOUT}
     catch
         _:_ -> error
     end.
 
 -spec parse_node_config(ClusterName :: atom(), ConfigFilePath :: string()) ->
-    {ok, [node()], non_neg_integer()} | {error, term()}.
+    {ok, atom(), [node()], non_neg_integer()} | {error, term()}.
 parse_node_config(ClusterName, ConfigFilePath) ->
     case file:consult(ConfigFilePath) of
         {error, Reason} ->
@@ -80,7 +80,7 @@ parse_node_config(ClusterName, ConfigFilePath) ->
                         )};
                 true ->
                     #{servers := Servers} = maps:get(ClusterName, ClusterMap),
-                    {ok, build_erlang_node_names(lists:usort(Servers)), Fanout}
+                    {ok, ClusterName, build_erlang_node_names(lists:usort(Servers)), Fanout}
             end
     end.
 
@@ -122,15 +122,24 @@ build_erlang_node_names(NodeNames) ->
     ].
 
 %% @doc Validate parsing, then proceed
--spec validate({ok, [node()] | #{atom() => [node()]}} | error | {error, term()}) ->
-    ok | no_return().
-validate(error) ->
-    usage();
+-spec validate(
+    {ok, atom(), [node()], non_neg_integer()}
+    | {ok, #{atom() => [node()]}, non_neg_integer()}
+    | error
+    | {error, term()}
+) -> no_return()
+   | {ok, atom(), [node()], non_neg_integer()}
+   | {ok, #{atom() => [node()]}, non_neg_integer()}.
+
 validate({error, Reason}) ->
     io:fwrite(standard_error, "Validate error: ~p~n", [Reason]),
     usage();
-validate({ok, Nodes, Fanout}) ->
-    {ok, Nodes, Fanout}.
+validate({ok, Cluster, Nodes, Fanout}) ->
+    {ok, Cluster, Nodes, Fanout};
+validate({ok, Nodes, Fanout}) when is_map(Nodes) ->
+    {ok, Nodes, Fanout};
+validate(_) ->
+    usage().
 
 -spec prepare({ok, [node()] | #{atom() => [node()]}}) -> ok.
 prepare({ok, ClusterMap, Fanout}) when is_map(ClusterMap) ->
@@ -141,17 +150,17 @@ prepare({ok, ClusterMap, Fanout}) when is_map(ClusterMap) ->
                 Fanout,
                 NodeList
             ]),
-            ok = do_join(NodeList, Fanout)
+            ok = do_join(NodeList, ClusterName, Fanout)
         end,
         ok,
         ClusterMap
     );
-prepare({ok, Nodes, Fanout}) ->
-    io:format("Starting clustering (fanout ~p) of nodes ~p~n", [Fanout, Nodes]),
-    do_join(Nodes, Fanout).
+prepare({ok, ClusterName, Nodes, Fanout}) ->
+    io:format("Starting cluster ~p (fanout ~p) of nodes ~p~n", [ClusterName, Fanout, Nodes]),
+    do_join(Nodes, ClusterName, Fanout).
 
-do_join(Nodes, Fanout) ->
-    ok = erpc:call(hd(Nodes), grb_cluster_manager, create_cluster, [Nodes, Fanout]).
+do_join(Nodes, ClusterName, Fanout) ->
+    ok = erpc:call(hd(Nodes), grb_cluster_manager, create_cluster, [Nodes, ClusterName, Fanout]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% getopt

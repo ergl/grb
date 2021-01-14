@@ -54,9 +54,8 @@ ready_ring_members() ->
 -spec cluster_info() -> {ok, replica_id(), non_neg_integer(), [index_node()]}.
 cluster_info() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    ReplicaID = riak_core_ring:cluster_name(Ring),
     Chash = riak_core_ring:chash(Ring),
-    {ok, ReplicaID, chash:size(Chash), chash:nodes(Chash)}.
+    {ok, grb_dc_manager:replica_id(), chash:size(Chash), chash:nodes(Chash)}.
 
 -spec inter_dc_ip_port() -> {inet:ip_address(), inet:port_number()}.
 inter_dc_ip_port() ->

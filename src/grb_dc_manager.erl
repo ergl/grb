@@ -18,8 +18,8 @@
 %% Remote API
 -export([create_replica_groups/1,
          create_replica_groups/2,
-         start_background_processes/0,
-         persist_self_replica_info/0,
+         start_background_processes/1,
+         persist_self_replica_info/2,
          start_propagation_processes/0,
          single_replica_processes/0,
          persist_replica_info/0,
@@ -35,8 +35,8 @@
 
 %% All functions here are called through erpc
 -ignore_xref([create_replica_groups/1,
-              start_background_processes/0,
-              persist_self_replica_info/0,
+              start_background_processes/1,
+              persist_self_replica_info/2,
               start_propagation_processes/0,
               single_replica_processes/0,
               persist_replica_info/0,
@@ -273,12 +273,13 @@ start_red_processes({sockets, Socks}) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% @doc This is only called at the master node, but it should propagate everywhere
--spec start_background_processes() -> ok.
-start_background_processes() ->
+-spec start_background_processes(atom()) -> ok.
+start_background_processes(ClusterName) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
     LocalNodes = riak_core_ring:all_members(Ring),
 
-    Res0 = erpc:multicall(LocalNodes, ?MODULE, persist_self_replica_info, []),
+    Now = os:timestamp(),
+    Res0 = erpc:multicall(LocalNodes, ?MODULE, persist_self_replica_info, [ClusterName, Now]),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res0),
 
     Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, learn_dc_id, 1000),
@@ -414,12 +415,12 @@ start_paxos_follower(LeaderReplica) ->
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
 
--spec persist_self_replica_info() -> ok.
-persist_self_replica_info() ->
+-spec persist_self_replica_info(term(), erlang:timestamp()) -> ok.
+persist_self_replica_info(ClusterName, Timestamp) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    ReplicaId = riak_core_ring:cluster_name(Ring),
     MyPartitions = riak_core_ring:my_indices(Ring),
 
+    ReplicaId = {ClusterName, Timestamp},
     ok = persistent_term:put({?MODULE, ?MY_REPLICA}, ReplicaId),
     lists:foldl(fun(P, N) ->
         persistent_term:put({?MODULE, ?PARTITION, N}, P),
@@ -458,11 +459,10 @@ stop_propagation_processes() ->
 -spec replica_descriptor() -> replica_descriptor().
 replica_descriptor() ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    Id = riak_core_ring:cluster_name(Ring),
     Chash = riak_core_ring:chash(Ring),
     PartitionsWithInfo = build_remote_addresses(chash:nodes(Chash)),
     #replica_descriptor{
-        replica_id=Id,
+        replica_id=replica_id(),
         num_partitions=chash:size(Chash),
         remote_addresses=PartitionsWithInfo
     }.
@@ -487,10 +487,9 @@ build_remote_addresses(Indices) ->
 -spec connect_to_replicas([replica_descriptor()]) -> ok | {error, term()}.
 connect_to_replicas(Descriptors) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
-    LocalId = riak_core_ring:cluster_name(Ring),
     LocalNodes = riak_core_ring:all_members(Ring),
     NumPartitions = chash:size(riak_core_ring:chash(Ring)),
-    connect_to_replicas(Descriptors, LocalId, LocalNodes, NumPartitions).
+    connect_to_replicas(Descriptors, replica_id(), LocalNodes, NumPartitions).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal Functions
