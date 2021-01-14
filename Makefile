@@ -153,26 +153,6 @@ dev4-start:
 
 devstart: clean devrelclean devrel dev1-start dev2-start dev3-start dev4-start
 
-dev2-join:
-	INSTANCE_NAME=grb_local2 $(BASEDIR)/$(DEV2RELPATH)/bin/$(ENVFILE) eval 'riak_core:join("grb_local1@127.0.0.1").'
-
-dev3-join:
-	INSTANCE_NAME=grb_local3 $(BASEDIR)/$(DEV3RELPATH)/bin/$(ENVFILE) eval 'riak_core:join("grb_local1@127.0.0.1").'
-
-dev4-join:
-	INSTANCE_NAME=grb_local4 $(BASEDIR)/$(DEV4RELPATH)/bin/$(ENVFILE) eval 'riak_core:join("grb_local1@127.0.0.1").'
-
-devjoin: dev2-join dev3-join dev4-join
-
-dev-cluster-plan:
-	INSTANCE_NAME=grb_local1 $(BASEDIR)/$(DEV1RELPATH)/bin/$(ENVFILE) eval 'riak_core_claimant:plan().'
-
-dev-cluster-commit:
-	INSTANCE_NAME=grb_local1 $(BASEDIR)/$(DEV1RELPATH)/bin/$(ENVFILE) eval 'riak_core_claimant:commit().'
-
-dev-status:
-	INSTANCE_NAME=grb_local1 $(BASEDIR)/$(DEV1RELPATH)/bin/$(ENVFILE) eval 'riak_core_console:member_status([]).'
-
 dev1-ping:
 	INSTANCE_NAME=grb_local1 $(BASEDIR)/$(DEV1RELPATH)/bin/$(ENVFILE) ping
 
