@@ -16,8 +16,7 @@
          async_key_snapshot/6,
          multikey_snapshot/5,
          multikey_snapshot_bypass/5,
-         async_key_operation/7,
-         decide_blue/3]).
+         async_key_operation/7]).
 
 %% replica management API
 -export([start_readers/2,
@@ -136,10 +135,6 @@ multikey_snapshot(Promise, Partition, TxId, VC, KeyPayload) ->
 multikey_snapshot_bypass(Promise, Partition, TxId, VC, KeyPayload) ->
     gen_server:cast(random_reader(Partition), {multikey_snapshot_bypass, Promise, TxId, VC, KeyPayload}).
 
--spec decide_blue(partition_id(), _, vclock()) -> ok.
-decide_blue(Partition, TxId, VC) ->
-    gen_server:cast(random_reader(Partition), {decide_blue, TxId, VC}).
-
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -245,19 +240,6 @@ handle_cast({multikey_snapshot, Promise, TxId, VC, KeyPayload}, S0=#state{partit
 handle_cast({multikey_snapshot_bypass, Promise, TxId, VC, KeyPayload}, State) ->
     {noreply, send_multi_read(Promise, TxId, VC, KeyPayload, State)};
 
-handle_cast({decide_blue, TxId, VC}, S=#state{partition=Partition,
-                                              replica_id=ReplicaId,
-                                              known_barrier_wait_ms=WaitMs}) ->
-
-    case grb_oplog_vnode:decide_blue_ready(ReplicaId, VC) of
-        not_ready ->
-            %% todo(borja, efficiency): can we use hybrid clocks here?
-            erlang:send_after(WaitMs, self(), {retry_decide, TxId, VC});
-        ready ->
-            grb_oplog_vnode:decide_blue(Partition, TxId, VC)
-    end,
-    {noreply, S};
-
 handle_cast(Request, State) ->
     ?LOG_WARNING("Unhandled cast ~p", [Request]),
     {noreply, State}.
@@ -323,19 +305,6 @@ handle_info({'$grb_promise_resolve', {ok, Key, Snapshot}, TxId}, S0=#state{pendi
         #pending_reads{promise=Promise} ->
             ok = grb_promise:resolve(Acc, Promise),
             S0#state{pending_reads=maps:remove(TxId, PendingReads)}
-    end,
-    {noreply, S};
-
-handle_info({retry_decide, TxId, VC}, S=#state{partition=Partition,
-                                               replica_id=ReplicaId,
-                                               known_barrier_wait_ms=WaitMs}) ->
-
-    case grb_oplog_vnode:decide_blue_ready(ReplicaId, VC) of
-        not_ready ->
-            %% todo(borja, efficiency): can we use hybrid clocks here?
-            erlang:send_after(WaitMs, self(), {retry_decide, TxId, VC});
-        ready ->
-            grb_oplog_vnode:decide_blue(Partition, TxId, VC)
     end,
     {noreply, S};
 

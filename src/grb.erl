@@ -195,7 +195,7 @@ prepare_blue(Partition, TxId, VC) ->
 
 -spec decide_blue(partition_id(), any(), vclock()) -> ok.
 decide_blue(Partition, TxId, VC) ->
-    grb_oplog_reader:decide_blue(Partition, TxId, VC).
+    grb_oplog_vnode:decide_blue(Partition, TxId, VC).
 
 -spec commit_red(Promise :: grb_promise:t(),
                  Partition :: partition_id(),

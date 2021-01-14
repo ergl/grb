@@ -24,6 +24,8 @@
          last_vc_table/1,
          clean_transaction_ops/2]).
 
+-export([process_pid/1]).
+
 %% Public API
 -export([get_key_snapshot/5,
          get_key_version/5,
@@ -69,6 +71,8 @@
 -define(PREPARED_TABLE, prepared_blue_table).
 -define(PREPARED_TABLE_IDX, prepared_blue_table_idx).
 -define(PENDING_TX_OPS, pending_tx_ops).
+
+-define(VNODE_PID, vnode_pid_entry).
 
 -type op_log() :: cache(key(), grb_version_log:t()).
 -type pending_tx_ops() :: cache({term(), key()}, operation()).
@@ -174,6 +178,10 @@ prepared_blue_table(Partition) ->
 -spec prepared_blue_idx_table(partition_id()) -> cache_id().
 prepared_blue_idx_table(Partition) ->
     persistent_term:get({?MODULE, Partition, ?PREPARED_TABLE_IDX}).
+
+-spec process_pid(partition_id()) -> pid().
+process_pid(Partition) ->
+    persistent_term:get({?MODULE, Partition, ?VNODE_PID}).
 
 -ifdef(TEST).
 -spec transaction_ops(partition_id(), term()) -> non_neg_integer().
@@ -309,20 +317,28 @@ prepare_blue(Partition, TxId, SnapshotVC) ->
     ok = insert_prepared(Partition, TxId, Ts),
     Ts.
 
--spec decide_blue_ready(replica_id(), vclock()) -> ready | not_ready.
+-spec decide_blue_ready(replica_id(), vclock()) -> ready | {not_ready, non_neg_integer()}.
 decide_blue_ready(ReplicaId, CommitVC) ->
+    Now = grb_time:timestamp(),
     Self = grb_vclock:get_time(ReplicaId, CommitVC),
-    case grb_time:timestamp() >= Self of
-        true -> ready;
-        false -> not_ready %% todo(borja, stat): log miss
+    case Now >= Self of
+        true ->
+            ready;
+        false ->
+            %% todo(borja, stat): log miss
+            Diff = abs(Now - Self),
+            {not_ready, erlang:ceil(Diff / 1000) + 1}
     end.
 
 -spec decide_blue(partition_id(), term(), vclock()) -> ok.
 decide_blue(Partition, TxId, CommitVC) ->
-    riak_core_vnode_master:sync_command({Partition, node()},
-                                        {decide_blue, TxId, CommitVC},
-                                        ?master,
-                                        infinity).
+    case decide_blue_ready(grb_dc_manager:replica_id(), CommitVC) of
+        ready ->
+            erlang:send(process_pid(Partition), {decide_blue, TxId, CommitVC});
+        {not_ready, DiffMs} ->
+            erlang:send_after(DiffMs, process_pid(Partition), {decide_blue, TxId, CommitVC})
+    end,
+    ok.
 
 -spec update_prepare_clocks(partition_id(), vclock()) -> ok.
 -ifdef(STABLE_SNAPSHOT).
@@ -515,6 +531,8 @@ handle_command(start_blue_hb_timer, _From, S = #state{partition=Partition,
            undefined
     end,
 
+    ok = persistent_term:put({?MODULE, Partition, ?VNODE_PID}, self()),
+
     {reply, ok, S#state{blue_tick_pid=TickProcess, stalled_blue_check_timer=TimerRef}};
 
 handle_command(start_blue_hb_timer, _From, S = #state{blue_tick_pid=Pid}) when is_pid(Pid) ->
@@ -556,10 +574,6 @@ handle_command(readers_ready, _From, S = #state{partition=P, replicas_n=N}) ->
 handle_command({learn_all_replicas, Replicas}, _From, S) ->
     {noreply, S#state{all_replicas=Replicas}};
 
-handle_command({decide_blue, TxId, VC}, _From, State) ->
-    ok = decide_blue_internal(TxId, VC, State),
-    {reply, ok, State};
-
 handle_command({handle_remote_tx, SourceReplica, WS, CommitTime, VC}, _From, State) ->
     ok = handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, State),
     {noreply, State};
@@ -579,6 +593,10 @@ handle_command({handle_red_tx, Label, WS, VC}, _From, S=#state{all_replicas=AllR
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("~p unhandled_command ~p", [?MODULE, Message]),
     {noreply, State}.
+
+handle_info({decide_blue, TxId, VC}, State) ->
+    ok = decide_blue_internal(TxId, VC, State),
+    {ok, State};
 
 handle_info(?blue_stall_check, State=#state{partition=Partition,
                                             prepared_blue=PreparedBlue,
