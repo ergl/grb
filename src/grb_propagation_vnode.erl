@@ -34,9 +34,11 @@
 -export([clock_table/1,
          handle_blue_heartbeat_unsafe/3]).
 
+-ifdef(STABLE_SNAPSHOT).
 %% Basic Replication API
 -export([merge_remote_stable_vc/2,
          merge_into_stable_vc/2]).
+-endif.
 
 %% For CURE-FT
 -export([handle_clock_update/3,
@@ -298,6 +300,7 @@ append_remote_blue_commit_no_hb(ReplicaId, Partition, WS, CommitVC) ->
 %%% basic replication api
 %%%===================================================================
 
+-ifdef(STABLE_SNAPSHOT).
 %% @doc Update the stableVC at all replicas but the current one, return result
 -spec merge_remote_stable_vc(partition_id(), vclock()) -> vclock().
 merge_remote_stable_vc(Partition, VC) ->
@@ -313,6 +316,8 @@ merge_into_stable_vc(Partition, VC) ->
     riak_core_vnode_master:command({Partition, node()},
                                    {cure_update_svc_no_return, VC},
                                    ?master).
+
+-endif.
 
 %%%===================================================================
 %%% uniform replication api
