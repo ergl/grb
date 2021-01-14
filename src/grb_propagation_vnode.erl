@@ -279,10 +279,9 @@ update_stable_vc_sync(Partition, SVC) ->
 
 -spec append_blue_commit(partition_id(), writeset(), vclock()) -> ok.
 append_blue_commit(Partition, WS, CommitVC) ->
-    riak_core_vnode_master:sync_command({Partition, node()},
-                                        {append_blue, WS, CommitVC},
-                                        ?master,
-                                        infinity).
+    riak_core_vnode_master:command({Partition, node()},
+                                   {append_blue, WS, CommitVC},
+                                   ?master).
 
 -spec append_remote_blue_commit(replica_id(), partition_id(), grb_time:ts(), #{}, vclock()) -> ok.
 append_remote_blue_commit(ReplicaId, Partition, CommitTime, WS, CommitVC) ->
