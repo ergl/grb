@@ -142,7 +142,6 @@ start_node(Name, Config) ->
 
             ok = erpc:call(Node, application, set_env, [grb, red_heartbeat_interval, 1]),
             ok = erpc:call(Node, application, set_env, [grb, red_delivery_interval, 1]),
-            ok = erpc:call(Node, application, set_env, [grb, red_leader_check_clock_interval, 1]),
             ok = erpc:call(Node, application, set_env, [grb, red_prune_interval, 20]),
             ok = erpc:call(Node, application, set_env, [grb, red_coord_pool_size, 500]),
 

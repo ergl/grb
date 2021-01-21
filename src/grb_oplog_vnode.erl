@@ -326,8 +326,7 @@ decide_blue_ready(ReplicaId, CommitVC) ->
             ready;
         false ->
             %% todo(borja, stat): log miss
-            Diff = abs(Now - Self),
-            {not_ready, erlang:ceil(Diff / 1000) + 1}
+            {not_ready, grb_time:diff_ms(Now, Self)}
     end.
 
 -spec decide_blue(partition_id(), term(), vclock()) -> ok.

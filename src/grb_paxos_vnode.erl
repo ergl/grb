@@ -63,9 +63,6 @@
 
     deliver_timer = undefined :: reference() | undefined,
     deliver_interval :: non_neg_integer(),
-    %% How often do we re-check the clock at the leader to insert a decision
-    %% We insert directly at the followers
-    decision_retry_interval :: non_neg_integer(),
 
     prune_timer = undefined :: reference() | undefined,
     prune_interval :: non_neg_integer(),
@@ -190,7 +187,6 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
-    {ok, RetryInterval} = application:get_env(grb, red_leader_check_clock_interval),
     {ok, DeliverInterval} = application:get_env(grb, red_delivery_interval),
     PruningInterval = application:get_env(grb, red_prune_interval, 0),
 
@@ -200,7 +196,6 @@ init([Partition]) ->
     %% don't care about setting bad values, we will overwrite it
     State = #state{partition=Partition,
                    deliver_interval=DeliverInterval,
-                   decision_retry_interval=RetryInterval,
                    prune_interval=PruningInterval,
                    op_log_last_vc_replica=undefined,
                    synod_state=undefined,
@@ -467,12 +462,13 @@ reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decisi
 -dialyzer({nowarn_function, decide_hb_internal/4}).
 decide_hb_internal(Ballot, Id, Ts, S=#state{synod_role=Role,
                                             synod_state=SynodState0,
-                                            decision_buffer=Buffer,
-                                            decision_retry_interval=Time}) ->
+                                            decision_buffer=Buffer}) ->
     Now = grb_time:timestamp(),
     if
         (Role =:= ?leader) and (Now < Ts) ->
-            erlang:send_after(Time, self(), {retry_decide_hb, Ballot, Id, Ts}),
+            erlang:send_after(grb_time:diff_ms(Now, Ts),
+                              self(),
+                              {retry_decide_hb, Ballot, Id, Ts}),
             {ok, S};
 
         true ->
@@ -497,13 +493,14 @@ decide_hb_internal(Ballot, Id, Ts, S=#state{synod_role=Role,
 -spec decide_internal(ballot(), term(), red_vote(), vclock(), #state{}) -> {ok, #state{}} | error.
 decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
                                                            synod_state=SynodState0,
-                                                           decision_buffer=Buffer,
-                                                           decision_retry_interval=Time}) ->
+                                                           decision_buffer=Buffer}) ->
     Now = grb_time:timestamp(),
     CommitTs = grb_vclock:get_time(?RED_REPLICA, CommitVC),
     if
         (Role =:= ?leader) and (Now < CommitTs) ->
-            erlang:send_after(Time, self(), {retry_decision, Ballot, TxId, Decision, CommitVC}),
+            erlang:send_after(grb_time:diff_ms(Now, CommitTs),
+                              self(),
+                              {retry_decision, Ballot, TxId, Decision, CommitVC}),
             {ok, S};
 
         true ->
