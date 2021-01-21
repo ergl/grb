@@ -49,6 +49,10 @@
 -define(leader_queue_length_stat, {?MODULE, leader_message_queue}).
 -define(follower_queue_length_stat, {?MODULE, follower_message_queue}).
 
+-define(leader, leader).
+-define(follower, follower).
+-type role() :: ?leader | ?follower.
+
 -record(state, {
     partition :: partition_id(),
     replica_id = undefined :: replica_id() | undefined,
@@ -68,6 +72,9 @@
 
     %% read replica of the last commit vc cache by grb_oplog_vnode
     op_log_last_vc_replica :: grb_oplog_vnode:last_vc() | undefined,
+
+    %% paxos state and role
+    synod_role = undefined :: role() | undefined,
     synod_state = undefined :: grb_paxos_state:t() | undefined,
 
     %% conflict information, who conflicts with whom
@@ -225,19 +232,21 @@ handle_command(fetch_lastvc_table, _Sender, S0=#state{partition=Partition}) ->
     end,
     {reply, Result, S};
 
-handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_state=undefined}) ->
+handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_role=undefined, synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
     {ok, Pid} = grb_red_timer:start_timer(ReplicaId, Partition),
     ok = grb_measurements:create_stat(?leader_queue_length_stat),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
                                      heartbeat_process=Pid,
-                                     synod_state=grb_paxos_state:leader()})};
+                                     synod_role=?leader,
+                                     synod_state=grb_paxos_state:new()})};
 
-handle_command(init_follower, _Sender, S=#state{synod_state=undefined}) ->
+handle_command(init_follower, _Sender, S=#state{synod_role=undefined, synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
     ok = grb_measurements:create_stat(?follower_queue_length_stat),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
-                                     synod_state=grb_paxos_state:follower()})};
+                                     synod_role=?follower,
+                                     synod_state=grb_paxos_state:new()})};
 
 %%%===================================================================
 %%% leader protocol messages
@@ -349,34 +358,34 @@ handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{pa
 %%%===================================================================
 
 handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S0=#state{partition=Partition,
-                                                               synod_state=SynodState}) ->
+                                                               synod_role=SynodRole}) ->
 
     ?LOG_DEBUG("~p: HEARTBEAT_DECIDE(~b, ~p, ~b)", [Partition, Ballot, Id, Ts]),
     {ok, S} = decide_hb_internal(Ballot, Id, Ts, S0),
-    case grb_paxos_state:role(SynodState) of
-        leader ->
+    case SynodRole of
+        ?leader ->
             %% forward decisions
             lists:foreach(fun(ReplicaId) ->
                 grb_dc_connection_manager:send_red_decide_heartbeat(ReplicaId, Partition, Ballot, Id, Ts)
             end, grb_dc_connection_manager:connected_replicas());
-        follower ->
+        ?follower ->
             %% if we're a follower, we're done
             ok
     end,
     {noreply, S};
 
 handle_command({decision, Ballot, TxId, Decision, CommitVC}, _Sender, S0=#state{partition=Partition,
-                                                                                synod_state=SynodState}) ->
+                                                                                synod_role=SynodRole}) ->
 
     ?LOG_DEBUG("~p DECIDE(~b, ~p, ~p)", [Partition, Ballot, TxId, Decision]),
     {ok, S} = decide_internal(Ballot, TxId, Decision, CommitVC, S0),
-    case grb_paxos_state:role(SynodState) of
-        leader ->
+    case SynodRole of
+        ?leader ->
             %% forward decisions
             lists:foreach(fun(ReplicaId) ->
                 grb_dc_connection_manager:send_red_decision(ReplicaId, Partition, Ballot, TxId, Decision, CommitVC)
             end, grb_dc_connection_manager:connected_replicas());
-        follower ->
+        ?follower ->
             %% if we're a follower, we're done
             ok
     end,
@@ -456,56 +465,65 @@ reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decisi
 %% this is here due to grb_paxos_state:decision_hb/4, that dialyzer doesn't like
 %% because it passes an integer as a clock
 -dialyzer({nowarn_function, decide_hb_internal/4}).
-decide_hb_internal(Ballot, Id, Ts, S=#state{synod_state=SynodState0,
+decide_hb_internal(Ballot, Id, Ts, S=#state{synod_role=Role,
+                                            synod_state=SynodState0,
                                             decision_buffer=Buffer,
                                             decision_retry_interval=Time}) ->
-
-    case grb_paxos_state:decision_hb(Ballot, Id, Ts, SynodState0) of
-        {ok, SynodState} ->
-            {ok, S#state{synod_state=SynodState}};
-
-        not_ready ->
+    Now = grb_time:timestamp(),
+    if
+        (Role =:= ?leader) and (Now < Ts) ->
             erlang:send_after(Time, self(), {retry_decide_hb, Ballot, Id, Ts}),
             {ok, S};
 
-        bad_ballot ->
-            %% todo(borja, red): should this initiate a leader recovery, or ignore?
-            ?LOG_ERROR("~p: bad heartbeat ballot ~b", [S#state.partition, Ballot]),
-            {ok, S};
+        true ->
+            case grb_paxos_state:decision_hb(Ballot, Id, Ts, SynodState0) of
+                {ok, SynodState} ->
+                    {ok, S#state{synod_state=SynodState}};
 
-        not_prepared ->
-            ?LOG_DEBUG("~p: DECIDE_HEARTBEAT(~b, ~p) := not_prepared, buffering", [S#state.partition, Ballot, Id]),
-            %% buffer the decision and reserve our commit spot
-            %% until we receive a matching ACCEPT from the leader
-            ok = grb_paxos_state:reserve_decision(Id, ok, Ts, SynodState0),
-            {ok, S#state{decision_buffer=Buffer#{{Id, Ballot} => Ts}}}
+                bad_ballot ->
+                    %% todo(borja, red): should this initiate a leader recovery, or ignore?
+                    ?LOG_ERROR("~p: bad heartbeat ballot ~b", [S#state.partition, Ballot]),
+                    {ok, S};
+
+                not_prepared ->
+                    ?LOG_DEBUG("~p: DECIDE_HEARTBEAT(~b, ~p) := not_prepared, buffering", [S#state.partition, Ballot, Id]),
+                    %% buffer the decision and reserve our commit spot
+                    %% until we receive a matching ACCEPT from the leader
+                    ok = grb_paxos_state:reserve_decision(Id, ok, Ts, SynodState0),
+                    {ok, S#state{decision_buffer=Buffer#{{Id, Ballot} => Ts}}}
+            end
     end.
 
 -spec decide_internal(ballot(), term(), red_vote(), vclock(), #state{}) -> {ok, #state{}} | error.
-decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_state=SynodState0,
+decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
+                                                           synod_state=SynodState0,
                                                            decision_buffer=Buffer,
                                                            decision_retry_interval=Time}) ->
-
-    case grb_paxos_state:decision(Ballot, TxId, Decision, CommitVC, SynodState0) of
-        {ok, SynodState} ->
-            {ok, S#state{synod_state=SynodState}};
-
-        not_ready ->
+    Now = grb_time:timestamp(),
+    CommitTs = grb_vclock:get_time(?RED_REPLICA, CommitVC),
+    if
+        (Role =:= ?leader) and (Now < CommitTs) ->
             erlang:send_after(Time, self(), {retry_decision, Ballot, TxId, Decision, CommitVC}),
             {ok, S};
 
-        bad_ballot ->
-            %% todo(borja, red): should this initiate a leader recovery, or ignore?
-            ?LOG_ERROR("~p: bad ballot ~b for ~p", [S#state.partition, Ballot, TxId]),
-            {ok, S};
+        true ->
+            case grb_paxos_state:decision(Ballot, TxId, Decision, CommitVC, SynodState0) of
+                {ok, SynodState} ->
+                    {ok, S#state{synod_state=SynodState}};
 
-        not_prepared ->
-            ok = grb_measurements:log_counter({?MODULE, out_of_order_decision}),
-            ?LOG_DEBUG("~p: DECIDE(~b, ~p) := not_prepared, buffering", [S#state.partition, Ballot, TxId]),
-            %% buffer the decision and reserve our commit spot
-            %% until we receive a matching ACCEPT from the leader
-            ok = grb_paxos_state:reserve_decision(TxId, Decision, CommitVC, SynodState0),
-            {ok, S#state{decision_buffer=Buffer#{{TxId, Ballot} => {Decision, CommitVC}}}}
+                bad_ballot ->
+                    %% todo(borja, red): should this initiate a leader recovery, or ignore?
+                    ?LOG_ERROR("~p: bad ballot ~b for ~p", [S#state.partition, Ballot, TxId]),
+                    {ok, S};
+
+                not_prepared ->
+                    ok = grb_measurements:log_counter({?MODULE, out_of_order_decision}),
+                    ?LOG_DEBUG("~p: DECIDE(~b, ~p) := not_prepared, buffering", [S#state.partition, Ballot, TxId]),
+                    %% buffer the decision and reserve our commit spot
+                    %% until we receive a matching ACCEPT from the leader
+                    ok = grb_paxos_state:reserve_decision(TxId, Decision, CommitVC, SynodState0),
+                    {ok, S#state{decision_buffer=Buffer#{{TxId, Ballot} => {Decision, CommitVC}}}}
+            end
     end.
 
 -spec deliver_updates(partition_id(), grb_time:ts(), grb_paxos_state:t()) -> grb_time:ts().

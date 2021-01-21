@@ -7,11 +7,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--define(leader, leader).
--define(follower, follower).
 -define(heartbeat, heartbeat).
--type status() :: ?leader | ?follower.
-
 -define(abort_conflict, {abort, conflict}).
 -define(abort_stale_dec, {abort, stale_decided}).
 -define(abort_stale_comm, {abort, stale_committed}).
@@ -48,7 +44,6 @@
 }).
 
 -record(state, {
-    status :: status(),
     ballot = 0 :: ballot(),
     entries = #{} :: #{record_id() => tx_data()},
     index :: cache_id(),
@@ -65,18 +60,14 @@
 
 -type prepare_hb_result() :: {red_vote(), ballot(), grb_time:ts()}| {already_decided, red_vote(), grb_time:ts()}.
 -type prepare_result() :: {red_vote(), ballot(), vclock()} | {already_decided, red_vote(), vclock()}.
--type decision_error() :: bad_ballot | not_prepared | not_ready.
+-type decision_error() :: bad_ballot | not_prepared.
 -type t() :: #state{}.
 
--export_type([t/0, status/0, prepare_result/0, prepare_hb_result/0, decision_error/0]).
+-export_type([t/0, prepare_result/0, prepare_hb_result/0, decision_error/0]).
 
 %% constructors
--export([leader/0,
-         follower/0,
+-export([new/0,
          delete/1]).
-
-%% check our status
--export([role/1]).
 
 %% ready / prune api
 -export([get_next_ready/2,
@@ -99,16 +90,9 @@
 %%% constructors
 %%%===================================================================
 
--spec leader() -> t().
-leader() -> fresh_state(?leader).
-
--spec follower() -> t().
-follower() -> fresh_state(?follower).
-
--spec fresh_state(status()) -> t().
-fresh_state(Status) ->
-    #state{status=Status,
-           %% A tree table maintains an ordered queue of prepare/commit records. This allows
+-spec new() -> t().
+new() ->
+    #state{%% A tree table maintains an ordered queue of prepare/commit records. This allows
            %% simple computation of the precondition of get_next_ready/2, which delivers transactions
            %% in commitVC[red] order, but checks against prepared transactions with prepareVC[red]
            %% lower than commitVC[red]
@@ -134,14 +118,6 @@ delete(#state{index=Index, pending_reads=PendingReads, writes_cache=Writes, pend
     true = ets:delete(Writes),
     true = ets:delete(PendingData),
     ok.
-
-%%%===================================================================
-%%% util
-%%%===================================================================
-
--spec role(t()) -> status().
-role(#state{status=S}) ->
-    S.
 
 %%%===================================================================
 %%% ready / prune
@@ -301,8 +277,7 @@ decision_hb(Ballot, Id, Ts, State) ->
               Conflicts :: conflict_relations(),
               State :: t()) -> {prepare_result(), t()}.
 
-prepare(Id, Label, RS, WS, SnapshotVC, LastVC, Conflicts, State=#state{status=?leader,
-                                                                       ballot=Ballot,
+prepare(Id, Label, RS, WS, SnapshotVC, LastVC, Conflicts, State=#state{ballot=Ballot,
                                                                        entries=EntryMap,
                                                                        pending_reads=PendingReads,
                                                                        writes_cache=PendingWrites}) ->
@@ -375,14 +350,14 @@ make_commit_record(TxId, Label, RS, WS, RedTs, VC, Decision, Reads, Writes) ->
     #tx_data{label=Label, read_keys=RS, write_keys=WriteKeys, writeset=WS,
              red_ts=RedTs, clock=VC, state=prepared, vote=Decision}.
 
--spec decision_pre(ballot(), record_id(), grb_time:ts(), grb_time:ts(), t()) -> {ok, tx_data()}
+-spec decision_pre(ballot(), record_id(), grb_time:ts(), t()) -> {ok, tx_data()}
                                                                               | already_decided
                                                                               | decision_error().
 
-decision_pre(InBallot, _, _, _, #state{ballot=Ballot}) when InBallot > Ballot ->
+decision_pre(InBallot, _, _, #state{ballot=Ballot}) when InBallot > Ballot ->
     bad_ballot;
 
-decision_pre(_, Id, _, _, #state{status=?follower, entries=EntryMap}) ->
+decision_pre(_, Id, _, #state{entries=EntryMap}) ->
     case maps:get(Id, EntryMap, not_prepared) of
         not_prepared ->
             not_prepared;
@@ -393,22 +368,6 @@ decision_pre(_, Id, _, _, #state{status=?follower, entries=EntryMap}) ->
 
         Data=#tx_data{state=prepared} ->
             {ok, Data}
-    end;
-
-decision_pre(_, Id, CommitRed, ClockTime, #state{status=?leader, entries=EntryMap}) ->
-    case maps:get(Id, EntryMap, not_prepared) of
-        not_prepared ->
-            not_prepared;
-
-        #tx_data{state=decided} ->
-            ?LOG_WARNING("duplicate DECIDE(~p)", [Id]),
-            already_decided;
-
-        Data=#tx_data{state=prepared} ->
-            case ClockTime >= CommitRed of
-                true -> {ok, Data};
-                false -> not_ready
-            end
     end.
 
 -spec decision(ballot(), record_id(), red_vote(), vclock(), t()) -> {ok, t()} | decision_error().
@@ -417,7 +376,7 @@ decision(Ballot, Id, Vote, CommitVC, S=#state{entries=EntryMap, index=Idx,
                                               pending_commit_ts=PendingData}) ->
 
     RedTs = get_timestamp(Id, CommitVC),
-    case decision_pre(Ballot, Id, RedTs, grb_time:timestamp(), S) of
+    case decision_pre(Ballot, Id, RedTs, S) of
         already_decided ->
             {ok, S};
 
@@ -634,8 +593,8 @@ with_states(State, Fun) ->
     delete(State).
 
 grb_paxos_state_heartbeat_test() ->
-    with_states([grb_paxos_state:leader(),
-                 grb_paxos_state:follower()], fun([L0, F0]) ->
+    with_states([grb_paxos_state:new(),
+                 grb_paxos_state:new()], fun([L0, F0]) ->
 
         Id = {?heartbeat, 0},
         {{ok, Ballot, Ts}, L1} = grb_paxos_state:prepare_hb(Id, L0),
@@ -654,8 +613,8 @@ grb_paxos_state_heartbeat_test() ->
 grb_paxos_state_transaction_test() ->
     ok = persistent_term:put({grb_dc_manager, my_replica}, ignore),
     LastVC = ets:new(dummy, [set]),
-    with_states([grb_paxos_state:leader(),
-                 grb_paxos_state:follower()], fun([L0, F0]) ->
+    with_states([grb_paxos_state:new(),
+                 grb_paxos_state:new()], fun([L0, F0]) ->
 
         TxId = tx_1, Label = <<>>,
         RS = [], WS = #{},
@@ -695,7 +654,7 @@ grb_paxos_state_get_next_ready_test() ->
     T = fun(C) -> grb_vclock:get_time(?RED_REPLICA, C) end,
 
     %% simple example of a tx being blocked by a previous one
-    with_states(grb_paxos_state:follower(), fun(F0) ->
+    with_states(grb_paxos_state:new(), fun(F0) ->
         [V0, V1, V2] = [ VC(1), VC(5), VC(7)],
         {ok, F1} = grb_paxos_state:accept(0, tx_0, <<>>, [], #{}, ok, V0, F0),
         {ok, F2} = grb_paxos_state:accept(0, tx_1, <<>>, [], #{}, ok, V1, F1),
@@ -715,7 +674,7 @@ grb_paxos_state_get_next_ready_test() ->
     end),
 
     %% simple example of a tx being blocked by a heartbeat
-    with_states(grb_paxos_state:follower(), fun(F0) ->
+    with_states(grb_paxos_state:new(), fun(F0) ->
         [T0, V1] = [ 1, VC(5)],
 
         {ok, F1} = grb_paxos_state:accept_hb(0, {?heartbeat, 0}, T0, F0),
@@ -734,7 +693,7 @@ grb_paxos_state_get_next_ready_test() ->
     end),
 
     %% more complex with transactions moving places
-    with_states(grb_paxos_state:follower(), fun(F0) ->
+    with_states(grb_paxos_state:new(), fun(F0) ->
         [V0, V1, V2, V3, V4] = [ VC(1), VC(5), VC(7), VC(10), VC(15)],
 
         {ok, F1} = grb_paxos_state:accept(0, tx_0, <<>>, [], #{}, {abort, ignore}, V0, F0),
@@ -758,7 +717,7 @@ grb_paxos_state_get_next_ready_test() ->
     end).
 
 grb_paxos_state_hb_clash_test() ->
-    with_states(grb_paxos_state:leader(), fun(L0) ->
+    with_states(grb_paxos_state:new(), fun(L0) ->
         {{ok, B, Ts0}, L1} = grb_paxos_state:prepare_hb({?heartbeat, 0}, L0),
         {ok, L2} = grb_paxos_state:decision_hb(B, {?heartbeat, 0}, Ts0, L1),
 
@@ -773,7 +732,7 @@ grb_paxos_state_hb_clash_test() ->
 grb_paxos_state_tx_clash_test() ->
     VC = fun(I) -> #{?RED_REPLICA => I} end,
 
-    with_states(grb_paxos_state:follower(), fun(F0) ->
+    with_states(grb_paxos_state:new(), fun(F0) ->
         {ok, F1} = grb_paxos_state:accept(0, tx_1, <<>>, [], #{a => 0}, ok, VC(0), F0),
         {ok, F2} = grb_paxos_state:accept(0, tx_2, <<>>, [], #{a => 1}, ok, VC(5), F1),
 
@@ -915,7 +874,7 @@ grb_paxos_state_prune_decided_before_test() ->
     ok = persistent_term:put({grb_dc_manager, my_replica}, ignore),
     LastVC = ets:new(dummy, [set]),
 
-    with_states(grb_paxos_state:leader(), fun(L0) ->
+    with_states(grb_paxos_state:new(), fun(L0) ->
 
         TxId1 = tx_1, Label1 = <<>>,
         RS1 = [a], WS1 = #{a => <<"hello">>},
@@ -962,7 +921,7 @@ grb_paxos_state_prune_decided_before_test() ->
     true = persistent_term:erase({grb_dc_manager, my_replica}).
 
 grb_paxos_state_decision_reserve_test() ->
-    with_states(grb_paxos_state:follower(), fun(F0) ->
+    with_states(grb_paxos_state:new(), fun(F0) ->
         TxId1 = tx_1, Label1 = <<>>, RS1 = [a], WS1 = #{a => <<"hello">>}, CVC1 = #{?RED_REPLICA => 1},
         HB = {?heartbeat, 0}, Ts = 2,
         TxId2 = tx_2, Label2 = <<>>, RS2 = [b], WS2 = #{b => <<"another update">>}, CVC2 = #{?RED_REPLICA => 5},
