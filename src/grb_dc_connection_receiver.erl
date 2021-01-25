@@ -211,14 +211,17 @@ handle_request(_, _, #red_already_decided{target_node=Node, tx_id=TxId, decision
         _ -> erpc:cast(Node, grb_red_coordinator, already_decided, [TxId, Vote, CommitVC])
     end;
 
+handle_request(_, Partition, #red_learn_abort{ballot=Ballot, tx_id=TxId, reason=Reason, commit_vc=CommitVC}) ->
+    grb_paxos_vnode:learn_abort(Partition, Ballot, TxId, Reason, CommitVC);
+
+handle_request(_, Partition, #red_deliver{ballot=Ballot, timestamp=Ts, transactions=Txs}) ->
+    grb_paxos_vnode:deliver(Partition, Ballot, Ts, Txs);
+
 handle_request(ConnReplica, Partition, #red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
     grb_paxos_vnode:accept_heartbeat(Partition, ConnReplica, B, Id, Ts);
 
 handle_request(_, Partition, #red_heartbeat_ack{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
     grb_red_timer:handle_accept_ack(Partition, B, Id, Ts);
-
-handle_request(_, Partition, #red_heartbeat_decide{ballot=Ballot, heartbeat_id=Id, timestamp=Ts}) ->
-    grb_paxos_vnode:decide_heartbeat({Partition, node()}, Ballot, Id, Ts);
 
 handle_request(ConnReplica, Partition, #update_clocks_cure{known_vc=KnownVC}) ->
     grb_propagation_vnode:handle_clock_update(Partition, ConnReplica, KnownVC);

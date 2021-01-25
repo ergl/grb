@@ -60,6 +60,7 @@ generate_coord_name(Id) ->
              SnapshotVC :: vclock(),
              Prepares :: [{partition_id(), readset(), writeset()}]) -> ok.
 
+%% todo(borja, recovery): We should send the entire writeset to every partition.
 commit(Coordinator, Promise, TargetPartition, TxId, Label, SnapshotVC, Prepares) ->
     gen_server:cast(Coordinator, {commit_init, Promise, TargetPartition, TxId, Label, SnapshotVC, Prepares}).
 

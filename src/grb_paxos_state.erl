@@ -83,6 +83,10 @@
          accept/8,
          decision/5]).
 
+%% util
+-export([current_ballot/1,
+         deliver_is_valid_ballot/2]).
+
 %% Buffer decision spot
 -export([reserve_decision/4]).
 
@@ -120,10 +124,21 @@ delete(#state{index=Index, pending_reads=PendingReads, writes_cache=Writes, pend
     ok.
 
 %%%===================================================================
+%%% util
+%%%===================================================================
+
+-spec current_ballot(t()) -> ballot().
+current_ballot(#state{ballot=B}) ->
+    B.
+
+%%%===================================================================
 %%% ready / prune
 %%%===================================================================
 
--spec get_next_ready(grb_time:ts(), t()) -> false | {grb_time:ts(), [ ?heartbeat | {tx_label(), #{}, vclock()} ]}.
+-spec get_next_ready(LastDelivered :: grb_time:ts(),
+                     State :: t()) -> false
+                                    | {grb_time:ts(), [ {?heartbeat, term()} | {term(), tx_label(), writeset(), vclock()} ]}.
+
 get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx, pending_commit_ts=PendingData}) ->
     case get_first_committed(LastDelivered, Idx) of
         false ->
@@ -195,11 +210,11 @@ prep_committed_between(_Key, _From, _To, _Table) ->
     %% if we went out of range, bail out
     false.
 
--spec data_for_id(record_id(), #{record_id() => tx_data()}) -> ?heartbeat | {tx_label(), #{}, vclock()}.
-data_for_id({?heartbeat, _}, _) -> ?heartbeat;
+-spec data_for_id(record_id(), #{record_id() => tx_data()}) -> {?heartbeat, term()} | {term(), tx_label(), #{}, vclock()}.
+data_for_id({?heartbeat, Id}, _) -> {?heartbeat, Id};
 data_for_id(Id, EntryMap) ->
     #tx_data{label=Label, writeset=WS, clock=CommitVC} = maps:get(Id, EntryMap),
-    {Label, WS, CommitVC}.
+    {Id, Label, WS, CommitVC}.
 
 %% @doc Remove all transactions in decidedRed with a commitVC[red] timestamp lower than the given one
 %%
@@ -349,6 +364,10 @@ make_commit_record(TxId, Label, RS, WS, RedTs, VC, Decision, Reads, Writes) ->
     true = ets:insert(Writes, [ {{K, Label, TxId}, prepared, VC} || K <- WriteKeys]),
     #tx_data{label=Label, read_keys=RS, write_keys=WriteKeys, writeset=WS,
              red_ts=RedTs, clock=VC, state=prepared, vote=Decision}.
+
+-spec deliver_is_valid_ballot(ballot(), t()) -> boolean().
+deliver_is_valid_ballot(InBallot, #state{ballot=Ballot}) ->
+    InBallot =< Ballot.
 
 -spec decision_pre(ballot(), record_id(), grb_time:ts(), t()) -> {ok, tx_data()}
                                                                               | already_decided
@@ -603,8 +622,8 @@ grb_paxos_state_heartbeat_test() ->
         {ok, L2} = grb_paxos_state:decision_hb(Ballot, Id, Ts, L1),
         {ok, F2} = grb_paxos_state:decision_hb(Ballot, Id, Ts, F1),
 
-        {Ts, [?heartbeat]} = grb_paxos_state:get_next_ready(0, L2),
-        ?assertMatch({Ts, [?heartbeat]}, grb_paxos_state:get_next_ready(0, F2)),
+        {Ts, _} = grb_paxos_state:get_next_ready(0, L2),
+        ?assertMatch({Ts, [Id]}, grb_paxos_state:get_next_ready(0, F2)),
         ?assertEqual(false, grb_paxos_state:get_next_ready(Ts, L2)),
         ?assertEqual(false, grb_paxos_state:get_next_ready(Ts, F2))
     end).
@@ -638,7 +657,7 @@ grb_paxos_state_transaction_test() ->
         ?assertEqual(L3 , L4),
 
         Expected = grb_vclock:get_time(?RED_REPLICA, CVC),
-        Ready={CommitTime, [{Label, WS, Clock}]} = grb_paxos_state:get_next_ready(0, L4),
+        Ready={CommitTime, [{TxId, Label, WS, Clock}]} = grb_paxos_state:get_next_ready(0, L4),
         ?assertEqual(Ready, grb_paxos_state:get_next_ready(0, F2)),
         ?assertEqual(Expected, CommitTime),
         ?assertEqual(CVC, Clock),
@@ -668,9 +687,9 @@ grb_paxos_state_get_next_ready_test() ->
         %% now decide tx_0, marking tx_1 ready for delivery
         {ok, F6} = grb_paxos_state:decision(0, tx_0, ok, V0, F5),
 
-        ?assertEqual({T(V0), [{<<>>, #{}, V0}]}, grb_paxos_state:get_next_ready(0, F6)),
-        ?assertEqual({T(V1), [{<<>>, #{}, V1}]}, grb_paxos_state:get_next_ready(T(V0), F6)),
-        ?assertEqual({T(V2), [{<<>>, #{}, V2}]}, grb_paxos_state:get_next_ready(T(V1), F6))
+        ?assertEqual({T(V0), [{tx_0, <<>>, #{}, V0}]}, grb_paxos_state:get_next_ready(0, F6)),
+        ?assertEqual({T(V1), [{tx_1, <<>>, #{}, V1}]}, grb_paxos_state:get_next_ready(T(V0), F6)),
+        ?assertEqual({T(V2), [{tx_2, <<>>, #{}, V2}]}, grb_paxos_state:get_next_ready(T(V1), F6))
     end),
 
     %% simple example of a tx being blocked by a heartbeat
@@ -688,8 +707,8 @@ grb_paxos_state_get_next_ready_test() ->
         %% now decide the heartbeat, marking tx_1 ready for delivery
         {ok, F4} = grb_paxos_state:decision_hb(0, {?heartbeat, 0}, T0, F3),
 
-        ?assertEqual({T0, [?heartbeat]}, grb_paxos_state:get_next_ready(0, F4)),
-        ?assertEqual({T(V1), [{<<>>, #{}, V1}]}, grb_paxos_state:get_next_ready(T0, F4))
+        ?assertEqual({T0, [{?heartbeat, 0}]}, grb_paxos_state:get_next_ready(0, F4)),
+        ?assertEqual({T(V1), [{tx_1, <<>>, #{}, V1}]}, grb_paxos_state:get_next_ready(T0, F4))
     end),
 
     %% more complex with transactions moving places
@@ -704,7 +723,7 @@ grb_paxos_state_get_next_ready_test() ->
         {ok, F5} = grb_paxos_state:decision(0, tx_1, ok, V1, F4),
 
         %% we can skip tx_0, since it was aborted, no need to wait for decision (because decision will be abort)
-        ?assertEqual({T(V1), [{<<>>, #{}, V1}]}, grb_paxos_state:get_next_ready(0, F5)),
+        ?assertEqual({T(V1), [{tx_1, <<>>, #{}, V1}]}, grb_paxos_state:get_next_ready(0, F5)),
 
         %% now we decide tx_2 with a higher time, placing it the last on the queue
         {ok, F6} = grb_paxos_state:decision(0, tx_2, ok, V4, F5),
@@ -712,8 +731,8 @@ grb_paxos_state_get_next_ready_test() ->
         %% and decide tx_3, making it ready for delivery
         {ok, F7} = grb_paxos_state:decision(0, tx_3, ok, V3, F6),
 
-        ?assertEqual({T(V3), [{<<>>, #{}, V3}]}, grb_paxos_state:get_next_ready(T(V1), F7)),
-        ?assertEqual({T(V4), [{<<>>, #{}, V4}]}, grb_paxos_state:get_next_ready(T(V3), F7))
+        ?assertEqual({T(V3), [{tx_3, <<>>, #{}, V3}]}, grb_paxos_state:get_next_ready(T(V1), F7)),
+        ?assertEqual({T(V4), [{tx_2, <<>>, #{}, V4}]}, grb_paxos_state:get_next_ready(T(V3), F7))
     end).
 
 grb_paxos_state_hb_clash_test() ->
@@ -721,11 +740,11 @@ grb_paxos_state_hb_clash_test() ->
         {{ok, B, Ts0}, L1} = grb_paxos_state:prepare_hb({?heartbeat, 0}, L0),
         {ok, L2} = grb_paxos_state:decision_hb(B, {?heartbeat, 0}, Ts0, L1),
 
-        ?assertEqual({Ts0, [?heartbeat]}, grb_paxos_state:get_next_ready(0, L2)),
+        ?assertEqual({Ts0, [{?heartbeat, 0}]}, grb_paxos_state:get_next_ready(0, L2)),
         {PrepRes, L3} = grb_paxos_state:prepare_hb({?heartbeat, 0}, L2),
         ?assertMatch({already_decided, ok, Ts0}, PrepRes),
 
-        ?assertEqual({Ts0, [?heartbeat]}, grb_paxos_state:get_next_ready(0, L3)),
+        ?assertEqual({Ts0, [{?heartbeat, 0}]}, grb_paxos_state:get_next_ready(0, L3)),
         ?assertEqual(false, grb_paxos_state:get_next_ready(Ts0, L3))
     end).
 
@@ -744,8 +763,8 @@ grb_paxos_state_tx_clash_test() ->
         {ok, F4} = grb_paxos_state:decision(0, tx_2, ok, VC(5), F3),
 
         %% Now we can deliver, since tx_2 moved out of the prepare queue
-        ?assertEqual({5, [ {<<>>, #{a => 0}, VC(5)},
-                           {<<>>, #{a => 1}, VC(5)} ]}, grb_paxos_state:get_next_ready(0, F4) )
+        ?assertEqual({5, [ {tx_1, <<>>, #{a => 0}, VC(5)},
+                           {tx_2, <<>>, #{a => 1}, VC(5)} ]}, grb_paxos_state:get_next_ready(0, F4) )
     end).
 
 grb_paxos_state_check_prepared_sym_test() ->
@@ -889,7 +908,7 @@ grb_paxos_state_prune_decided_before_test() ->
         ?assertEqual(L2, L3),
 
         Expected = grb_vclock:get_time(?RED_REPLICA, CVC1),
-        ?assertEqual({Expected, [{Label1, WS1, CVC1}]}, grb_paxos_state:get_next_ready(0, L3)),
+        ?assertEqual({Expected, [{TxId1, Label1, WS1, CVC1}]}, grb_paxos_state:get_next_ready(0, L3)),
         ?assertEqual(false, grb_paxos_state:get_next_ready(Expected, L3)),
 
         %% preparing even after delivery should return early
@@ -901,12 +920,12 @@ grb_paxos_state_prune_decided_before_test() ->
         {{ok, Ballot, Ts}, L5} = grb_paxos_state:prepare_hb({?heartbeat, 0}, L4),
         {ok, L6} = grb_paxos_state:decision_hb(Ballot, {?heartbeat, 0}, Ts, L5),
 
-        ?assertEqual({Ts, [?heartbeat]}, grb_paxos_state:get_next_ready(Expected, L5)),
+        ?assertEqual({Ts, [{?heartbeat, 0}]}, grb_paxos_state:get_next_ready(Expected, L5)),
         ?assertEqual(false, grb_paxos_state:get_next_ready(Ts, L5)),
 
         %% prune, now we should only have the heartbeat
         L7 = grb_paxos_state:prune_decided_before(Expected + 1, L6),
-        ?assertMatch({Ts, [?heartbeat]}, grb_paxos_state:get_next_ready(0, L7)),
+        ?assertMatch({Ts, [{?heartbeat, 0}]}, grb_paxos_state:get_next_ready(0, L7)),
 
         %% but if we prune past that, then the heartbeat should be gone
         L8 = grb_paxos_state:prune_decided_before(Ts + 1, L7),
@@ -950,7 +969,7 @@ grb_paxos_state_decision_reserve_test() ->
         {ok, F4} = grb_paxos_state:decision(0, TxId1, ok, CVC1, F3),
 
         %% Now that tx_1 is complete, it can be delivered
-        ?assertMatch({1, [{Label1, WS1, CVC1}]}, grb_paxos_state:get_next_ready(0, F4)),
+        ?assertMatch({1, [{TxId1, Label1, WS1, CVC1}]}, grb_paxos_state:get_next_ready(0, F4)),
         %% but trying to deliver tx_3 will fail as we still have the heartbeat in the queue
         ?assertMatch(false, grb_paxos_state:get_next_ready(1, F4)),
 
@@ -958,7 +977,7 @@ grb_paxos_state_decision_reserve_test() ->
         {ok, F6} = grb_paxos_state:decision_hb(0, HB, Ts, F5),
 
         %% Finally, we can deliver the heartbeat
-        ?assertMatch({2, [?heartbeat]}, grb_paxos_state:get_next_ready(1, F6)),
+        ?assertMatch({2, [HB]}, grb_paxos_state:get_next_ready(1, F6)),
 
         %% tx_3 is still blocked by not receiving the accept on tx_2
         ?assertMatch(false, grb_paxos_state:get_next_ready(2, F6)),
@@ -967,7 +986,8 @@ grb_paxos_state_decision_reserve_test() ->
         {ok, F8} = grb_paxos_state:decision(0, TxId2, ok, CVC2, F7),
 
         %% After moving tx_2 from prepared to decided, we can deliver both transactions
-        ?assertMatch({5, [{Label2, WS2, CVC2}, {Label3, WS3, CVC3}]}, grb_paxos_state:get_next_ready(2, F8))
+        ?assertMatch({5, [ {TxId2, Label2, WS2, CVC2},
+                           {TxId3, Label3, WS3, CVC3} ]}, grb_paxos_state:get_next_ready(2, F8))
     end).
 
 -endif.

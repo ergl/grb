@@ -25,12 +25,13 @@
          send_red_accept/10,
          send_red_accept_ack/7,
          send_red_already_decided/6,
-         send_red_decision/6]).
+         send_red_decision/6,
+         send_red_abort/6,
+         send_red_deliver/5]).
 
 %% Red heartbeats
 -export([send_red_heartbeat/5,
-         send_red_heartbeat_ack/5,
-         send_red_decide_heartbeat/5]).
+         send_red_heartbeat_ack/5]).
 
 -export([send_raw/3]).
 
@@ -244,6 +245,21 @@ send_red_decision(ToId, Partition, Ballot, TxId, Decision, CommitVC) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition,
              grb_dc_messages:red_decision(Ballot, Decision, TxId, CommitVC)).
 
+-spec send_red_abort(replica_id(), partition_id(), ballot(), term(), term(), vclock()) -> ok.
+send_red_abort(ToId, Partition, Ballot, TxId, Reason, CommitVC) ->
+    send_raw(?CONN_POOL_TABLE, ToId, Partition,
+             grb_dc_messages:red_learn_abort(Ballot, TxId, Reason, CommitVC)).
+
+-spec send_red_deliver(ToId :: replica_id(),
+                       Partition :: partition_id(),
+                       Ballot :: ballot(),
+                       Timestamp :: grb_time:ts(),
+                       Transactions :: [{tx_label(), writeset(), vclock()} | {term(), term()}]) -> ok.
+
+send_red_deliver(ToId, Partition, Ballot, Timestamp, Transactions) ->
+    send_raw(?CONN_POOL_TABLE, ToId, Partition,
+             grb_dc_messages:red_deliver(Ballot, Timestamp, Transactions)).
+
 -spec send_red_heartbeat(ToId :: replica_id(),
                          Partition :: partition_id(),
                          Ballot :: ballot(),
@@ -256,10 +272,6 @@ send_red_heartbeat(ToId, Partition, Ballot, Id, Time) ->
 -spec send_red_heartbeat_ack(replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok | {error, term()}.
 send_red_heartbeat_ack(ToId, Partition, Ballot, Id, Time) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:red_heartbeat_ack(Ballot, Id, Time)).
-
--spec send_red_decide_heartbeat(replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok | {error, term()}.
-send_red_decide_heartbeat(ToId, Partition, Ballot, Id, Time) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:red_heartbeat_decision(Ballot, Id, Time)).
 
 -spec send_raw(replica_id(), partition_id(), binary()) -> ok | {error, term()}.
 send_raw(ToId, Partition, Msg) ->

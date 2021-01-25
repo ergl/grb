@@ -17,7 +17,9 @@
 %% tx API
 -export([prepare/7,
          accept/9,
-         decide/5]).
+         decide/5,
+         learn_abort/5,
+         deliver/4]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -43,8 +45,8 @@
               handle_info/2]).
 
 -define(master, grb_paxos_vnode_master).
--define(deliver, deliver_event).
--define(prune, prune_event).
+-define(deliver_event, deliver_event).
+-define(prune_event, prune_event).
 
 -define(leader_queue_length_stat, {?MODULE, leader_message_queue}).
 -define(follower_queue_length_stat, {?MODULE, follower_message_queue}).
@@ -61,9 +63,12 @@
 
     last_delivered = 0 :: grb_time:ts(),
 
+    %% How often to check for ready transactions.
+    %% Only happens at the leader.
     deliver_timer = undefined :: reference() | undefined,
     deliver_interval :: non_neg_integer(),
 
+    %% How often to prune already-delivered transactions.
     prune_timer = undefined :: reference() | undefined,
     prune_interval :: non_neg_integer(),
 
@@ -178,6 +183,17 @@ decide(IndexNode, Ballot, TxId, Decision, CommitVC) ->
                                    {decision, Ballot, TxId, Decision, CommitVC},
                                    ?master).
 
+-spec learn_abort(partition_id(), ballot(), term(), term(), vclock()) -> ok.
+learn_abort(Partition, Ballot, TxId, Reason, CommitVC) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {learn_abort, Ballot, TxId, Reason, CommitVC},
+                                   ?master).
+
+-spec deliver(partition_id(), ballot(), grb_time:ts(), [ {term(), term(), #{}, vclock()} | {term(), term()} ]) -> ok.
+deliver(Partition, Ballot, Timestamp, Transactions) ->
+    riak_core_vnode_master:command({Partition, node()},
+                                   {deliver_transactions, Ballot, Timestamp, Transactions},
+                                   ?master).
 
 %%%===================================================================
 %%% api riak_core callbacks
@@ -247,7 +263,8 @@ handle_command(init_follower, _Sender, S=#state{synod_role=undefined, synod_stat
 %%% leader protocol messages
 %%%===================================================================
 
-handle_command({prepare_hb, Id}, _Sender, S=#state{partition=Partition,
+handle_command({prepare_hb, Id}, _Sender, S=#state{synod_role=?leader,
+                                                   partition=Partition,
                                                    synod_state=LeaderState0}) ->
 
     {Result, LeaderState} = grb_paxos_state:prepare_hb(Id, LeaderState0),
@@ -268,7 +285,8 @@ handle_command({prepare_hb, Id}, _Sender, S=#state{partition=Partition,
     {noreply, S#state{synod_state=LeaderState}};
 
 handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
-               Coordinator, S=#state{replica_id=LocalId,
+               Coordinator, S=#state{synod_role=?leader,
+                                     replica_id=LocalId,
                                      partition=Partition,
                                      synod_state=LeaderState0,
                                      conflict_relations=Conflicts,
@@ -297,6 +315,31 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
             end, grb_dc_connection_manager:connected_replicas())
     end,
     {noreply, S#state{synod_state=LeaderState}};
+
+handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S0=#state{synod_role=?leader,
+                                                               partition=Partition}) ->
+    ?LOG_DEBUG("~p: HEARTBEAT_DECIDE(~b, ~p, ~b)", [Partition, Ballot, Id, Ts]),
+    S = case decide_hb_internal(Ballot, Id, Ts, S0) of
+        {not_ready, Ms} ->
+            erlang:send_after(Ms, self(), {retry_decide_hb, Ballot, Id, Ts}),
+            S0;
+        {ok, S1} ->
+            S1
+    end,
+    {noreply, S};
+
+handle_command({decision, Ballot, TxId, Decision, CommitVC}, _Sender, S0=#state{synod_role=?leader,
+                                                                                partition=Partition}) ->
+    ?LOG_DEBUG("~p DECIDE(~b, ~p, ~p)", [Partition, Ballot, TxId, Decision]),
+    S = case decide_internal(Ballot, TxId, Decision, CommitVC, S0) of
+        {not_ready, Ms} ->
+            erlang:send_after(Ms, self(), {retry_decision, Ballot, TxId, Decision, CommitVC}),
+            S0;
+        {ok, S1} ->
+            ok = maybe_send_abort(Partition, Ballot, TxId, Decision, CommitVC),
+            S1
+    end,
+    {noreply, S};
 
 %%%===================================================================
 %%% follower protocol messages
@@ -348,41 +391,50 @@ handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{pa
     end,
     {noreply, S};
 
-%%%===================================================================
-%%% leader / follower protocol messages
-%%%===================================================================
-
-handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S0=#state{partition=Partition,
-                                                               synod_role=SynodRole}) ->
-
-    ?LOG_DEBUG("~p: HEARTBEAT_DECIDE(~b, ~p, ~b)", [Partition, Ballot, Id, Ts]),
-    {ok, S} = decide_hb_internal(Ballot, Id, Ts, S0),
-    case SynodRole of
-        ?leader ->
-            %% forward decisions
-            lists:foreach(fun(ReplicaId) ->
-                grb_dc_connection_manager:send_red_decide_heartbeat(ReplicaId, Partition, Ballot, Id, Ts)
-            end, grb_dc_connection_manager:connected_replicas());
-        ?follower ->
-            %% if we're a follower, we're done
-            ok
-    end,
+handle_command({learn_abort, Ballot, TxId, Reason, CommitVC}, _Sender, S0=#state{partition=Partition}) ->
+    ?LOG_DEBUG("~p LEARN_ABORT(~b, ~p, ~p)", [Partition, Ballot, TxId]),
+    {ok, S} = decide_internal(Ballot, TxId, {abort, Reason}, CommitVC, S0),
     {noreply, S};
 
-handle_command({decision, Ballot, TxId, Decision, CommitVC}, _Sender, S0=#state{partition=Partition,
-                                                                                synod_role=SynodRole}) ->
+handle_command({deliver_transactions, Ballot, Timestamp, Transactions}, _Sender, S0=#state{synod_role=?follower,
+                                                                                           partition=Partition,
+                                                                                           last_delivered=LastDelivered}) ->
+    ValidBallot = grb_paxos_state:deliver_is_valid_ballot(Ballot, S0#state.synod_state),
+    S = if
+        Timestamp > LastDelivered andalso ValidBallot ->
+            %% We're at follower, so we will always be ready to receive a deliver event
+            %% We already checked for a valid ballot above, so that can't fail.
+            %% Due to FIFO, we will always receive a DELIVER after an ACCEPT from the same leader,
+            %% so we don't have to worry about that either.
+            S1 = lists:foldl(
+                fun
+                    ({heartbeat, _}=Id, Acc) ->
+                        %% heartbeats always commit
+                        ?LOG_DEBUG("~p: HEARTBEAT_DECIDE(~b, ~p, ~b)", [Partition, Ballot, Id, Timestamp]),
+                        {ok, SAcc} = decide_hb_internal(Ballot, Id, Timestamp, Acc),
+                        SAcc;
 
-    ?LOG_DEBUG("~p DECIDE(~b, ~p, ~p)", [Partition, Ballot, TxId, Decision]),
-    {ok, S} = decide_internal(Ballot, TxId, Decision, CommitVC, S0),
-    case SynodRole of
-        ?leader ->
-            %% forward decisions
-            lists:foreach(fun(ReplicaId) ->
-                grb_dc_connection_manager:send_red_decision(ReplicaId, Partition, Ballot, TxId, Decision, CommitVC)
-            end, grb_dc_connection_manager:connected_replicas());
-        ?follower ->
-            %% if we're a follower, we're done
-            ok
+                    ({TxId, Label, WS, CommitVC}, Acc) ->
+                        %% We only receive committed transactions. Aborted transactions were received during decision.
+                        ?LOG_DEBUG("~p DECIDE(~b, ~p, ~p)", [Partition, Ballot, TxId, ok]),
+                        {ok, SAcc} = decide_internal(Ballot, TxId, ok, CommitVC, Acc),
+
+                        %% Since it's committed, we can deliver it immediately
+                        ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, Timestamp, Label, WS]),
+                        ok = grb_oplog_vnode:handle_red_transaction(Partition, Label, WS, CommitVC),
+                        SAcc
+                end,
+                S0,
+                Transactions
+            ),
+            %% We won't receive more transactions with this (or less) timestamp, so we can perform a heartbeat
+            ok = grb_propagation_vnode:handle_red_heartbeat(Partition, Timestamp),
+            S1#state{last_delivered=Timestamp};
+
+        true ->
+            %% fixme(borja, red): What to do here if bad ballot?
+            ?LOG_WARNING("DELIVER(~p, ~p) is not valid", [Ballot, Timestamp]),
+            S0
     end,
     {noreply, S};
 
@@ -391,24 +443,46 @@ handle_command(Message, _Sender, State) ->
     {noreply, State}.
 
 handle_info({retry_decide_hb, Ballot, Id, Ts}, S0) ->
-    decide_hb_internal(Ballot, Id, Ts, S0);
+    S = case decide_hb_internal(Ballot, Id, Ts, S0) of
+        {not_ready, Ms} ->
+            %% This shouldn't happen, we already made sure that we'd be ready when we received this message
+            ?LOG_ERROR("DECIDE_HB(~p, ~p) retry", [Ballot, Id]),
+            erlang:send_after(Ms, self(), {retry_decide_hb, Ballot, Id, Ts}),
+            S0;
+        {ok, S1} ->
+            S1
+    end,
+    {ok, S};
 
-handle_info({retry_decision, Ballot, TxId, Decision, CommitVC}, S0) ->
-    decide_internal(Ballot, TxId, Decision, CommitVC, S0);
+handle_info({retry_decision, Ballot, TxId, Decision, CommitVC}, S0=#state{synod_role=?leader,
+                                                                          partition=Partition}) ->
+    S = case decide_internal(Ballot, TxId, Decision, CommitVC, S0) of
+        {not_ready, Ms} ->
+            %% This shouldn't happen, we already made sure that we'd be ready when we received this message
+            ?LOG_ERROR("DECIDE(~p, ~p) retry", [Ballot, TxId]),
+            erlang:send_after(Ms, self(), {retry_decision, Ballot, TxId, Decision, CommitVC}),
+            S0;
+        {ok, S1} ->
+            ok = maybe_send_abort(Partition, Ballot, TxId, Decision, CommitVC),
+            S1
+    end,
+    {ok, S};
 
-handle_info(?deliver, S=#state{partition=Partition,
-                               last_delivered=LastDelivered,
-                               synod_state=SynodState,
-                               deliver_timer=Timer,
-                               deliver_interval=Interval}) ->
+handle_info(?deliver_event, S=#state{synod_role=?leader,
+                                     partition=Partition,
+                                     last_delivered=LastDelivered,
+                                     synod_state=SynodState,
+                                     deliver_timer=Timer,
+                                     deliver_interval=Interval}) ->
     erlang:cancel_timer(Timer),
-    {ok, S#state{last_delivered=deliver_updates(Partition, LastDelivered, SynodState),
-                 deliver_timer=erlang:send_after(Interval, self(), ?deliver)}};
+    CurBallot = grb_paxos_state:current_ballot(SynodState),
+    {ok, S#state{last_delivered=deliver_updates(Partition, CurBallot, LastDelivered, SynodState),
+                 deliver_timer=erlang:send_after(Interval, self(), ?deliver_event)}};
 
-handle_info(?prune, S=#state{last_delivered=LastDelivered,
-                             synod_state=SynodState,
-                             prune_timer=Timer,
-                             prune_interval=Interval}) ->
+handle_info(?prune_event, S=#state{last_delivered=LastDelivered,
+                                   synod_state=SynodState,
+                                   prune_timer=Timer,
+                                   prune_interval=Interval}) ->
 
     erlang:cancel_timer(Timer),
     ?LOG_DEBUG("~p PRUNE_BEFORE(~b)", [S#state.partition, LastDelivered]),
@@ -417,7 +491,7 @@ handle_info(?prune, S=#state{last_delivered=LastDelivered,
     %% the minimum. Either replicas send a message to the leader, which aggregates the min and returns,
     %% or we build some tree.
     {ok, S#state{synod_state=grb_paxos_state:prune_decided_before(LastDelivered, SynodState),
-                 prune_timer=erlang:send_after(Interval, self(), ?prune)}};
+                 prune_timer=erlang:send_after(Interval, self(), ?prune_event)}};
 
 handle_info(Msg, State) ->
     ?LOG_WARNING("~p unhandled_info ~p", [?MODULE, Msg]),
@@ -428,9 +502,12 @@ handle_info(Msg, State) ->
 %%%===================================================================
 
 -spec start_timers(#state{}) -> #state{}.
-start_timers(S=#state{deliver_interval=DeliverInt, prune_interval=PruneInt}) ->
-    S#state{prune_timer=grb_dc_utils:maybe_send_after(PruneInt, ?prune),
-            deliver_timer=grb_dc_utils:maybe_send_after(DeliverInt, ?deliver)}.
+start_timers(S=#state{synod_role=?leader, deliver_interval=DeliverInt, prune_interval=PruneInt}) ->
+    S#state{prune_timer=grb_dc_utils:maybe_send_after(PruneInt, ?prune_event),
+            deliver_timer=grb_dc_utils:maybe_send_after(DeliverInt, ?deliver_event)};
+
+start_timers(S=#state{synod_role=?follower, prune_interval=PruneInt}) ->
+    S#state{prune_timer=grb_dc_utils:maybe_send_after(PruneInt, ?prune_event)}.
 
 -spec reply_accept_ack(red_coord_location(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
 reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC) ->
@@ -456,7 +533,7 @@ reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decisi
             grb_dc_connection_manager:send_red_already_decided(OtherReplica, Node, Partition, TxId, Decision, CommitVC)
     end.
 
--spec decide_hb_internal(ballot(), term(), grb_time:ts(), #state{}) -> {ok, #state{}} | error.
+-spec decide_hb_internal(ballot(), term(), grb_time:ts(), #state{}) -> {ok, #state{}} | {not_ready, non_neg_integer()}.
 %% this is here due to grb_paxos_state:decision_hb/4, that dialyzer doesn't like
 %% because it passes an integer as a clock
 -dialyzer({nowarn_function, decide_hb_internal/4}).
@@ -466,10 +543,7 @@ decide_hb_internal(Ballot, Id, Ts, S=#state{synod_role=Role,
     Now = grb_time:timestamp(),
     if
         (Role =:= ?leader) and (Now < Ts) ->
-            erlang:send_after(grb_time:diff_ms(Now, Ts),
-                              self(),
-                              {retry_decide_hb, Ballot, Id, Ts}),
-            {ok, S};
+            {not_ready, grb_time:diff_ms(Now, Ts)};
 
         true ->
             case grb_paxos_state:decision_hb(Ballot, Id, Ts, SynodState0) of
@@ -477,7 +551,7 @@ decide_hb_internal(Ballot, Id, Ts, S=#state{synod_role=Role,
                     {ok, S#state{synod_state=SynodState}};
 
                 bad_ballot ->
-                    %% todo(borja, red): should this initiate a leader recovery, or ignore?
+                    %% fixme(borja, red): should this initiate a leader recovery, or ignore?
                     ?LOG_ERROR("~p: bad heartbeat ballot ~b", [S#state.partition, Ballot]),
                     {ok, S};
 
@@ -490,7 +564,7 @@ decide_hb_internal(Ballot, Id, Ts, S=#state{synod_role=Role,
             end
     end.
 
--spec decide_internal(ballot(), term(), red_vote(), vclock(), #state{}) -> {ok, #state{}} | error.
+-spec decide_internal(ballot(), term(), red_vote(), vclock(), #state{}) -> {ok, #state{}} | {not_ready, non_neg_integer()}.
 decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
                                                            synod_state=SynodState0,
                                                            decision_buffer=Buffer}) ->
@@ -498,10 +572,7 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
     CommitTs = grb_vclock:get_time(?RED_REPLICA, CommitVC),
     if
         (Role =:= ?leader) and (Now < CommitTs) ->
-            erlang:send_after(grb_time:diff_ms(Now, CommitTs),
-                              self(),
-                              {retry_decision, Ballot, TxId, Decision, CommitVC}),
-            {ok, S};
+            {not_ready, grb_time:diff_ms(Now, CommitTs)};
 
         true ->
             case grb_paxos_state:decision(Ballot, TxId, Decision, CommitVC, SynodState0) of
@@ -509,7 +580,7 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
                     {ok, S#state{synod_state=SynodState}};
 
                 bad_ballot ->
-                    %% todo(borja, red): should this initiate a leader recovery, or ignore?
+                    %% fixme(borja, red): should this initiate a leader recovery, or ignore?
                     ?LOG_ERROR("~p: bad ballot ~b for ~p", [S#state.partition, Ballot, TxId]),
                     {ok, S};
 
@@ -523,22 +594,39 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
             end
     end.
 
--spec deliver_updates(partition_id(), grb_time:ts(), grb_paxos_state:t()) -> grb_time:ts().
-deliver_updates(Partition, From, SynodState) ->
+-spec maybe_send_abort(partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+maybe_send_abort(_Partition, _Ballot, _TxId, ok, _CommitVC) ->
+    ok;
+maybe_send_abort(Partition, Ballot, TxId, {abort, Reason}, CommitVC) ->
+    %% forward aborts only
+    lists:foreach(fun(ReplicaId) ->
+        grb_dc_connection_manager:send_red_abort(ReplicaId, Partition, Ballot, TxId, Reason, CommitVC)
+    end, grb_dc_connection_manager:connected_replicas()).
+
+-spec deliver_updates(partition_id(), ballot(), grb_time:ts(), grb_paxos_state:t()) -> grb_time:ts().
+deliver_updates(Partition, Ballot, From, SynodState) ->
     case grb_paxos_state:get_next_ready(From, SynodState) of
         false ->
             From;
+
         {NextFrom, Entries} ->
+
+            %% Let followers know that these transactions are ready to be delivered.
+            lists:foreach(fun(ReplicaId) ->
+                grb_dc_connection_manager:send_red_deliver(ReplicaId, Partition, Ballot, NextFrom, Entries)
+            end, grb_dc_connection_manager:connected_replicas()),
+
             lists:foreach(fun
-                ({Label, WriteSet, CommitVC}) when is_map(WriteSet) andalso map_size(WriteSet) =/= 0->
+                ({_TxId, Label, WriteSet, CommitVC}) when is_map(WriteSet) andalso map_size(WriteSet) =/= 0->
                     ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, NextFrom, Label, WriteSet]),
                     ok = grb_oplog_vnode:handle_red_transaction(Partition, Label, WriteSet, CommitVC);
                 (_) ->
                     ok
             end, Entries),
+
             ?LOG_DEBUG("~p DELIVER_HB(~b)", [Partition, NextFrom]),
             ok = grb_propagation_vnode:handle_red_heartbeat(Partition, NextFrom),
-            deliver_updates(Partition, NextFrom, SynodState)
+            deliver_updates(Partition, Ballot, NextFrom, SynodState)
     end.
 
 %%%===================================================================

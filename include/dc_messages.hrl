@@ -23,7 +23,10 @@
 %% Red heartbeats
 -define(RED_HB_KIND, 9).
 -define(RED_HB_ACK_KIND, 10).
--define(RED_HB_DECIDE_KIND, 11).
+
+%% Red delivery / abort
+-define(RED_DELIVER_KIND, 11).
+-define(RED_LEARN_ABORT_KIND, 24).
 
 %% Forward messages
 -define(FWD_BLUE_HB_KIND, 12).
@@ -136,6 +139,13 @@
     commit_vc :: vclock()
 }).
 
+-record(red_learn_abort, {
+    ballot :: ballot(),
+    tx_id :: term(),
+    reason :: term(),
+    commit_vc :: vclock()
+}).
+
 -record(red_already_decided, {
     target_node :: node(),
     tx_id :: term(),
@@ -155,10 +165,10 @@
     timestamp :: grb_time:ts()
 }).
 
--record(red_heartbeat_decide, {
+-record(red_deliver, {
     ballot :: ballot(),
-    heartbeat_id :: term(),
-    timestamp :: grb_time:ts()
+    timestamp :: grb_time:ts(),
+    transactions :: [ {term(), term(), #{}, vclock()} | {term(), term()} ]
 }).
 
 -type replica_message() :: #blue_heartbeat{}
@@ -176,7 +186,8 @@
                          | #red_already_decided{}
                          | #red_heartbeat{}
                          | #red_heartbeat_ack{}
-                         | #red_heartbeat_decide{}
+                         | #red_deliver{}
+                         | #red_learn_abort{}
                          | #update_clocks_cure{}
                          | #update_clocks_cure_heartbeat{}.
 
