@@ -12,13 +12,6 @@
 -define(abort_stale_dec, {abort, stale_decided}).
 -define(abort_stale_comm, {abort, stale_committed}).
 
--ifdef(REDBLUE_CERTIFICATION_NAIVE).
-%% The key that all strong transactions will read/add to their writeset
-%% so that they all become certified by the owner transaction.
--define(REDBLUE_SPECIAL_KEY, <<"redblue_special_key">>).
--else.
--endif.
-
 %% We don't care about the structure too much, as long as the client ensures identifiers
 %% are unique (or at least, unique to the point of not reusing them before they call
 %% `prune_decided_before/2`
@@ -484,33 +477,6 @@ check_transaction(_, _, _, _, _, _, _, _, _) ->
                      PendingReads :: cache_id(),
                      PendingWrites :: cache_id()) -> red_vote().
 
--ifdef(REDBLUE_CERTIFICATION_NAIVE).
-check_prepared(ConflictLabel, RS, WS, PendingReads, PendingWrites) ->
-    RWConflict = lists:any(fun(Key) ->
-        case Key of
-            ?REDBLUE_SPECIAL_KEY ->
-                false;
-            _ ->
-                0 =/= ets:select_count(PendingWrites, [{ {{Key, ConflictLabel, '_'}, prepared, '_'}, [], [true] }])
-        end
-    end, RS),
-    case RWConflict of
-        true -> ?abort_conflict;
-        false ->
-            WRConflict = lists:any(fun(Key) ->
-                case Key of
-                    ?REDBLUE_SPECIAL_KEY ->
-                        false;
-                    _ ->
-                        true =:= ets:member(PendingReads, {Key, ConflictLabel})
-                end
-            end, maps:keys(WS)),
-            case WRConflict of
-                true -> ?abort_conflict;
-                false -> ok
-            end
-    end.
--else.
 check_prepared(ConflictLabel, RS, WS, PendingReads, PendingWrites) ->
     RWConflict = lists:any(fun(Key) ->
         0 =/= ets:select_count(PendingWrites, [{ {{Key, ConflictLabel, '_'}, prepared, '_'}, [], [true] }])
@@ -526,7 +492,6 @@ check_prepared(ConflictLabel, RS, WS, PendingReads, PendingWrites) ->
                 false -> ok
             end
     end.
--endif.
 
 -spec check_committed(tx_label(), readset(), vclock(), cache_id(), grb_oplog_vnode:last_vc()) -> red_vote().
 check_committed(ConflictLabel, RS, SnapshotVC, PendingWrites, LastVC) ->
@@ -549,34 +514,6 @@ check_committed(ConflictLabel, RS, SnapshotVC, PendingWrites, LastVC) ->
         AbortReason
     end.
 
--spec stale_decided(key(), tx_label(), vclock(), [replica_id()], cache_id()) -> boolean().
--ifdef(REDBLUE_CERTIFICATION_NAIVE).
-stale_decided(?REDBLUE_SPECIAL_KEY, _, _, _, _) ->
-    false;
-
-stale_decided(Key, ConflictLabel, PrepareVC, AtReplicas, PendingWrites) ->
-    Match = ets:select(PendingWrites, [{ {{Key, ConflictLabel, '_'}, decided, '$1'}, [], ['$1'] }]),
-    case Match of
-        [] ->
-            false;
-        Vectors ->
-            lists:any(fun(CommitVC) ->
-                not (grb_vclock:leq_at_keys(AtReplicas, CommitVC, PrepareVC))
-            end, Vectors)
-    end.
-
--spec stale_committed(key(), tx_label(), vclock(), [replica_id()], grb_oplog_vnode:last_vc()) -> boolean().
-stale_committed(?REDBLUE_SPECIAL_KEY, _, _, _, _) ->
-    false;
-
-stale_committed(Key, ConflictLabel, PrepareVC, AtReplicas, LastVC) ->
-    case ets:lookup(LastVC, {Key, ConflictLabel}) of
-        [{_, LastCommitVC}] ->
-            not (grb_vclock:leq_at_keys(AtReplicas, LastCommitVC, PrepareVC));
-        [] ->
-            false
-    end.
--else.
 stale_decided(Key, ConflictLabel, PrepareVC, AtReplicas, PendingWrites) ->
     Match = ets:select(PendingWrites, [{ {{Key, ConflictLabel, '_'}, decided, '$1'}, [], ['$1'] }]),
     case Match of
@@ -596,7 +533,6 @@ stale_committed(Key, ConflictLabel, PrepareVC, AtReplicas, LastVC) ->
         [] ->
             false
     end.
--endif.
 
 -ifdef(TEST).
 
