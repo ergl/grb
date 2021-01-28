@@ -602,7 +602,7 @@ handle_info(?blue_stall_check, State=#state{partition=Partition,
                                             prepared_blue_idx=PreparedBlueIdx,
                                             stalled_blue_check_timer=Timer,
                                             stalled_blue_check_interval=Interval}) ->
-    erlang:cancel_timer(Timer),
+    ?CANCEL_TIMER_FAST(Timer),
     ok = remove_stalled_transactions(Partition, PreparedBlue, PreparedBlueIdx, Interval),
     {ok, State#state{stalled_blue_check_timer=erlang:send_after(Interval, self(), ?blue_stall_check)}};
 

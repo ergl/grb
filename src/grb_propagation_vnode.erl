@@ -552,7 +552,7 @@ handle_command(Message, _Sender, State) ->
 handle_info(?replication_req, State=#state{replication_timer=Timer,
                                            replication_interval=Interval}) ->
 
-    erlang:cancel_timer(Timer),
+    ?CANCEL_TIMER_FAST(Timer),
     NewState = replicate_internal(State),
     {ok, NewState#state{replication_timer=erlang:send_after(Interval, self(), ?replication_req)}};
 
@@ -560,7 +560,7 @@ handle_info(?uniform_req, State=#state{partition=P,
                                        uniform_timer=Timer,
                                        uniform_interval=Interval}) ->
 
-    erlang:cancel_timer(Timer),
+    ?CANCEL_TIMER_FAST(Timer),
     ?LOG_DEBUG("starting uniform replication at ~p", [P]),
     GlobalMatrix = uniform_replicate_internal(State),
     {ok, State#state{global_known_matrix=GlobalMatrix,
@@ -569,7 +569,7 @@ handle_info(?uniform_req, State=#state{partition=P,
 handle_info(?prune_req, S0=#state{prune_timer=Timer,
                                   prune_interval=Interval}) ->
 
-    erlang:cancel_timer(Timer),
+    ?CANCEL_TIMER_FAST(Timer),
     State = prune_commit_logs(S0),
     {ok, State#state{prune_timer=erlang:send_after(Interval, self(), ?prune_req)}};
 
@@ -577,7 +577,7 @@ handle_info(?clock_send_req, State=#state{partition=Partition,
                                           clock_cache=ClockTable,
                                           replicate_clocks_timer=Timer,
                                           replicate_clocks_interval=Interval}) ->
-    erlang:cancel_timer(Timer),
+    ?CANCEL_TIMER_FAST(Timer),
 
     KnownVC = known_vc_internal(ClockTable),
     StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),

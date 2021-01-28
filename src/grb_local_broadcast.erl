@@ -225,7 +225,7 @@ handle_info(broadcast_clock, S=#state{self_name=SelfNode,
     #leaf_state{parent=Parent,
                 broadcast_timer=TRef} = Leaf,
 
-    erlang:cancel_timer(TRef),
+    ?CANCEL_TIMER_FAST(TRef),
 
     LocalSVC = compute_local_svc(Partitions),
     ok = send_to_parent(SelfNode, Parent, LocalSVC),
@@ -242,7 +242,7 @@ handle_info(broadcast_clock, S=#state{self_partitions=Partitions,
     #singleton_state{broadcast_timer=TRef,
                      broadcast_interval=Int} = Single,
 
-    erlang:cancel_timer(TRef),
+    ?CANCEL_TIMER_FAST(TRef),
 
     LocalSVC = compute_local_svc(Partitions),
     ok = update_stableVC(Partitions, LocalSVC),

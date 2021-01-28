@@ -491,7 +491,7 @@ handle_info(?deliver_event, S=#state{synod_role=?leader,
                                      last_delivered=LastDelivered0,
                                      deliver_timer=Timer,
                                      deliver_interval=Interval}) ->
-    erlang:cancel_timer(Timer),
+    ?CANCEL_TIMER_FAST(Timer),
     CurBallot = grb_paxos_state:current_ballot(SynodState),
     {LastDelivered, DeliveredAnyTx} = deliver_updates(Partition, CurBallot, LastDelivered0, SynodState),
     if
@@ -510,7 +510,7 @@ handle_info(?prune_event, S=#state{last_delivered=LastDelivered,
                                    prune_timer=Timer,
                                    prune_interval=Interval}) ->
 
-    erlang:cancel_timer(Timer),
+    ?CANCEL_TIMER_FAST(Timer),
     ?LOG_DEBUG("~p PRUNE_BEFORE(~b)", [S#state.partition, LastDelivered]),
     %% todo(borja, red): Should compute MinLastDelivered
     %% To know the safe cut-off point, we should exchange LastDelivered with all replicas and find
