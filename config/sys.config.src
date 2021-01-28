@@ -107,9 +107,9 @@
     %% Pool size for the red transaction coordinator
     {red_coord_pool_size, ${RED_COORD_POOL_SIZE}},
 
-    %% How often does a parition start a red heartbeat
-    %% Set this value to 0 to disable it
-    {red_heartbeat_interval, ${RED_HB_INTERVAL_MS}},
+    %% How long in the future do we schedule a strong heartbeat.
+    %% Set this value to 0 to never schedule a heartbeat.
+    {red_heartbeat_schedule_ms, ${RED_HB_SCHEDULE_MS}},
 
     %% How often do we check for ready transactions/heartbeats in decidedRed
     {red_delivery_interval, ${RED_DELIVER_INTERVAL_MS}},

@@ -1,5 +1,9 @@
 -define(OPLOG_READER_NUM, 20).
 
+%% For most purposes, we don't care if the cancelled timer is in the past, or ensure
+%% that the timer is really cancelled before proceeding.
+-define(CANCEL_TIMER_FAST(__TRef), erlang:cancel_timer(__TRef, [{async, true}, {info, false}])).
+
 %% Wrappers for riak_core
 -type partition_id() :: chash:index_as_int().
 -type index_node() :: {partition_id(), node()}.

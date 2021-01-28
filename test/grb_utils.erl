@@ -140,7 +140,7 @@ start_node(Name, Config) ->
             ok = erpc:call(Node, application, set_env, [grb, partition_ready_wait_ms, 1]),
             ok = erpc:call(Node, application, set_env, [grb, prune_committed_blue_interval, 50]),
 
-            ok = erpc:call(Node, application, set_env, [grb, red_heartbeat_interval, 1]),
+            ok = erpc:call(Node, application, set_env, [grb, red_heartbeat_schedule_ms, 5]),
             ok = erpc:call(Node, application, set_env, [grb, red_delivery_interval, 1]),
             ok = erpc:call(Node, application, set_env, [grb, red_prune_interval, 20]),
             ok = erpc:call(Node, application, set_env, [grb, red_coord_pool_size, 500]),

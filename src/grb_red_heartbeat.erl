@@ -1,10 +1,11 @@
--module(grb_red_timer).
+-module(grb_red_heartbeat).
 -behavior(gen_server).
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 %% API
--export([start_timer/2,
+-export([new/2,
+         schedule_heartbeat/2,
          handle_accept_ack/4]).
 
 %% gen_server callbacks
@@ -30,14 +31,11 @@
     next_hb_id = {heartbeat, 0} :: heartbeat_id(),
 
     %% Active heartbeats accumulator
-    active_heartbeats = #{} :: active_heartbeats(),
-
-    interval :: non_neg_integer(),
-    timer :: reference() | undefined
+    active_heartbeats = #{} :: active_heartbeats()
 }).
 
--spec start_timer(replica_id(), partition_id()) -> {ok, pid()} | ignore | {error, term()}.
-start_timer(ReplicaId, Partition) ->
+-spec new(replica_id(), partition_id()) -> {ok, pid()} | ignore | {error, term()}.
+new(ReplicaId, Partition) ->
     Res = gen_server:start(?MODULE, [ReplicaId, Partition], []),
     case Res of
         {ok, Pid} ->
@@ -46,6 +44,10 @@ start_timer(ReplicaId, Partition) ->
             ok
     end,
     Res.
+
+-spec schedule_heartbeat(pid(), non_neg_integer()) -> reference().
+schedule_heartbeat(Pid, TimeoutMs) ->
+    erlang:send_after(TimeoutMs, Pid, ?red_hb).
 
 -spec handle_accept_ack(partition_id(), ballot(), term(), grb_time:ts()) -> ok.
 handle_accept_ack(Partition, Ballot, Id, Ts) ->
@@ -57,13 +59,10 @@ handle_accept_ack(Partition, Ballot, Id, Ts) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 init([ReplicaId, Partition]) ->
-    {ok, Interval} = application:get_env(grb, red_heartbeat_interval),
     QuorumSize = grb_red_manager:quorum_size(),
     State = #state{replica=ReplicaId,
                    partition=Partition,
-                   quorum_size=QuorumSize,
-                   interval=Interval,
-                   timer=grb_dc_utils:maybe_send_after(Interval, ?red_hb)},
+                   quorum_size=QuorumSize},
     {ok, State}.
 
 handle_call(E, _From, S) ->
@@ -94,14 +93,11 @@ handle_cast(E, S) ->
 handle_info(?red_hb, State=#state{partition=Partition,
                                   quorum_size=QuorumSize,
                                   next_hb_id=HeartbeatId,
-                                  active_heartbeats=Heartbeats,
-                                  timer=Timer,
-                                  interval=Interval}) ->
-    erlang:cancel_timer(Timer),
+                                  active_heartbeats=Heartbeats}) ->
+
     ok = grb_paxos_vnode:prepare_heartbeat(Partition, HeartbeatId),
     {noreply, State#state{next_hb_id=next_heartbeat_id(HeartbeatId),
-                          active_heartbeats=Heartbeats#{HeartbeatId => #active_hb{to_ack=QuorumSize}},
-                          timer=erlang:send_after(Interval, self(), ?red_hb)}};
+                          active_heartbeats=Heartbeats#{HeartbeatId => #active_hb{to_ack=QuorumSize}}}};
 
 handle_info(E, S) ->
     ?LOG_WARNING("~p unexpected info: ~p~n", [?MODULE, E]),

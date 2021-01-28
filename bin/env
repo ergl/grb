@@ -69,8 +69,8 @@ if [ -z "$COMMITTED_BLUE_PRUNE_INTERVAL_MS" ]; then
   export COMMITTED_BLUE_PRUNE_INTERVAL_MS=50
 fi
 
-if [ -z "$RED_HB_INTERVAL_MS" ]; then
-  export RED_HB_INTERVAL_MS=5
+if [ -z "$RED_HB_SCHEDULE_MS" ]; then
+  export RED_HB_SCHEDULE_MS=5
 fi
 
 if [ -z "$RED_DELIVER_INTERVAL_MS" ]; then

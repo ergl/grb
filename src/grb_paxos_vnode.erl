@@ -58,8 +58,11 @@
 -record(state, {
     partition :: partition_id(),
     replica_id = undefined :: replica_id() | undefined,
+
     %% only at leader
     heartbeat_process = undefined :: pid() | undefined,
+    heartbeat_schedule_ms :: non_neg_integer(),
+    heartbeat_schedule_timer = undefined :: reference() | undefined,
 
     last_delivered = 0 :: grb_time:ts(),
 
@@ -209,8 +212,12 @@ init([Partition]) ->
     %% conflict information can be overwritten by calling grb:put_conflicts/1
     Conflicts = application:get_env(grb, red_conflicts_config, #{}),
 
+    %% only at the leader, but we don't care
+    {ok, HeartbeatScheduleMs} = application:get_env(grb, red_heartbeat_schedule_ms),
+
     %% don't care about setting bad values, we will overwrite it
     State = #state{partition=Partition,
+                   heartbeat_schedule_ms=HeartbeatScheduleMs,
                    deliver_interval=DeliverInterval,
                    prune_interval=PruningInterval,
                    op_log_last_vc_replica=undefined,
@@ -245,7 +252,7 @@ handle_command(fetch_lastvc_table, _Sender, S0=#state{partition=Partition}) ->
 
 handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_role=undefined, synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
-    {ok, Pid} = grb_red_timer:start_timer(ReplicaId, Partition),
+    {ok, Pid} = grb_red_heartbeat:new(ReplicaId, Partition),
     ok = grb_measurements:create_stat(?leader_queue_length_stat),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
                                      heartbeat_process=Pid,
@@ -267,11 +274,14 @@ handle_command({prepare_hb, Id}, _Sender, S=#state{synod_role=?leader,
                                                    partition=Partition,
                                                    synod_state=LeaderState0}) ->
 
+    %% Cancel the timer (it's the incoming heartbeat)
+    ok = cancel_schedule_heartbeat_timer(S#state.heartbeat_schedule_timer),
+
     {Result, LeaderState} = grb_paxos_state:prepare_hb(Id, LeaderState0),
     case Result of
         {ok, Ballot, Timestamp} ->
             ?LOG_DEBUG("~p: HEARTBEAT_PREPARE(~b, ~p, ~b)", [Partition, Ballot, Id, Timestamp]),
-            grb_red_timer:handle_accept_ack(Partition, Ballot, Id, Timestamp),
+            grb_red_heartbeat:handle_accept_ack(Partition, Ballot, Id, Timestamp),
             lists:foreach(fun(ReplicaId) ->
                 grb_dc_connection_manager:send_red_heartbeat(ReplicaId, Partition,
                                                              Ballot, Id, Timestamp)
@@ -282,7 +292,9 @@ handle_command({prepare_hb, Id}, _Sender, S=#state{synod_role=?leader,
             %% todo(borja, red): This shouldn't happen, but should let red_timer know
             erlang:error(heartbeat_already_decided)
     end,
-    {noreply, S#state{synod_state=LeaderState}};
+    {noreply, S#state{synod_state=LeaderState,
+                      %% clean the timer so that we know that we need to schedule a new one in the future
+                      heartbeat_schedule_timer=undefined}};
 
 handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
                Coordinator, S=#state{synod_role=?leader,
@@ -291,6 +303,10 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
                                      synod_state=LeaderState0,
                                      conflict_relations=Conflicts,
                                      op_log_last_vc_replica=LastRed}) ->
+
+    %% Cancel any pending heartbeats, since we're preparing transactions.
+    %% This means clients are submitting transactions, so we don't need the overhead.
+    ok = cancel_schedule_heartbeat_timer(S#state.heartbeat_schedule_timer),
 
     ok = grb_measurements:log_queue_length(?leader_queue_length_stat),
 
@@ -314,7 +330,8 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
                                                           Ballot, Vote, TxId, Label, RS, WS, PrepareVC)
             end, grb_dc_connection_manager:connected_replicas())
     end,
-    {noreply, S#state{synod_state=LeaderState}};
+    {noreply, S#state{synod_state=LeaderState,
+                      heartbeat_schedule_timer=undefined}};
 
 handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S0=#state{synod_role=?leader,
                                                                partition=Partition}) ->
@@ -470,14 +487,23 @@ handle_info({retry_decision, Ballot, TxId, Decision, CommitVC}, S0=#state{synod_
 
 handle_info(?deliver_event, S=#state{synod_role=?leader,
                                      partition=Partition,
-                                     last_delivered=LastDelivered,
                                      synod_state=SynodState,
+                                     last_delivered=LastDelivered0,
                                      deliver_timer=Timer,
                                      deliver_interval=Interval}) ->
     erlang:cancel_timer(Timer),
     CurBallot = grb_paxos_state:current_ballot(SynodState),
-    {ok, S#state{last_delivered=deliver_updates(Partition, CurBallot, LastDelivered, SynodState),
-                 deliver_timer=erlang:send_after(Interval, self(), ?deliver_event)}};
+    {LastDelivered, DeliveredAnyTx} = deliver_updates(Partition, CurBallot, LastDelivered0, SynodState),
+    if
+        LastDelivered > LastDelivered0 ->
+            ?LOG_DEBUG("~p DELIVER_HB(~b)", [Partition, LastDelivered]),
+            ok = grb_propagation_vnode:handle_red_heartbeat(Partition, LastDelivered);
+        true ->
+            ok
+    end,
+    {ok, maybe_schedule_heartbeat(DeliveredAnyTx,
+                                  S#state{last_delivered=LastDelivered,
+                                          deliver_timer=erlang:send_after(Interval, self(), ?deliver_event)})};
 
 handle_info(?prune_event, S=#state{last_delivered=LastDelivered,
                                    synod_state=SynodState,
@@ -603,11 +629,23 @@ maybe_send_abort(Partition, Ballot, TxId, {abort, Reason}, CommitVC) ->
         grb_dc_connection_manager:send_red_abort(ReplicaId, Partition, Ballot, TxId, Reason, CommitVC)
     end, grb_dc_connection_manager:connected_replicas()).
 
--spec deliver_updates(partition_id(), ballot(), grb_time:ts(), grb_paxos_state:t()) -> grb_time:ts().
+%% @doc Deliver all available updates with commit timestamp higher than `From`.
+%%
+%%      Returns the commit timestamp of the last transaction or heartbeat to be delivered, along
+%%      with a boolean indicating if this function delivered any transaction.
+%%
+%%      Callers can use the information about delivered transactions to schedule a heartbeat, if
+%%      needed.
+%%
+-spec deliver_updates(partition_id(), ballot(), grb_time:ts(), grb_paxos_state:t()) -> {grb_time:ts(), boolean()}.
 deliver_updates(Partition, Ballot, From, SynodState) ->
+    deliver_updates(Partition, Ballot, From, SynodState, false).
+
+-spec deliver_updates(partition_id(), ballot(), grb_time:ts(), grb_paxos_state:t(), boolean()) -> {grb_time:ts(), boolean()}.
+deliver_updates(Partition, Ballot, From, SynodState, DeliveredTx0) ->
     case grb_paxos_state:get_next_ready(From, SynodState) of
         false ->
-            From;
+            {From, DeliveredTx0};
 
         {NextFrom, Entries} ->
 
@@ -616,18 +654,64 @@ deliver_updates(Partition, Ballot, From, SynodState) ->
                 grb_dc_connection_manager:send_red_deliver(ReplicaId, Partition, Ballot, NextFrom, Entries)
             end, grb_dc_connection_manager:connected_replicas()),
 
-            lists:foreach(fun
-                ({_TxId, Label, WriteSet, CommitVC}) when is_map(WriteSet) andalso map_size(WriteSet) =/= 0->
-                    ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, NextFrom, Label, WriteSet]),
-                    ok = grb_oplog_vnode:handle_red_transaction(Partition, Label, WriteSet, CommitVC);
-                (_) ->
-                    ok
-            end, Entries),
+            DeliveredTx = lists:foldl(
+                fun
+                    ({_TxId, Label, WriteSet, CommitVC}, _)
+                        when is_map(WriteSet) andalso map_size(WriteSet) =/= 0->
+                            ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, NextFrom, Label, WriteSet]),
+                            ok = grb_oplog_vnode:handle_red_transaction(Partition, Label, WriteSet, CommitVC),
+                            true;
 
-            ?LOG_DEBUG("~p DELIVER_HB(~b)", [Partition, NextFrom]),
-            ok = grb_propagation_vnode:handle_red_heartbeat(Partition, NextFrom),
-            deliver_updates(Partition, Ballot, NextFrom, SynodState)
+                    (_, Acc) ->
+                        Acc
+                end,
+                DeliveredTx0,
+                Entries
+            ),
+
+            deliver_updates(Partition, Ballot, NextFrom, SynodState, DeliveredTx)
     end.
+
+%% Strong heartbeats are expensive, since they are equivalent
+%% to a read-only strong transaction that always commits. If
+%% we're sending a heartbeat every X ms, that's (1000 / X)
+%% transactions per second and per partition being performed.
+%%
+%% To avoid paying the price, we look if the process is currently
+%% certifying or delivering transactions. If the system is not
+%% doing anything, we schedule a heartbeat. If, on the other hand,
+%% the process is preparing or delivering transactions, we know clients
+%% are submitting transactions, and thus we know the system will advance
+%% even if we don't send heartbeats.
+%%
+%% Since delivery is checked every 1ms, in an idle system the final
+%% result is similar, performing a heartbeat every (1 + X) ms, until the
+%% system starts processing client transactions. Heartbeats stop being
+%% scheduled until the system finds itself not preparing / delivering
+%% transactions for an amount of time.
+-spec maybe_schedule_heartbeat(boolean(), #state{}) -> #state{}.
+maybe_schedule_heartbeat(DeliveredAnyTx, S=#state{heartbeat_schedule_timer=Timer,
+                                                  heartbeat_schedule_ms=DelayMs}) ->
+
+    if
+        (DelayMs > 0) andalso (not DeliveredAnyTx) andalso (Timer =:= undefined) ->
+            %% Schedule a strong heartbeat `DelayMs` in the future if we're currently
+            %% not delivering any transactions - this means the system is idle and no
+            %% client is submitting strong transactions.
+
+            %% If there's an already scheduled timer, we don't need to schedule a new
+            %% one.
+            TRef = grb_red_heartbeat:schedule_heartbeat(S#state.heartbeat_process, DelayMs),
+            S#state{heartbeat_schedule_timer=TRef};
+        true ->
+           S
+    end.
+
+-spec cancel_schedule_heartbeat_timer(reference() | undefined) -> ok.
+cancel_schedule_heartbeat_timer(Timer) when is_reference(Timer) ->
+    ok = ?CANCEL_TIMER_FAST(Timer);
+cancel_schedule_heartbeat_timer(_) ->
+    ok.
 
 %%%===================================================================
 %%% stub riak_core callbacks

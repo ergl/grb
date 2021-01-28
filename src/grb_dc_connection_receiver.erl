@@ -221,7 +221,7 @@ handle_request(ConnReplica, Partition, #red_heartbeat{ballot=B, heartbeat_id=Id,
     grb_paxos_vnode:accept_heartbeat(Partition, ConnReplica, B, Id, Ts);
 
 handle_request(_, Partition, #red_heartbeat_ack{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
-    grb_red_timer:handle_accept_ack(Partition, B, Id, Ts);
+    grb_red_heartbeat:handle_accept_ack(Partition, B, Id, Ts);
 
 handle_request(ConnReplica, Partition, #update_clocks_cure{known_vc=KnownVC}) ->
     grb_propagation_vnode:handle_clock_update(Partition, ConnReplica, KnownVC);
