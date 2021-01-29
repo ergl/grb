@@ -118,6 +118,11 @@
     %% Set this value to 0 to disable it
     {red_prune_interval, ${RED_PRUNE_INTERVAL}},
 
+    %% How often do we send aborts?
+    %% Leader can delay sending aborts to followers, since it's not time
+    %% critical.
+    {red_abort_interval_ms, ${RED_ABORT_INTERVAL_MS}},
+
     %% Conflicts file for red transactions.
     {red_conflicts_config, #{
         <<"default">> => <<"default">>,

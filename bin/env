@@ -81,6 +81,10 @@ if [ -z "$RED_PRUNE_INTERVAL" ]; then
   export RED_PRUNE_INTERVAL=20
 fi
 
+if [ -z "$RED_ABORT_INTERVAL_MS" ]; then
+  export RED_ABORT_INTERVAL_MS=100
+fi
+
 # Pool config
 
 if [ -z "$INTER_DC_SENDER_POOL_SIZE" ]; then

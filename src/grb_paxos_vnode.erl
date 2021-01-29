@@ -47,6 +47,7 @@
 -define(master, grb_paxos_vnode_master).
 -define(deliver_event, deliver_event).
 -define(prune_event, prune_event).
+-define(send_aborts_event, send_aborts_event).
 
 -define(leader_queue_length_stat, {?MODULE, leader_message_queue}).
 -define(follower_queue_length_stat, {?MODULE, follower_message_queue}).
@@ -75,6 +76,10 @@
     prune_timer = undefined :: reference() | undefined,
     prune_interval :: non_neg_integer(),
 
+    %% How often does the leader send aborts?
+    send_aborts_timer = undefined :: reference() | undefined,
+    send_aborts_interval_ms :: non_neg_integer(),
+
     %% read replica of the last commit vc cache by grb_oplog_vnode
     op_log_last_vc_replica :: grb_oplog_vnode:last_vc() | undefined,
 
@@ -89,7 +94,21 @@
     %% If we receive a DECIDE message from the coordinator before we receive
     %% an ACCEPT from the leader, we should buffer the DECIDE here, and apply it
     %% right after we receive an ACCEPT with a matching ballot and transaction id
-    decision_buffer = #{} :: #{{term(), ballot()} => {red_vote(), vclock()} | grb_time:ts()}
+    decision_buffer = #{} :: #{{term(), ballot()} => {red_vote(), vclock()} | grb_time:ts()},
+
+    %% A buffer of delayed abort messages.
+    %% The leader can wait for a while before sending abort messages to followers.
+    %% In the normal case, followers don't need to learn about aborted transactions,
+    %% since they don't execute any delivery preconditions. This allows us to save
+    %% an exchaned message during commit if we know the transactions is aborted.
+    %%
+    %% During recovery, it's important that the new leader knows about aborted
+    %% transactions, otherwise it won't be able to deliver new transactions.
+    %%
+    %% A solution to this problem is to retry transactions that have been sitting
+    %% in prepared for too long.
+    %% fixme(borja): this requires that we have the entire writeset, otherwise we won't be able to retry
+    abort_buffer = [] :: [{Ballot :: ballot(), TxId :: term(), AbortReason :: term(), CommitVC :: vclock()}]
 }).
 
 -spec all_fetch_lastvc_table() -> ok.
@@ -214,12 +233,14 @@ init([Partition]) ->
 
     %% only at the leader, but we don't care
     {ok, HeartbeatScheduleMs} = application:get_env(grb, red_heartbeat_schedule_ms),
+    {ok, SendAbortIntervalMs} = application:get_env(grb, red_abort_interval_ms),
 
     %% don't care about setting bad values, we will overwrite it
     State = #state{partition=Partition,
                    heartbeat_schedule_ms=HeartbeatScheduleMs,
                    deliver_interval=DeliverInterval,
                    prune_interval=PruningInterval,
+                   send_aborts_interval_ms=SendAbortIntervalMs,
                    op_log_last_vc_replica=undefined,
                    synod_state=undefined,
                    conflict_relations=Conflicts},
@@ -353,8 +374,7 @@ handle_command({decision, Ballot, TxId, Decision, CommitVC}, _Sender, S0=#state{
             erlang:send_after(Ms, self(), {retry_decision, Ballot, TxId, Decision, CommitVC}),
             S0;
         {ok, S1} ->
-            ok = maybe_send_abort(Partition, Ballot, TxId, Decision, CommitVC),
-            S1
+            maybe_buffer_abort(Ballot, TxId, Decision, CommitVC, S1)
     end,
     {noreply, S};
 
@@ -471,8 +491,7 @@ handle_info({retry_decide_hb, Ballot, Id, Ts}, S0) ->
     end,
     {ok, S};
 
-handle_info({retry_decision, Ballot, TxId, Decision, CommitVC}, S0=#state{synod_role=?leader,
-                                                                          partition=Partition}) ->
+handle_info({retry_decision, Ballot, TxId, Decision, CommitVC}, S0=#state{synod_role=?leader}) ->
     S = case decide_internal(Ballot, TxId, Decision, CommitVC, S0) of
         {not_ready, Ms} ->
             %% This shouldn't happen, we already made sure that we'd be ready when we received this message
@@ -480,8 +499,7 @@ handle_info({retry_decision, Ballot, TxId, Decision, CommitVC}, S0=#state{synod_
             erlang:send_after(Ms, self(), {retry_decision, Ballot, TxId, Decision, CommitVC}),
             S0;
         {ok, S1} ->
-            ok = maybe_send_abort(Partition, Ballot, TxId, Decision, CommitVC),
-            S1
+            maybe_buffer_abort(Ballot, TxId, Decision, CommitVC, S1)
     end,
     {ok, S};
 
@@ -519,6 +537,22 @@ handle_info(?prune_event, S=#state{last_delivered=LastDelivered,
     {ok, S#state{synod_state=grb_paxos_state:prune_decided_before(LastDelivered, SynodState),
                  prune_timer=erlang:send_after(Interval, self(), ?prune_event)}};
 
+handle_info(?send_aborts_event, S=#state{synod_role=?leader,
+                                         partition=Partition,
+                                         abort_buffer=AbortBuffer,
+                                         send_aborts_timer=Timer,
+                                         send_aborts_interval_ms=Interval}) ->
+    ?CANCEL_TIMER_FAST(Timer),
+    %% todo(borja): Bulk send
+    lists:foreach(
+        fun({Ballot, TxId, AbortReason, CommitVC}) ->
+            send_abort(Partition, Ballot, TxId, AbortReason, CommitVC)
+        end,
+        AbortBuffer
+    ),
+    {ok, S#state{abort_buffer=[],
+                 send_aborts_timer=erlang:send_after(Interval, self(), ?send_aborts_event)}};
+
 handle_info(Msg, State) ->
     ?LOG_WARNING("~p unhandled_info ~p", [?MODULE, Msg]),
     {ok, State}.
@@ -528,9 +562,12 @@ handle_info(Msg, State) ->
 %%%===================================================================
 
 -spec start_timers(#state{}) -> #state{}.
-start_timers(S=#state{synod_role=?leader, deliver_interval=DeliverInt, prune_interval=PruneInt}) ->
+start_timers(S=#state{synod_role=?leader, deliver_interval=DeliverInt,
+                      prune_interval=PruneInt, send_aborts_interval_ms=AbortInt}) ->
+
     S#state{prune_timer=grb_dc_utils:maybe_send_after(PruneInt, ?prune_event),
-            deliver_timer=grb_dc_utils:maybe_send_after(DeliverInt, ?deliver_event)};
+            deliver_timer=grb_dc_utils:maybe_send_after(DeliverInt, ?deliver_event),
+            send_aborts_timer=grb_dc_utils:maybe_send_after(AbortInt, ?send_aborts_event)};
 
 start_timers(S=#state{synod_role=?follower, prune_interval=PruneInt}) ->
     S#state{prune_timer=grb_dc_utils:maybe_send_after(PruneInt, ?prune_event)}.
@@ -620,13 +657,26 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
             end
     end.
 
--spec maybe_send_abort(partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-maybe_send_abort(_Partition, _Ballot, _TxId, ok, _CommitVC) ->
-    ok;
-maybe_send_abort(Partition, Ballot, TxId, {abort, Reason}, CommitVC) ->
-    %% forward aborts only
+-spec maybe_buffer_abort(ballot(), term(), red_vote(), vclock(), #state{}) -> #state{}.
+maybe_buffer_abort(_Ballot, _TxId, ok, _CommitVC, State) ->
+    %% If this is a commit, we can wait until delivery
+    State;
+maybe_buffer_abort(Ballot, TxId, {abort, Reason}, CommitVC, State=#state{partition=Partition,
+                                                                         abort_buffer=AbortBuffer,
+                                                                         send_aborts_interval_ms=Ms}) ->
+    if
+        Ms > 0 ->
+            %% Abort delay is active.
+            State#state{abort_buffer=[{Ballot, TxId, Reason, CommitVC} | AbortBuffer]};
+        true ->
+            %% Abort delay is disabled, send immediately.
+            send_abort(Partition, Ballot, TxId, Reason, CommitVC)
+    end.
+
+-spec send_abort(partition_id(), ballot(), TxId :: term(), AbortReason :: term(), vclock()) -> ok.
+send_abort(Partition, Ballot, TxId, AbortReason, CommitVC) ->
     lists:foreach(fun(ReplicaId) ->
-        grb_dc_connection_manager:send_red_abort(ReplicaId, Partition, Ballot, TxId, Reason, CommitVC)
+        grb_dc_connection_manager:send_red_abort(ReplicaId, Partition, Ballot, TxId, AbortReason, CommitVC)
     end, grb_dc_connection_manager:connected_replicas()).
 
 %% @doc Deliver all available updates with commit timestamp higher than `From`.
