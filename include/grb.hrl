@@ -42,10 +42,11 @@
 
 -type replica_descriptor() :: #replica_descriptor{}.
 
+-define(INTER_DC_SOCK_PACKET_OPT, 4).
 -define(INTER_DC_SOCK_OPTS, [binary,
                              {active, once},
                              {deliver, term},
-                             {packet, 4},
+                             {packet, ?INTER_DC_SOCK_PACKET_OPT},
                              {nodelay, true}]).
 
 -type inter_dc_conn() :: atom().

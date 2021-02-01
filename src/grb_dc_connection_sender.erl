@@ -8,6 +8,7 @@
 
 -export([start_connection/4,
          send/2,
+         send_framed/2,
          close/1]).
 
 %% gen_server callbacks
@@ -35,8 +36,12 @@ start_connection(TargetReplica, Partition, Ip, Port) ->
     {ok, Pid} = grb_dc_connection_sender_sup:start_connection(TargetReplica, Partition, Ip, Port),
     establish_connection(Pid, Partition).
 
--spec send(t(), binary()) -> ok | {error, term()}.
+-spec send(t(), iodata()) -> ok | {error, term()}.
 send(#handle{socket=Socket}, Msg) ->
+    gen_tcp:send(Socket, grb_dc_utils:frame_dc_iolist(Msg)).
+
+-spec send_framed(t(), iolist()) -> ok | {error, term()}.
+send_framed(#handle{socket=Socket}, Msg) ->
     gen_tcp:send(Socket, Msg).
 
 -spec close(t()) -> ok.
@@ -48,7 +53,8 @@ close(#handle{pid=Pid}) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 init([TargetReplica, Partition, Ip, Port]) ->
-    case gen_tcp:connect(Ip, Port, ?INTER_DC_SOCK_OPTS) of
+    Opts = lists:keyreplace(packet, 1, ?INTER_DC_SOCK_OPTS, {packet, raw}),
+    case gen_tcp:connect(Ip, Port, Opts) of
         {error, Reason} ->
             {stop, Reason};
         {ok, Socket} ->

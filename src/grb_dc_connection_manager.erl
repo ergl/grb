@@ -33,7 +33,8 @@
 -export([send_red_heartbeat/5,
          send_red_heartbeat_ack/5]).
 
--export([send_raw/3]).
+-export([send_raw/3,
+         send_raw_framed/3]).
 
 %% Managemenet API
 -export([connection_closed/2,
@@ -276,6 +277,15 @@ send_red_heartbeat_ack(ToId, Partition, Ballot, Id, Time) ->
 -spec send_raw(replica_id(), partition_id(), binary()) -> ok | {error, term()}.
 send_raw(ToId, Partition, Msg) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition, Msg).
+
+-spec send_raw_framed(replica_id(), partition_id(), iolist()) -> ok | {error, term()}.
+send_raw_framed(ToId, Partition, IOList) ->
+    try
+        Connection = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
+        grb_dc_connection_sender:send_framed(Connection, IOList)
+    catch _:_  ->
+        {error, gone}
+    end.
 
 -spec send_raw(ets:tab(), replica_id(), partition_id(), binary()) -> ok | {error, term()}.
 send_raw(Table, ToId, Partition, Msg) ->
