@@ -671,6 +671,8 @@ maybe_buffer_abort(Ballot, TxId, {abort, Reason}, CommitVC, State=#state{partiti
     end.
 
 -spec send_abort_buffer(partition_id(), iodata()) -> ok.
+send_abort_buffer(_Partition, []) ->
+    ok;
 send_abort_buffer(Partition, IOAborts) ->
     lists:foreach(fun(ReplicaId) ->
         grb_dc_connection_manager:send_raw_framed(ReplicaId, Partition, IOAborts)
