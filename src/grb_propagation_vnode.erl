@@ -894,6 +894,10 @@ replicate_internal(S=#state{self_log=LocalLog,
                 ?LOG_DEBUG("send clocks/heartbeat to ~p: ~p~n", [Target, HBRes]),
                 ok;
             Transactions ->
+                %% TODO(borja, efficiency): Merge all messages using custom framing
+                %% To avoid iterating over Transactions again, add function that returns the array
+                %% as an iodata, then put the clocks in the first entry.
+
                 %% can't merge with other messages here, send one before
                 %% we could piggy-back on top of the first tx, but w/ever
                 ClockRes = grb_dc_connection_manager:send_clocks(Target, Partition, KnownVC, StableVC),

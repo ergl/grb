@@ -96,7 +96,8 @@
     %% right after we receive an ACCEPT with a matching ballot and transaction id
     decision_buffer = #{} :: #{{term(), ballot()} => {red_vote(), vclock()} | grb_time:ts()},
 
-    %% A buffer of delayed abort messages.
+    %% A buffer of delayed abort messages, already encoded for sending.
+    %%
     %% The leader can wait for a while before sending abort messages to followers.
     %% In the normal case, followers don't need to learn about aborted transactions,
     %% since they don't execute any delivery preconditions. This allows us to save
@@ -108,7 +109,7 @@
     %% A solution to this problem is to retry transactions that have been sitting
     %% in prepared for too long.
     %% fixme(borja): this requires that we have the entire writeset, otherwise we won't be able to retry
-    abort_buffer = [] :: [{Ballot :: ballot(), TxId :: term(), AbortReason :: term(), CommitVC :: vclock()}]
+    abort_buffer_io = [] :: iodata()
 }).
 
 -spec all_fetch_lastvc_table() -> ok.
@@ -539,18 +540,12 @@ handle_info(?prune_event, S=#state{last_delivered=LastDelivered,
 
 handle_info(?send_aborts_event, S=#state{synod_role=?leader,
                                          partition=Partition,
-                                         abort_buffer=AbortBuffer,
+                                         abort_buffer_io=AbortBuffer,
                                          send_aborts_timer=Timer,
                                          send_aborts_interval_ms=Interval}) ->
     ?CANCEL_TIMER_FAST(Timer),
-    %% todo(borja): Bulk send
-    lists:foreach(
-        fun({Ballot, TxId, AbortReason, CommitVC}) ->
-            send_abort(Partition, Ballot, TxId, AbortReason, CommitVC)
-        end,
-        AbortBuffer
-    ),
-    {ok, S#state{abort_buffer=[],
+    ok = send_abort_buffer(Partition, AbortBuffer),
+    {ok, S#state{abort_buffer_io=[],
                  send_aborts_timer=erlang:send_after(Interval, self(), ?send_aborts_event)}};
 
 handle_info(Msg, State) ->
@@ -662,21 +657,23 @@ maybe_buffer_abort(_Ballot, _TxId, ok, _CommitVC, State) ->
     %% If this is a commit, we can wait until delivery
     State;
 maybe_buffer_abort(Ballot, TxId, {abort, Reason}, CommitVC, State=#state{partition=Partition,
-                                                                         abort_buffer=AbortBuffer,
+                                                                         abort_buffer_io=AbortBuffer,
                                                                          send_aborts_interval_ms=Ms}) ->
+
+    FramedAbortMsg = grb_dc_utils:frame_dc_iolist(grb_dc_messages:red_learn_abort(Ballot, TxId, Reason, CommitVC)),
     if
         Ms > 0 ->
             %% Abort delay is active.
-            State#state{abort_buffer=[{Ballot, TxId, Reason, CommitVC} | AbortBuffer]};
+            State#state{abort_buffer_io=[AbortBuffer, FramedAbortMsg]};
         true ->
             %% Abort delay is disabled, send immediately.
-            send_abort(Partition, Ballot, TxId, Reason, CommitVC)
+            send_abort_buffer(Partition, FramedAbortMsg)
     end.
 
--spec send_abort(partition_id(), ballot(), TxId :: term(), AbortReason :: term(), vclock()) -> ok.
-send_abort(Partition, Ballot, TxId, AbortReason, CommitVC) ->
+-spec send_abort_buffer(partition_id(), iodata()) -> ok.
+send_abort_buffer(Partition, IOAborts) ->
     lists:foreach(fun(ReplicaId) ->
-        grb_dc_connection_manager:send_red_abort(ReplicaId, Partition, Ballot, TxId, AbortReason, CommitVC)
+        grb_dc_connection_manager:send_raw_framed(ReplicaId, Partition, IOAborts)
     end, grb_dc_connection_manager:connected_replicas()).
 
 %% @doc Deliver all available updates with commit timestamp higher than `From`.
