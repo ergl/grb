@@ -38,7 +38,7 @@ start_connection(TargetReplica, Partition, Ip, Port) ->
 
 -spec send(t(), iodata()) -> ok | {error, term()}.
 send(#handle{socket=Socket}, Msg) ->
-    gen_tcp:send(Socket, grb_dc_utils:frame_dc_iolist(Msg)).
+    gen_tcp:send(Socket, grb_dc_messages:frame(Msg)).
 
 -spec send_framed(t(), iolist()) -> ok | {error, term()}.
 send_framed(#handle{socket=Socket}, Msg) ->

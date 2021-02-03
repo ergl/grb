@@ -828,19 +828,18 @@ replicate_internal(S=#state{self_log=LocalLog0,
 
     LocalTime = known_time_internal(LocalId, ClockTable),
     {ToSend, LocalLog} = grb_blue_commit_log:remove_bigger(LastSent, LocalLog0),
+
+    Msg = case ToSend of
+      [] ->
+          grb_dc_messages:frame(grb_dc_messages:blue_heartbeat(LocalTime));
+      Transactions ->
+          encode_transactions(Transactions)
+    end,
+
     lists:foreach(fun(Target) ->
-        case ToSend of
-            [] ->
-                HBRes = grb_dc_connection_manager:send_heartbeat(Target, Partition, LocalTime),
-                ?LOG_DEBUG("send basic heartbeat to ~p: ~p~n", [Target, HBRes]),
-                ok;
-            Transactions ->
-                lists:foreach(fun({WS, VC}) ->
-                    TxRes = grb_dc_connection_manager:send_tx(Target, Partition, WS, VC),
-                    ?LOG_DEBUG("send transaction to ~p: ~p~n", [Target, TxRes]),
-                    ok
-                end, Transactions)
-        end
+        SendRes = grb_dc_connection_manager:send_raw_framed(Target, Partition, Msg),
+        ?LOG_DEBUG("send heartbeat / transactions to ~p: ~p~n", [Target, SendRes]),
+        ok
     end, grb_dc_connection_manager:connected_replicas()),
 
     S#state{basic_last_sent=LocalTime, self_log=LocalLog}.
@@ -856,16 +855,21 @@ replicate_internal(S=#state{self_log=LocalLog,
                             global_known_matrix=Matrix0}) ->
 
     LocalTime = known_time_internal(LocalId, ClockTable),
+    HeartBeatMsgIO = grb_dc_messages:frame(grb_dc_messages:blue_heartbeat(LocalTime)),
+
     Matrix = lists:foldl(fun(Target, AccMatrix) ->
         ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
         ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
         case ToSend of
             [] ->
-                HBRes = grb_dc_connection_manager:send_heartbeat(Target, Partition, LocalTime),
+                HBRes = grb_dc_connection_manager:send_raw_framed(Target, Partition, HeartBeatMsgIO),
                 ?LOG_DEBUG("send basic heartbeat to ~p: ~p~n", [Target, HBRes]),
                 ok;
             Transactions ->
-                ok = send_transactions(Target, Partition, Transactions)
+                SendRes = grb_dc_connection_manager:send_raw_framed(Target, Partition,
+                                                                    encode_transactions(Transactions)),
+                ?LOG_DEBUG("send transactions ~p: ~p~n", [Target, SendRes]),
+                ok
         end,
         AccMatrix#{{Target, LocalId} => LocalTime}
     end, Matrix0, grb_dc_connection_manager:connected_replicas()),
@@ -884,25 +888,23 @@ replicate_internal(S=#state{self_log=LocalLog,
     LocalTime = grb_vclock:get_time(LocalId, KnownVC),
     StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
 
+    ClockMsgIO = grb_dc_messages:frame(grb_dc_messages:clocks(KnownVC, StableVC)),
+    ClockHeartbeatIO = grb_dc_messages:frame(grb_dc_messages:clocks_heartbeat(KnownVC, StableVC)),
+
     Matrix = lists:foldl(fun(Target, AccMatrix) ->
         ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
         ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
         case ToSend of
             [] ->
                 % piggy back clocks on top of the send_heartbeat message, avoid extra message on the wire
-                HBRes = grb_dc_connection_manager:send_clocks_heartbeat(Target, Partition, KnownVC, StableVC),
+                HBRes = grb_dc_connection_manager:send_raw_framed(Target, Partition, ClockHeartbeatIO),
                 ?LOG_DEBUG("send clocks/heartbeat to ~p: ~p~n", [Target, HBRes]),
                 ok;
             Transactions ->
-                %% TODO(borja, efficiency): Merge all messages using custom framing
-                %% To avoid iterating over Transactions again, add function that returns the array
-                %% as an iodata, then put the clocks in the first entry.
-
-                %% can't merge with other messages here, send one before
-                %% we could piggy-back on top of the first tx, but w/ever
-                ClockRes = grb_dc_connection_manager:send_clocks(Target, Partition, KnownVC, StableVC),
-                ?LOG_DEBUG("send clocks to ~p: ~p~n", [Target, ClockRes]),
-                ok = send_transactions(Target, Partition, Transactions)
+                SendRes = grb_dc_connection_manager:send_raw_framed(Target, Partition,
+                                                                    [ClockMsgIO, encode_transactions(Transactions)]),
+                ?LOG_DEBUG("send clocks / transactions ~p: ~p~n", [Target, SendRes]),
+                ok
         end,
         AccMatrix#{{Target, LocalId} => LocalTime}
     end, Matrix0, grb_dc_connection_manager:connected_replicas()),
@@ -910,25 +912,25 @@ replicate_internal(S=#state{self_log=LocalLog,
     S#state{global_known_matrix=Matrix}.
 
 -endif.
-
--spec send_transactions(Target :: replica_id(),
-                        Partition :: partition_id(),
-                        Transactions :: [tx_entry()]) -> ok.
-
-send_transactions(_, _, []) ->
-    ok;
-send_transactions(Target, Partition, [Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8 | Rest]) ->
-    ok = grb_dc_connection_manager:send_tx_array(Target, Partition, Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8),
-    send_transactions(Target, Partition, Rest);
-send_transactions(Target, Partition, [Tx1, Tx2, Tx3, Tx4 | Rest]) ->
-    ok = grb_dc_connection_manager:send_tx_array(Target, Partition, Tx1, Tx2, Tx3, Tx4),
-    send_transactions(Target, Partition, Rest);
-send_transactions(Target, Partition, Transactions) ->
-    lists:foreach(fun({WS, VC}) ->
-        ok = grb_dc_connection_manager:send_tx(Target, Partition, WS, VC)
-    end, Transactions).
-
 -endif.
+
+-spec encode_transactions([tx_entry()]) -> iodata().
+encode_transactions(Txs) ->
+    encode_transactions(Txs, []).
+
+-spec encode_transactions([tx_entry()], iodata()) -> iodata().
+encode_transactions([], Acc) ->
+    Acc;
+
+encode_transactions([Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8 | Rest], Acc) ->
+    %% We're building an iolist, so it's no problem to push it to the end like this
+    encode_transactions(Rest, [Acc, grb_dc_messages:frame(grb_dc_messages:transaction_array(Tx1, Tx2, Tx3, Tx4,
+                                                                                            Tx5, Tx6, Tx7, Tx8))]);
+encode_transactions([Tx1, Tx2, Tx3, Tx4 | Rest], Acc) ->
+    encode_transactions(Rest, [Acc, grb_dc_messages:frame(grb_dc_messages:transaction_array(Tx1, Tx2, Tx3, Tx4))]);
+
+encode_transactions([{WS, VC} | Rest], Acc) ->
+    encode_transactions(Rest, [Acc, grb_dc_messages:frame(grb_dc_messages:transaction(WS, VC))]).
 
 -spec uniform_replicate_internal(state()) -> global_known_matrix().
 uniform_replicate_internal(#state{remote_logs=Logs,

@@ -660,7 +660,7 @@ maybe_buffer_abort(Ballot, TxId, {abort, Reason}, CommitVC, State=#state{partiti
                                                                          abort_buffer_io=AbortBuffer,
                                                                          send_aborts_interval_ms=Ms}) ->
 
-    FramedAbortMsg = grb_dc_utils:frame_dc_iolist(grb_dc_messages:red_learn_abort(Ballot, TxId, Reason, CommitVC)),
+    FramedAbortMsg = grb_dc_messages:frame(grb_dc_messages:red_learn_abort(Ballot, TxId, Reason, CommitVC)),
     if
         Ms > 0 ->
             %% Abort delay is active.

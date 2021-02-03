@@ -14,6 +14,8 @@
 -ignore_xref([clocks/1, clocks_heartbeat/1]).
 -endif.
 
+-define(header(Packet, Size), (Size):(Packet)/unit:8-integer-big-unsigned).
+
 %% Msg API
 -export([ping/2,
          blue_heartbeat/1,
@@ -38,6 +40,13 @@
          red_deliver/3]).
 
 -export([decode_payload/1]).
+
+-export([frame/1]).
+
+-spec frame(iodata()) -> iodata().
+frame(Data) ->
+    Size = erlang:iolist_size(Data),
+    [<<?header(?INTER_DC_SOCK_PACKET_OPT, Size)>>, Data].
 
 -spec ping(replica_id(), partition_id()) -> binary().
 ping(ReplicaId, Partition) ->

@@ -23,8 +23,7 @@
          ready_ring_members/0]).
 
 %% Util API
--export([convert_key/1,
-         frame_dc_iolist/1]).
+-export([convert_key/1]).
 
 %% Called via `erpc` or for debug purposes
 -ignore_xref([is_ring_owner/0,
@@ -123,15 +122,6 @@ maybe_send_after(0, _) ->
     undefined;
 maybe_send_after(Time, Msg) ->
     erlang:send_after(Time, self(), Msg).
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Framing Utils
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
--spec frame_dc_iolist(iodata()) -> iodata().
-frame_dc_iolist(Data) ->
-    Size = erlang:iolist_size(Data),
-    [<<?header(?INTER_DC_SOCK_PACKET_OPT, Size)>>, Data].
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal
