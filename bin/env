@@ -46,7 +46,7 @@ if [ -z "$REPLICATION_INTERVAL_MS" ]; then
 fi
 
 if [ -z "$PREPARED_BLUE_STALE_MS" ]; then
-  export PREPARED_BLUE_STALE_MS=100
+  export PREPARED_BLUE_STALE_MS=0
 fi
 
 if [ -z "$UNIFORM_REPLICATION_INTERVAL_MS" ]; then
