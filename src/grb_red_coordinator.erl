@@ -104,20 +104,8 @@ handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
-handle_cast({commit_init, Promise, Partition, TxId, Label, SnapshotVC, Prepares}, S0=#state{self_pid=Pid, replica=LocalId}) ->
-    Timestamp = grb_vclock:get_time(LocalId, SnapshotVC),
-    UniformTimestamp = grb_vclock:get_time(LocalId, grb_propagation_vnode:uniform_vc(Partition)),
-    S = case Timestamp =< UniformTimestamp of
-        true ->
-            ?LOG_DEBUG("no need to register barrier for ~w", [TxId]),
-            init_tx_and_send(Promise, TxId, Label, SnapshotVC, Prepares, S0);
-        false ->
-            ?LOG_DEBUG("registering barrier for ~w", [TxId]),
-            ok = grb_measurements:log_counter({?MODULE, pre_commit_barrier}),
-            grb_propagation_vnode:register_red_uniform_barrier(Partition, Timestamp, Pid, TxId),
-            init_tx(Promise, TxId, Label, SnapshotVC, Prepares, S0)
-    end,
-    {noreply, S};
+handle_cast({commit_init, Promise, _Partition, TxId, Label, SnapshotVC, Prepares}, S0) ->
+    {noreply, init_tx_and_send(Promise, TxId, Label, SnapshotVC, Prepares, S0)};
 
 handle_cast({commit_send, TxId}, S) ->
     {noreply, send_tx_prepares(TxId, S)};
@@ -157,12 +145,6 @@ handle_info(Info, State) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% internal
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-init_tx(Promise, TxId, Label, SnapshotVC, Prepares, S=#state{accumulators=Acc}) ->
-    S#state{accumulators=Acc#{TxId => #tx_acc{promise=Promise,
-                                              pending_label=Label,
-                                              pending_prepares=Prepares,
-                                              pending_snapshot_vc=SnapshotVC}}}.
 
 init_tx_and_send(Promise, TxId, Label, SnapshotVC, Prepares, S=#state{self_location=SelfCoord,
                                                                       quorum_size=QuorumSize,
