@@ -820,7 +820,7 @@ remove_stalled_transactions(Partition, PreparedBlue, PreparedBlueIdx, After) ->
 
 remove_stalled_transactions(Key={Ts, TxId}, PreparedBlue, PreparedBlueIdx, Now, After, AtPartition)
     when (Ts < Now) andalso ((Now - Ts) > After * 1000) ->
-        ok = grb_measurements:log_counter_always({?MODULE, AtPartition, ?FUNCTION_NAME}),
+        ok = grb_measurements:log_counter({?MODULE, AtPartition, ?FUNCTION_NAME}),
         %% Transaction is old, and more than Interval ms have passed since this
         %% transaction was prepared. We can remove this transaction, since it will
         %% probably never be decided (client bailed out)

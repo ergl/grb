@@ -49,8 +49,14 @@
 -define(prune_event, prune_event).
 -define(send_aborts_event, send_aborts_event).
 
--define(leader_queue_length_stat, {?MODULE, leader_message_queue}).
--define(follower_queue_length_stat, {?MODULE, follower_message_queue}).
+-define(INIT_LEADER_METRICS,
+    ok = grb_measurements:create_stat({?MODULE, leader_message_queue})).
+-define(INIT_FOLLOWER_METRICS,
+    ok = grb_measurements:create_stat({?MODULE, follower_message_queue})).
+-define(LOG_LEADER_QUEUE,
+    ok = grb_measurements:log_queue_length({?MODULE, leader_message_queue})).
+-define(LOG_FOLLOWER_QUEUE,
+    ok = grb_measurements:log_queue_length({?MODULE, follower_message_queue})).
 
 -define(leader, leader).
 -define(follower, follower).
@@ -275,7 +281,7 @@ handle_command(fetch_lastvc_table, _Sender, S0=#state{partition=Partition}) ->
 handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_role=undefined, synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
     {ok, Pid} = grb_red_heartbeat:new(ReplicaId, Partition),
-    ok = grb_measurements:create_stat(?leader_queue_length_stat),
+    ?INIT_LEADER_METRICS,
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
                                      heartbeat_process=Pid,
                                      synod_role=?leader,
@@ -283,7 +289,7 @@ handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_role=un
 
 handle_command(init_follower, _Sender, S=#state{synod_role=undefined, synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
-    ok = grb_measurements:create_stat(?follower_queue_length_stat),
+    ?INIT_FOLLOWER_METRICS,
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
                                      synod_role=?follower,
                                      synod_state=grb_paxos_state:new()})};
@@ -330,7 +336,7 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
     %% This means clients are submitting transactions, so we don't need the overhead.
     ok = cancel_schedule_heartbeat_timer(S#state.heartbeat_schedule_timer),
 
-    ok = grb_measurements:log_queue_length(?leader_queue_length_stat),
+    ?LOG_LEADER_QUEUE,
 
     %% For blue transactions, any pending operations are removed during blue commit, since
     %% it is performed at the replica / partitions where the client originally performed the
@@ -389,7 +395,7 @@ handle_command({accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
                                        synod_state=FollowerState0,
                                        decision_buffer=DecisionBuffer0}) ->
 
-    ok = grb_measurements:log_queue_length(?follower_queue_length_stat),
+    ?LOG_FOLLOWER_QUEUE,
 
     ?LOG_DEBUG("~p: ACCEPT(~b, ~p, ~p), reply to coordinator ~p", [Partition, Ballot, TxId, Vote, Coordinator]),
     {ok, FollowerState} = grb_paxos_state:accept(Ballot, TxId, Label, RS, WS, Vote, PrepareVC, FollowerState0),
