@@ -78,16 +78,12 @@ log_stat(Key, Amount) ->
     ok.
 
 -spec max_matchspec(term(), non_neg_integer()) -> [term()].
-max_matchspec(Key, Amount) when is_tuple(Key) ->
-    [{ #stat_entry{key={Key}, max=Amount, ops={'+', '$2', 1}, data={'+', '$3', Amount}} }];
 max_matchspec(Key, Amount) ->
-    [{ #stat_entry{key=Key, max=Amount, ops={'+', '$2', 1}, data={'+', '$3', Amount}} }].
+    [{ #stat_entry{key={const, Key}, max=Amount, ops={'+', '$2', 1}, data={'+', '$3', Amount}} }].
 
 -spec add_matchspec(term(), non_neg_integer()) -> [term()].
-add_matchspec(Key, Amount) when is_tuple(Key) ->
-    [{ #stat_entry{key={Key}, max='$1', ops={'+', '$2', 1}, data={'+', '$3', Amount}}}];
 add_matchspec(Key, Amount) ->
-    [{ #stat_entry{key=Key, max='$1', ops={'+', '$2', 1}, data={'+', '$3', Amount}}}].
+    [{ #stat_entry{key={const, Key}, max='$1', ops={'+', '$2', 1}, data={'+', '$3', Amount}}}].
 
 -else.
 log_stat(_, _) ->
