@@ -667,7 +667,8 @@ maybe_buffer_abort(Ballot, TxId, {abort, Reason}, CommitVC, State=#state{partiti
             State#state{abort_buffer_io=[AbortBuffer, FramedAbortMsg]};
         true ->
             %% Abort delay is disabled, send immediately.
-            send_abort_buffer(Partition, FramedAbortMsg)
+            ok = send_abort_buffer(Partition, FramedAbortMsg),
+            State
     end.
 
 -spec send_abort_buffer(partition_id(), iodata()) -> ok.
