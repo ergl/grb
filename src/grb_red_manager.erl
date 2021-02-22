@@ -65,25 +65,10 @@ persist_follower_info(LeaderReplica) ->
 
 -spec calc_quorum_size() -> non_neg_integer().
 calc_quorum_size() ->
-    case os:getenv("GRB_QUORUM_OVERRIDE") of
-        false ->
-            real_quorum_size();
-
-        ValueStr ->
-            case list_to_integer(ValueStr) of
-                -1 ->
-                    %% disable on -1
-                    real_quorum_size();
-                Other ->
-                    %% peg between 1 and the size of all replicas, avoid bad usage
-                    max(1, min(Other, length(grb_dc_manager:all_replicas())))
-            end
-    end.
-
--spec real_quorum_size() -> non_neg_integer().
-real_quorum_size() ->
-    AllLen = length(grb_dc_manager:all_replicas()),
-    floor(AllLen / 2) + 1.
+    {ok, FaultToleranceFactor} = application:get_env(grb, fault_tolerance_factor),
+    Factor = (FaultToleranceFactor + 1),
+    %% peg between 1 and the size of all replicas to avoid bad usage
+    max(1, min(Factor, length(grb_dc_manager:all_replicas()))).
 
 -spec quorum_size() -> non_neg_integer().
 quorum_size() ->

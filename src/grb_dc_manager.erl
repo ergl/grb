@@ -350,8 +350,8 @@ start_propagation_processes() ->
     RemoteReplicas = grb_dc_connection_manager:connected_replicas(),
 
     %% How many replica failures can we tolerate?
-    {ok, VisibilityFactor} = application:get_env(grb, uniform_visibility_factor),
-    {ok, MyGroups} = compute_groups(MyReplicaId, RemoteReplicas, VisibilityFactor),
+    {ok, FaultToleranceFactor} = application:get_env(grb, fault_tolerance_factor),
+    {ok, MyGroups} = compute_groups(MyReplicaId, RemoteReplicas, FaultToleranceFactor),
     ?LOG_DEBUG("Fault tolerant groups: ~p~n", [MyGroups]),
 
     Res1 = grb_dc_utils:bcast_vnode_sync(grb_propagation_vnode_master, {learn_dc_groups, MyGroups}),

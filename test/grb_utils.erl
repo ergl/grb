@@ -134,7 +134,7 @@ start_node(Name, Config) ->
             ok = erpc:call(Node, application, set_env, [grb, basic_replication_interval, 1]),
             ok = erpc:call(Node, application, set_env, [grb, prepared_blue_stale_check_ms, 0]),
             ok = erpc:call(Node, application, set_env, [grb, uniform_replication_interval, 5000]),
-            ok = erpc:call(Node, application, set_env, [grb, uniform_visibility_factor, 1]),
+            ok = erpc:call(Node, application, set_env, [grb, fault_tolerance_factor, 1]),
             ok = erpc:call(Node, application, set_env, [grb, remote_clock_broadcast_interval, 10000]),
             ok = erpc:call(Node, application, set_env, [grb, local_broadcast_interval, 1]),
             ok = erpc:call(Node, application, set_env, [grb, partition_ready_wait_ms, 1]),

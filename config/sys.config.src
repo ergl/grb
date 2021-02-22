@@ -86,10 +86,10 @@
     %% Only applicable on the uniform profile.
     {remote_clock_broadcast_interval, ${UNIFORM_CLOCK_INTERVAL_MS}},
 
-    %% The `f` to take into account when computing the group size for uniformVC.
-    %% When `uniform_visibility_factor + 1` replicas have seen an update, we can
-    %% advance that entry.
-    {uniform_visibility_factor, ${UNIFORM_VISIBILITY_FACTOR}},
+    %% How many replicas can fail and still be considered fault-tolerant.
+    %% Quorum sizes must be of f+1 replicas. This also applies to the uniformVC
+    %% computation.
+    {fault_tolerance_factor, ${FAULT_TOLERANCE_FACTOR}},
 
     %% How often should we propagate our knownVC to local partitions?
     %%
