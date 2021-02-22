@@ -20,7 +20,37 @@
          handle_cast/2,
          handle_info/2]).
 
+-ifndef(ENABLE_METRICS).
+-define(ADD_PREPARE_TS(__S), __S).
+-define(ADD_FIRST_ACK_TS(__Now, __S), begin _ = __Now, __S end).
+-define(REPORT_TS(__Now, __S), begin _ = __Now, _ = __S end).
+-else.
+-define(ADD_PREPARE_TS(__S), __S#tx_acc{prepare_ts=grb_time:timestamp()}).
+-define(ADD_FIRST_ACK_TS(__Now, __S),
+    case __S of #tx_acc{ack_ts=0} -> __S#tx_acc{ack_ts=__Now}; _ -> __S end).
+-define(REPORT_TS(__Now, __S),
+    begin
+        #tx_acc{prepare_ts=__PTS, ack_ts=__ATS} = __S,
+        ok = grb_measurements:log_stat({?MODULE, prepare_to_first_ack_time}, grb_time:diff_native(__ATS, __PTS)),
+        ok = grb_measurements:log_stat({?MODULE, prepare_to_decision_time}, grb_time:diff_native(__Now, __PTS))
+    end).
+-endif.
+
 -type partition_ballots() :: #{partition_id() => ballot()}.
+-ifdef(ENABLE_METRICS).
+-record(tx_acc, {
+    promise :: grb_promise:t(),
+    locations = [] :: [{partition_id(), leader_location()}],
+    quorums_to_ack = #{} :: #{partition_id() => pos_integer()},
+    ballots = #{} :: partition_ballots(),
+    accumulator = #{} :: #{partition_id() => {red_vote(), vclock()}},
+    pending_label = undefined :: tx_label() | undefined,
+    pending_snapshot_vc = undefined :: vclock() | undefined,
+    pending_prepares = undefined :: [{partition_id(), readset(), writeset()}] | undefined,
+    prepare_ts = 0 :: grb_time:ts(),
+    ack_ts = 0 :: grb_time:ts()
+}).
+-else.
 -record(tx_acc, {
     promise :: grb_promise:t(),
     locations = [] :: [{partition_id(), leader_location()}],
@@ -33,6 +63,7 @@
     pending_snapshot_vc = undefined :: vclock() | undefined,
     pending_prepares = undefined :: [{partition_id(), readset(), writeset()}] | undefined
 }).
+-endif.
 
 -record(state, {
     self_pid :: pid(),
@@ -169,9 +200,9 @@ init_tx_and_send(Promise, TxId, Label, SnapshotVC, Prepares, S=#state{self_locat
                                                                       accumulators=Acc}) ->
 
     {LeaderLocations, QuorumsToAck} = send_loop(SelfCoord, TxId, Label, SnapshotVC, QuorumSize, Prepares),
-    S#state{accumulators=Acc#{TxId => #tx_acc{promise=Promise,
-                                              locations=LeaderLocations,
-                                              quorums_to_ack=QuorumsToAck}}}.
+    S#state{accumulators=Acc#{TxId => ?ADD_PREPARE_TS(#tx_acc{promise=Promise,
+                                                              locations=LeaderLocations,
+                                                              quorums_to_ack=QuorumsToAck})}}.
 
 send_tx_prepares(TxId, S=#state{self_location=SelfCoord,
                                 quorum_size=QuorumSize,
@@ -182,11 +213,11 @@ send_tx_prepares(TxId, S=#state{self_location=SelfCoord,
                      pending_snapshot_vc=SnapshotVC} = maps:get(TxId, Acc),
 
     {LeaderLocations, QuorumsToAck} = send_loop(SelfCoord, TxId, Label, SnapshotVC, QuorumSize, Prepares),
-    S#state{accumulators=Acc#{TxId => TxData#tx_acc{pending_label=undefined,
-                                                    pending_prepares=undefined,
-                                                    pending_snapshot_vc=undefined,
-                                                    locations=LeaderLocations,
-                                                    quorums_to_ack=QuorumsToAck}}}.
+    S#state{accumulators=Acc#{TxId => ?ADD_PREPARE_TS(TxData#tx_acc{pending_label=undefined,
+                                                                    pending_prepares=undefined,
+                                                                    pending_snapshot_vc=undefined,
+                                                                    locations=LeaderLocations,
+                                                                    quorums_to_ack=QuorumsToAck})}}.
 
 -spec send_loop(Coordinator :: red_coord_location(),
                 TxId :: term(),
@@ -252,6 +283,7 @@ send_prepare(Coordinator, Partition, TxId, Label, RS, WS, VC) ->
                  TxState :: #tx_acc{}) -> TxAcc :: #{term() => #tx_acc{}}.
 
 handle_ack(SelfPid, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0, TxState) ->
+    Now = grb_time:timestamp(),
     #tx_acc{ballots=Ballots0, quorums_to_ack=Quorums0, accumulator=Acc0} = TxState,
 
     {ok, Ballots} = check_ballot(FromPartition, Ballot, Ballots0),
@@ -265,8 +297,9 @@ handle_ack(SelfPid, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0, TxState
     end,
     case map_size(Quorums) of
         N when N > 0 ->
-            TxAcc0#{TxId => TxState#tx_acc{quorums_to_ack=Quorums, accumulator=Acc, ballots=Ballots}};
+            TxAcc0#{TxId => ?ADD_FIRST_ACK_TS(Now, TxState#tx_acc{quorums_to_ack=Quorums, accumulator=Acc, ballots=Ballots})};
         0 ->
+            ?REPORT_TS(Now, TxState),
             Outcome={Decision, CommitVC} = decide_transaction(Acc),
             reply_to_client(Outcome, TxState#tx_acc.promise),
 

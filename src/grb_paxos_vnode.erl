@@ -58,6 +58,99 @@
 -define(follower, follower).
 -type role() :: ?leader | ?follower.
 
+-ifdef(ENABLE_METRICS).
+-define(ADD_FIRST_TX_TS(__Id, __S),
+    begin true = ets:insert(__S#state.timing_table, {{__Id, first}, grb_time:timestamp()}), __S end).
+
+-define(ADD_COMMIT_TS(__Id, __S),
+    begin true = ets:insert(__S#state.timing_table, {{__Id, commit}, grb_time:timestamp()}), __S end).
+
+-define(REPORT_LEADER_TS(__Id, __Partition),
+    begin
+        __Table = persistent_term:get({?MODULE, __Partition, timing_data}),
+        __PrepTime = ets:lookup_element(__Table, {__Id, first}, 2),
+        __DecTime = ets:lookup_element(__Table, {__Id, commit}, 2),
+
+        ok = grb_measurements:log_stat({?MODULE, leader, prepare_to_decision_time},
+                                        grb_time:diff_native(__DecTime, __PrepTime)),
+
+        ok = grb_measurements:log_stat({?MODULE, leader, prepare_to_delivery_time},
+                                        grb_time:diff_native(grb_time:timestamp(), __PrepTime)),
+
+        _ = ets:select_delete(persistent_term:get({?MODULE, __Partition, timing_data}),
+                              [{ {{__Id, '_'}, '_'}, [], [true]} ]),
+
+        ok
+    end).
+
+-define(REPORT_FOLLOWER_TS(__Id, __Now, __Partition),
+    begin
+        __Table = persistent_term:get({?MODULE, __Partition, timing_data}),
+        __PrepTime = ets:lookup_element(__Table, {__Id, first}, 2),
+
+        ok = grb_measurements:log_stat({?MODULE, follower, ack_to_delivery_time},
+                                        grb_time:diff_native(__Now, __PrepTime)),
+
+        _ = ets:select_delete(persistent_term:get({?MODULE, __Partition, timing_data}),
+                              [{ {{__Id, '_'}, '_'}, [], [true]} ]),
+
+        ok
+    end).
+
+-define(REPORT_ABORT_TS(__Id, __S),
+    begin
+        __Now = grb_time:timestamp(),
+        __PrepTime = ets:lookup_element(__S#state.timing_table, {__Id, first}, 2),
+        __Report = case __S#state.synod_role of
+            leader -> {?MODULE, leader, prepare_to_decision_time};
+            follower -> {?MODULE, follower, ack_to_abort_time}
+        end,
+
+        ok = grb_measurements:log_stat(__Report, grb_time:diff_native(__Now, __PrepTime)),
+        _ = ets:select_delete(__S#state.timing_table,
+                              [{ {{__Id, '_'}, '_'}, [], [true]} ]),
+
+        __S
+    end).
+
+-define(INIT_TIMING_TABLE(__S),
+    begin
+        __Tref = ets:new(timing_data, [ordered_set]),
+        ok = persistent_term:put({?MODULE, __S#state.partition, timing_data}, __Tref),
+        __S#state{timing_table=__Tref}
+    end).
+-else.
+-define(ADD_FIRST_TX_TS(__Id, __S), begin _ = __Id, __S end).
+-define(ADD_COMMIT_TS(__Id, __S), begin _ = __Id, __S end).
+-define(REPORT_LEADER_TS(__Id, __S), begin _ = __Id, _ = __S, ok end).
+-define(REPORT_FOLLOWER_TS(__Id, __Now, __S), begin _ = __Id, _ = __Now, _ = __S,ok end).
+-define(REPORT_ABORT_TS(__Id, __S), begin _ = __Id, __S end).
+-define(INIT_TIMING_TABLE(__S), __S).
+-endif.
+
+-ifdef(ENABLE_METRICS).
+-record(state, {
+    partition :: partition_id(),
+    replica_id = undefined :: replica_id() | undefined,
+    heartbeat_process = undefined :: pid() | undefined,
+    heartbeat_schedule_ms :: non_neg_integer(),
+    heartbeat_schedule_timer = undefined :: reference() | undefined,
+    last_delivered = 0 :: grb_time:ts(),
+    deliver_timer = undefined :: reference() | undefined,
+    deliver_interval :: non_neg_integer(),
+    prune_timer = undefined :: reference() | undefined,
+    prune_interval :: non_neg_integer(),
+    send_aborts_timer = undefined :: reference() | undefined,
+    send_aborts_interval_ms :: non_neg_integer(),
+    op_log_last_vc_replica :: grb_oplog_vnode:last_vc() | undefined,
+    synod_role = undefined :: role() | undefined,
+    synod_state = undefined :: grb_paxos_state:t() | undefined,
+    conflict_relations :: conflict_relations(),
+    decision_buffer = #{} :: #{{term(), ballot()} => {red_vote(), vclock()} | grb_time:ts()},
+    abort_buffer_io = [] :: iodata(),
+    timing_table :: cache_id()
+}).
+-else.
 -record(state, {
     partition :: partition_id(),
     replica_id = undefined :: replica_id() | undefined,
@@ -113,6 +206,7 @@
     %% fixme(borja): this requires that we have the entire writeset, otherwise we won't be able to retry
     abort_buffer_io = [] :: iodata()
 }).
+-endif.
 
 -spec all_fetch_lastvc_table() -> ok.
 -ifdef(BLUE_KNOWN_VC).
@@ -247,7 +341,8 @@ init([Partition]) ->
                    op_log_last_vc_replica=undefined,
                    synod_state=undefined,
                    conflict_relations=Conflicts},
-    {ok, State}.
+
+    {ok, ?INIT_TIMING_TABLE(State)}.
 
 terminate(_Reason, #state{synod_state=undefined}) ->
     ok;
@@ -352,8 +447,8 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
                                                           Ballot, Vote, TxId, Label, RS, WS, PrepareVC)
             end, grb_dc_connection_manager:connected_replicas())
     end,
-    {noreply, S#state{synod_state=LeaderState,
-                      heartbeat_schedule_timer=undefined}};
+    {noreply, ?ADD_FIRST_TX_TS(TxId, S#state{synod_state=LeaderState,
+                                             heartbeat_schedule_timer=undefined})};
 
 handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S0=#state{synod_role=?leader,
                                                                partition=Partition}) ->
@@ -406,7 +501,7 @@ handle_command({accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
             {ok, S2} = decide_internal(Ballot, TxId, Decision, CommitVC, S1#state{decision_buffer=DecisionBuffer}),
             S2
     end,
-    {noreply, S};
+    {noreply, ?ADD_FIRST_TX_TS(TxId, S)};
 
 handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{partition=Partition,
                                                                               synod_state=FollowerState0,
@@ -432,11 +527,12 @@ handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{pa
 handle_command({learn_abort, Ballot, TxId, Reason, CommitVC}, _Sender, S0=#state{partition=Partition}) ->
     ?LOG_DEBUG("~p LEARN_ABORT(~b, ~p, ~p)", [Partition, Ballot, TxId]),
     {ok, S} = decide_internal(Ballot, TxId, {abort, Reason}, CommitVC, S0),
-    {noreply, S};
+    {noreply, ?REPORT_ABORT_TS(TxId, S)};
 
 handle_command({deliver_transactions, Ballot, Timestamp, Transactions}, _Sender, S0=#state{synod_role=?follower,
                                                                                            partition=Partition,
                                                                                            last_delivered=LastDelivered}) ->
+    Now = grb_time:timestamp(),
     ValidBallot = grb_paxos_state:deliver_is_valid_ballot(Ballot, S0#state.synod_state),
     S = if
         Timestamp > LastDelivered andalso ValidBallot ->
@@ -453,6 +549,8 @@ handle_command({deliver_transactions, Ballot, Timestamp, Transactions}, _Sender,
                         SAcc;
 
                     ({TxId, Label, WS, CommitVC}, Acc) ->
+                        ?REPORT_FOLLOWER_TS(TxId, Now, Partition),
+
                         %% We only receive committed transactions. Aborted transactions were received during decision.
                         ?LOG_DEBUG("~p DECIDE(~b, ~p, ~p)", [Partition, Ballot, TxId, ok]),
                         {ok, SAcc} = decide_internal(Ballot, TxId, ok, CommitVC, Acc),
@@ -653,15 +751,15 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
     end.
 
 -spec maybe_buffer_abort(ballot(), term(), red_vote(), vclock(), #state{}) -> #state{}.
-maybe_buffer_abort(_Ballot, _TxId, ok, _CommitVC, State) ->
+maybe_buffer_abort(_Ballot, TxId, ok, _CommitVC, State) ->
     %% If this is a commit, we can wait until delivery
-    State;
+    ?ADD_COMMIT_TS(TxId, State);
 maybe_buffer_abort(Ballot, TxId, {abort, Reason}, CommitVC, State=#state{partition=Partition,
                                                                          abort_buffer_io=AbortBuffer,
                                                                          send_aborts_interval_ms=Ms}) ->
 
     FramedAbortMsg = grb_dc_messages:frame(grb_dc_messages:red_learn_abort(Ballot, TxId, Reason, CommitVC)),
-    if
+    ?REPORT_ABORT_TS(TxId, if
         Ms > 0 ->
             %% Abort delay is active.
             State#state{abort_buffer_io=[AbortBuffer, FramedAbortMsg]};
@@ -669,7 +767,7 @@ maybe_buffer_abort(Ballot, TxId, {abort, Reason}, CommitVC, State=#state{partiti
             %% Abort delay is disabled, send immediately.
             ok = send_abort_buffer(Partition, FramedAbortMsg),
             State
-    end.
+    end).
 
 -spec send_abort_buffer(partition_id(), iodata()) -> ok.
 send_abort_buffer(_Partition, []) ->
@@ -706,9 +804,10 @@ deliver_updates(Partition, Ballot, From, SynodState, DeliveredTx0) ->
 
             DeliveredTx = lists:foldl(
                 fun
-                    ({_TxId, Label, WriteSet, CommitVC}, _)
-                        when is_map(WriteSet) andalso map_size(WriteSet) =/= 0->
+                    ({TxId, Label, WriteSet, CommitVC}, _)
+                        when is_map(WriteSet) andalso map_size(WriteSet) =/= 0 ->
                             ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, NextFrom, Label, WriteSet]),
+                            ?REPORT_LEADER_TS(TxId, Partition),
                             ok = grb_oplog_vnode:handle_red_transaction(Partition, Label, WriteSet, CommitVC),
                             true;
 

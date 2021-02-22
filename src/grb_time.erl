@@ -3,7 +3,7 @@
 %% API
 -type ts() :: non_neg_integer().
 -export_type([ts/0]).
--export([timestamp/0, diff_ms/2]).
+-export([timestamp/0, diff_ms/2, diff_native/2]).
 
 %% todo(borja, warn): Change type of timestamp if we enable time warp mode
 %%
@@ -23,3 +23,8 @@ timestamp() ->
 -spec diff_ms(ts(), ts()) -> non_neg_integer().
 diff_ms(T1, T2) ->
     erlang:ceil(abs(T1 - T2) / 1000) + 1.
+
+%% @doc Difference between two timestamps, in the native time units of ts/0.
+-spec diff_native(ts(), ts()) -> integer().
+diff_native(T2, T1) ->
+    T2 - T1.

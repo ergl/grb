@@ -6,8 +6,17 @@
 -define(COUNTER_TABLE, counter_table).
 
 -define(DEFAULT_STAT_SPECS, [
+    {grb_red_coordinator, prepare_to_first_ack_time},
+    {grb_red_coordinator, prepare_to_decision_time},
+
     {grb_paxos_vnode, leader_message_queue},
-    {grb_paxos_vnode, follower_message_queue}
+    {grb_paxos_vnode, follower_message_queue},
+
+    {grb_paxos_vnode, leader, prepare_to_decision_time},
+    {grb_paxos_vnode, leader, prepare_to_delivery_time},
+
+    {grb_paxos_vnode, follower, ack_to_delivery_time},
+    {grb_paxos_vnode, follower, ack_to_abort_time}
 ]).
 
 -record(stat_entry, {
