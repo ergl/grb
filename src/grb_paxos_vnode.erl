@@ -49,10 +49,6 @@
 -define(prune_event, prune_event).
 -define(send_aborts_event, send_aborts_event).
 
--define(INIT_LEADER_METRICS,
-    ok = grb_measurements:create_stat({?MODULE, leader_message_queue})).
--define(INIT_FOLLOWER_METRICS,
-    ok = grb_measurements:create_stat({?MODULE, follower_message_queue})).
 -define(LOG_LEADER_QUEUE,
     ok = grb_measurements:log_queue_length({?MODULE, leader_message_queue})).
 -define(LOG_FOLLOWER_QUEUE,
@@ -281,7 +277,6 @@ handle_command(fetch_lastvc_table, _Sender, S0=#state{partition=Partition}) ->
 handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_role=undefined, synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
     {ok, Pid} = grb_red_heartbeat:new(ReplicaId, Partition),
-    ?INIT_LEADER_METRICS,
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
                                      heartbeat_process=Pid,
                                      synod_role=?leader,
@@ -289,7 +284,6 @@ handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_role=un
 
 handle_command(init_follower, _Sender, S=#state{synod_role=undefined, synod_state=undefined}) ->
     ReplicaId = grb_dc_manager:replica_id(),
-    ?INIT_FOLLOWER_METRICS,
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
                                      synod_role=?follower,
                                      synod_state=grb_paxos_state:new()})};

@@ -5,6 +5,11 @@
 -define(AGGREGATE_TABLE, aggregate_table).
 -define(COUNTER_TABLE, counter_table).
 
+-define(DEFAULT_STAT_SPECS, [
+    {grb_paxos_vnode, leader_message_queue},
+    {grb_paxos_vnode, follower_message_queue}
+]).
+
 -record(stat_entry, {
     key :: term(),
     max = 0 :: non_neg_integer(),
@@ -120,6 +125,7 @@ init([]) ->
     Count = ets:new(?COUNTER_TABLE, [set, public, {write_concurrency, true}, {keypos, #counter_entry.key}]),
     ok = persistent_term:put({?MODULE, ?AGGREGATE_TABLE}, Aggr),
     ok = persistent_term:put({?MODULE, ?COUNTER_TABLE}, Count),
+    ok = lists:foreach(fun create_stat/1, ?DEFAULT_STAT_SPECS),
     {ok, #state{aggregate_table=Aggr, counter_table=Count}}.
 
 handle_call(E, _From, S) ->
