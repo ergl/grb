@@ -52,28 +52,56 @@
 -define(QUEUE_KEY(__P), {?MODULE, __P, message_queue_len}).
 -define(LOG_QUEUE_LEN(__P), grb_measurements:log_queue_length(?QUEUE_KEY(__P))).
 
+-define(TO_COMMIT_TS_KEY(__P), {?MODULE, __P, seen_to_commit_time}).
+-define(TO_DELIVERY_TS_KEY(__P), {?MODULE, __P, seen_to_delivery_time}).
+-define(TO_ABORT_TS_KEY(__P), {?MODULE, __P, seen_to_abort_time}).
+
 -define(leader, leader).
 -define(follower, follower).
 -type role() :: ?leader | ?follower.
 
 -ifdef(ENABLE_METRICS).
--define(ADD_FIRST_TX_TS(__Id, __S),
-    begin true = ets:insert(__S#state.timing_table, {{__Id, first}, grb_time:timestamp()}), __S end).
+-define(INIT_TIMING_TABLE(__S),
+    begin
+        __Tref = ets:new(timing_data, [ordered_set]),
+        ok = persistent_term:put({?MODULE, __S#state.partition, timing_data}, __Tref),
+        __S#state{timing_table=__Tref}
+    end).
+
+-define(MARK_SEEN_TX_TS(__Id, __Now, __S),
+    begin
+        ets:insert(__S#state.timing_table, {{__Id, first_seen}, __Now}),
+        __S
+    end).
 
 -define(ADD_COMMIT_TS(__Id, __S),
     begin true = ets:insert(__S#state.timing_table, {{__Id, commit}, grb_time:timestamp()}), __S end).
 
--define(REPORT_LEADER_TS(__Id, __Partition),
+-define(REPORT_ABORT_TS(__Id, __S),
+    begin
+        __Now = grb_time:timestamp(),
+        __PrepTime = ets:lookup_element(__S#state.timing_table, {__Id, first_seen}, 2),
+
+        ok = grb_measurements:log_stat(?TO_ABORT_TS_KEY(__S#state.partition),
+                                       grb_time:diff_native(__Now, __PrepTime)),
+
+        _ = ets:select_delete(__S#state.timing_table,
+                              [{ {{__Id, '_'}, '_'}, [], [true]} ]),
+
+        __S
+    end).
+
+-define(REPORT_LEADER_TS(__Id, __Now, __Partition),
     begin
         __Table = persistent_term:get({?MODULE, __Partition, timing_data}),
-        __PrepTime = ets:lookup_element(__Table, {__Id, first}, 2),
+        __PrepTime = ets:lookup_element(__Table, {__Id, first_seen}, 2),
         __DecTime = ets:lookup_element(__Table, {__Id, commit}, 2),
 
-        ok = grb_measurements:log_stat({?MODULE, leader, prepare_to_decision_time},
+        ok = grb_measurements:log_stat(?TO_COMMIT_TS_KEY(__Partition),
                                         grb_time:diff_native(__DecTime, __PrepTime)),
 
-        ok = grb_measurements:log_stat({?MODULE, leader, prepare_to_delivery_time},
-                                        grb_time:diff_native(grb_time:timestamp(), __PrepTime)),
+        ok = grb_measurements:log_stat(?TO_DELIVERY_TS_KEY(__Partition),
+                                        grb_time:diff_native(__Now, __PrepTime)),
 
         _ = ets:select_delete(persistent_term:get({?MODULE, __Partition, timing_data}),
                               [{ {{__Id, '_'}, '_'}, [], [true]} ]),
@@ -84,9 +112,9 @@
 -define(REPORT_FOLLOWER_TS(__Id, __Now, __Partition),
     begin
         __Table = persistent_term:get({?MODULE, __Partition, timing_data}),
-        __PrepTime = ets:lookup_element(__Table, {__Id, first}, 2),
+        __PrepTime = ets:lookup_element(__Table, {__Id, first_seen}, 2),
 
-        ok = grb_measurements:log_stat({?MODULE, follower, ack_to_delivery_time},
+        ok = grb_measurements:log_stat(?TO_DELIVERY_TS_KEY(__Partition),
                                         grb_time:diff_native(__Now, __PrepTime)),
 
         _ = ets:select_delete(persistent_term:get({?MODULE, __Partition, timing_data}),
@@ -94,36 +122,16 @@
 
         ok
     end).
-
--define(REPORT_ABORT_TS(__Id, __S),
-    begin
-        __Now = grb_time:timestamp(),
-        __PrepTime = ets:lookup_element(__S#state.timing_table, {__Id, first}, 2),
-        __Report = case __S#state.synod_role of
-            leader -> {?MODULE, leader, prepare_to_decision_time};
-            follower -> {?MODULE, follower, ack_to_abort_time}
-        end,
-
-        ok = grb_measurements:log_stat(__Report, grb_time:diff_native(__Now, __PrepTime)),
-        _ = ets:select_delete(__S#state.timing_table,
-                              [{ {{__Id, '_'}, '_'}, [], [true]} ]),
-
-        __S
-    end).
-
--define(INIT_TIMING_TABLE(__S),
-    begin
-        __Tref = ets:new(timing_data, [ordered_set]),
-        ok = persistent_term:put({?MODULE, __S#state.partition, timing_data}, __Tref),
-        __S#state{timing_table=__Tref}
-    end).
 -else.
--define(ADD_FIRST_TX_TS(__Id, __S), begin _ = __Id, __S end).
--define(ADD_COMMIT_TS(__Id, __S), begin _ = __Id, __S end).
--define(REPORT_LEADER_TS(__Id, __S), begin _ = __Id, _ = __S, ok end).
--define(REPORT_FOLLOWER_TS(__Id, __Now, __S), begin _ = __Id, _ = __Now, _ = __S,ok end).
--define(REPORT_ABORT_TS(__Id, __S), begin _ = __Id, __S end).
+
 -define(INIT_TIMING_TABLE(__S), __S).
+-define(MARK_SEEN_TX_TS(__Id, __Now, __S), begin _ = __Id, _ = __Now, __S end).
+
+-define(ADD_COMMIT_TS(__Id, __S), begin _ = __Id, __S end).
+-define(REPORT_ABORT_TS(__Id, __S), begin _ = __Id, __S end).
+
+-define(REPORT_LEADER_TS(__Id, __Now, __S), begin _ = __Id, _ = __Now, _= __S, ok end).
+-define(REPORT_FOLLOWER_TS(__Id, __Now, __S), begin _ = __Id, _ = __Now, _ = __S, ok end).
 -endif.
 
 -ifdef(ENABLE_METRICS).
@@ -362,7 +370,11 @@ handle_command(fetch_lastvc_table, _Sender, S0=#state{partition=Partition}) ->
     {reply, Result, S};
 
 handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_role=undefined, synod_state=undefined}) ->
+
     ok = grb_measurements:create_stat(?QUEUE_KEY(Partition)),
+    ok = grb_measurements:create_stat(?TO_COMMIT_TS_KEY(Partition)),
+    ok = grb_measurements:create_stat(?TO_ABORT_TS_KEY(Partition)),
+    ok = grb_measurements:create_stat(?TO_DELIVERY_TS_KEY(Partition)),
 
     ReplicaId = grb_dc_manager:replica_id(),
     {ok, Pid} = grb_red_heartbeat:new(ReplicaId, Partition),
@@ -372,7 +384,10 @@ handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_role=un
                                      synod_state=grb_paxos_state:new()})};
 
 handle_command(init_follower, _Sender, S=#state{synod_role=undefined, synod_state=undefined}) ->
+
     ok = grb_measurements:create_stat(?QUEUE_KEY(S#state.partition)),
+    ok = grb_measurements:create_stat(?TO_ABORT_TS_KEY(S#state.partition)),
+    ok = grb_measurements:create_stat(?TO_DELIVERY_TS_KEY(S#state.partition)),
 
     ReplicaId = grb_dc_manager:replica_id(),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
@@ -415,6 +430,8 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
                                       conflict_relations=Conflicts,
                                       op_log_last_vc_replica=LastRed}) ->
 
+    Now = grb_time:timestamp(),
+
     %% Cancel and resubmit any pending heartbeats for this partition.
     S = reschedule_heartbeat(S0),
 
@@ -440,7 +457,7 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
                                                           Ballot, Vote, TxId, Label, RS, WS, PrepareVC)
             end, grb_dc_connection_manager:connected_replicas())
     end,
-    {noreply, ?ADD_FIRST_TX_TS(TxId, S#state{synod_state=LeaderState})};
+    {noreply, ?MARK_SEEN_TX_TS(TxId, Now, S#state{synod_state=LeaderState})};
 
 handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S0=#state{synod_role=?leader,
                                                                partition=Partition}) ->
@@ -474,11 +491,12 @@ handle_command({accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
                 Coordinator, State=#state{replica_id=LocalId,
                                           partition=Partition,
                                           synod_state=FollowerState0}) ->
+    Now = grb_time:timestamp(),
     ?LOG_QUEUE_LEN(Partition),
     ?LOG_DEBUG("~p: ACCEPT(~b, ~p, ~p), reply to coordinator ~p", [Partition, Ballot, TxId, Vote, Coordinator]),
     {ok, FollowerState} = grb_paxos_state:accept(Ballot, TxId, Label, RS, WS, Vote, PrepareVC, FollowerState0),
     ok = reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
-    {noreply, ?ADD_FIRST_TX_TS(TxId, State#state{synod_state=FollowerState})};
+    {noreply, ?MARK_SEEN_TX_TS(TxId, Now, State#state{synod_state=FollowerState})};
 
 handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{partition=Partition,
                                                                               synod_state=FollowerState0}) ->
@@ -689,6 +707,7 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
     CommitTs = grb_vclock:get_time(?RED_REPLICA, CommitVC),
     if
         (Role =:= ?leader) and (Now < CommitTs) ->
+            ok = grb_measurements:log_counter({?MODULE, S#state.partition, decision_not_ready}),
             {not_ready, grb_time:diff_ms(Now, CommitTs)};
 
         true ->
@@ -743,6 +762,7 @@ send_abort_buffer(Partition, IOAborts) ->
 %%
 -spec deliver_updates(partition_id(), ballot(), grb_time:ts(), grb_paxos_state:t()) -> grb_time:ts().
 deliver_updates(Partition, Ballot, From, SynodState) ->
+    Now = grb_time:timestamp(),
     case grb_paxos_state:get_next_ready(From, SynodState) of
         false ->
             From;
@@ -759,7 +779,7 @@ deliver_updates(Partition, Ballot, From, SynodState) ->
                     ({TxId, Label, WriteSet, CommitVC})
                         when is_map(WriteSet) andalso map_size(WriteSet) =/= 0 ->
                             ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, NextFrom, Label, WriteSet]),
-                            ?REPORT_LEADER_TS(TxId, Partition),
+                            ?REPORT_LEADER_TS(TxId, Now, Partition),
                             ok = grb_oplog_vnode:handle_red_transaction(Partition, Label, WriteSet, CommitVC),
                             true;
 
