@@ -9,9 +9,6 @@
     {grb_red_coordinator, prepare_to_first_ack_time},
     {grb_red_coordinator, prepare_to_decision_time},
 
-    {grb_paxos_vnode, leader_message_queue},
-    {grb_paxos_vnode, follower_message_queue},
-
     {grb_paxos_vnode, leader, prepare_to_decision_time},
     {grb_paxos_vnode, leader, prepare_to_delivery_time},
 

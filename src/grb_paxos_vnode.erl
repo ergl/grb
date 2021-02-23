@@ -49,10 +49,8 @@
 -define(prune_event, prune_event).
 -define(send_aborts_event, send_aborts_event).
 
--define(LOG_LEADER_QUEUE,
-    ok = grb_measurements:log_queue_length({?MODULE, leader_message_queue})).
--define(LOG_FOLLOWER_QUEUE,
-    ok = grb_measurements:log_queue_length({?MODULE, follower_message_queue})).
+-define(QUEUE_KEY(__P), {?MODULE, __P, message_queue_len}).
+-define(LOG_QUEUE_LEN(__P), grb_measurements:log_queue_length(?QUEUE_KEY(__P))).
 
 -define(leader, leader).
 -define(follower, follower).
@@ -364,6 +362,8 @@ handle_command(fetch_lastvc_table, _Sender, S0=#state{partition=Partition}) ->
     {reply, Result, S};
 
 handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_role=undefined, synod_state=undefined}) ->
+    ok = grb_measurements:create_stat(?QUEUE_KEY(Partition)),
+
     ReplicaId = grb_dc_manager:replica_id(),
     {ok, Pid} = grb_red_heartbeat:new(ReplicaId, Partition),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
@@ -372,6 +372,8 @@ handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_role=un
                                      synod_state=grb_paxos_state:new()})};
 
 handle_command(init_follower, _Sender, S=#state{synod_role=undefined, synod_state=undefined}) ->
+    ok = grb_measurements:create_stat(?QUEUE_KEY(S#state.partition)),
+
     ReplicaId = grb_dc_manager:replica_id(),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
                                      synod_role=?follower,
@@ -416,7 +418,7 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
     %% Cancel and resubmit any pending heartbeats for this partition.
     S = reschedule_heartbeat(S0),
 
-    ?LOG_LEADER_QUEUE,
+    ?LOG_QUEUE_LEN(Partition),
 
     %% For blue transactions, any pending operations are removed during blue commit, since
     %% it is performed at the replica / partitions where the client originally performed the
@@ -472,7 +474,7 @@ handle_command({accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
                 Coordinator, State=#state{replica_id=LocalId,
                                           partition=Partition,
                                           synod_state=FollowerState0}) ->
-    ?LOG_FOLLOWER_QUEUE,
+    ?LOG_QUEUE_LEN(Partition),
     ?LOG_DEBUG("~p: ACCEPT(~b, ~p, ~p), reply to coordinator ~p", [Partition, Ballot, TxId, Vote, Coordinator]),
     {ok, FollowerState} = grb_paxos_state:accept(Ballot, TxId, Label, RS, WS, Vote, PrepareVC, FollowerState0),
     ok = reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
