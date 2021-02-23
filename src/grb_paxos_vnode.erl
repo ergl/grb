@@ -146,7 +146,6 @@
     synod_role = undefined :: role() | undefined,
     synod_state = undefined :: grb_paxos_state:t() | undefined,
     conflict_relations :: conflict_relations(),
-    decision_buffer = #{} :: #{{term(), ballot()} => {red_vote(), vclock()} | grb_time:ts()},
     abort_buffer_io = [] :: iodata(),
     timing_table :: cache_id()
 }).
@@ -184,12 +183,6 @@
 
     %% conflict information, who conflicts with whom
     conflict_relations :: conflict_relations(),
-
-    %% a buffer of outstanding decision messages
-    %% If we receive a DECIDE message from the coordinator before we receive
-    %% an ACCEPT from the leader, we should buffer the DECIDE here, and apply it
-    %% right after we receive an ACCEPT with a matching ballot and transaction id
-    decision_buffer = #{} :: #{{term(), ballot()} => {red_vote(), vclock()} | grb_time:ts()},
 
     %% A buffer of delayed abort messages, already encoded for sending.
     %%
@@ -476,50 +469,22 @@ handle_command({decision, Ballot, TxId, Decision, CommitVC}, _Sender, S0=#state{
 %%%===================================================================
 
 handle_command({accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
-                Coordinator, S0=#state{replica_id=LocalId,
-                                       partition=Partition,
-                                       synod_state=FollowerState0,
-                                       decision_buffer=DecisionBuffer0}) ->
-
+                Coordinator, State=#state{replica_id=LocalId,
+                                          partition=Partition,
+                                          synod_state=FollowerState0}) ->
     ?LOG_FOLLOWER_QUEUE,
-
     ?LOG_DEBUG("~p: ACCEPT(~b, ~p, ~p), reply to coordinator ~p", [Partition, Ballot, TxId, Vote, Coordinator]),
     {ok, FollowerState} = grb_paxos_state:accept(Ballot, TxId, Label, RS, WS, Vote, PrepareVC, FollowerState0),
-    S1 = S0#state{synod_state=FollowerState},
-    S = case maps:take({TxId, Ballot}, DecisionBuffer0) of
-        error ->
-            reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
-            S1;
-
-        {{Decision, CommitVC}, DecisionBuffer} ->
-            %% if the coordinator already sent us a decision, there's no need to cast an ACCEPT_ACK message
-            %% because the coordinator does no longer care
-            ?LOG_DEBUG("~p: buffered DECIDE(~b, ~p, ~p)", [Partition, Ballot, TxId, Decision]),
-            {ok, S2} = decide_internal(Ballot, TxId, Decision, CommitVC, S1#state{decision_buffer=DecisionBuffer}),
-            S2
-    end,
-    {noreply, ?ADD_FIRST_TX_TS(TxId, S)};
+    ok = reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
+    {noreply, ?ADD_FIRST_TX_TS(TxId, State#state{synod_state=FollowerState})};
 
 handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{partition=Partition,
-                                                                              synod_state=FollowerState0,
-                                                                              decision_buffer=DecisionBuffer0}) ->
+                                                                              synod_state=FollowerState0}) ->
 
     ?LOG_DEBUG("~p: HEARTBEAT_ACCEPT(~b, ~p, ~b)", [Partition, Ballot, Id, Ts]),
     {ok, FollowerState} = grb_paxos_state:accept_hb(Ballot, Id, Ts, FollowerState0),
-    S1 = S0#state{synod_state=FollowerState},
-    S = case maps:take({Id, Ballot}, DecisionBuffer0) of
-        error ->
-            ok = grb_dc_connection_manager:send_red_heartbeat_ack(SourceReplica, Partition, Ballot, Id, Ts),
-            S1;
-
-        {FinalTs, DecisionBuffer} ->
-            %% if the coordinator already sent us a decision, there's no need to cast an ACCEPT_ACK message
-            %% because the coordinator does no longer care
-            ?LOG_DEBUG("~p: buffered DECIDE_HB(~b, ~p)", [Partition, Ballot, Id]),
-            {ok, S2} = decide_hb_internal(Ballot, Id, FinalTs, S1#state{decision_buffer=DecisionBuffer}),
-            S2
-    end,
-    {noreply, S};
+    ok = grb_dc_connection_manager:send_red_heartbeat_ack(SourceReplica, Partition, Ballot, Id, Ts),
+    {noreply, S0#state{synod_state=FollowerState}};
 
 handle_command({learn_abort, Ballot, TxId, Reason, CommitVC}, _Sender, S0=#state{partition=Partition}) ->
     ?LOG_DEBUG("~p LEARN_ABORT(~b, ~p, ~p)", [Partition, Ballot, TxId]),
@@ -690,8 +655,7 @@ reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decisi
 %% because it passes an integer as a clock
 -dialyzer({nowarn_function, decide_hb_internal/4}).
 decide_hb_internal(Ballot, Id, Ts, S=#state{synod_role=Role,
-                                            synod_state=SynodState0,
-                                            decision_buffer=Buffer}) ->
+                                            synod_state=SynodState0}) ->
     Now = grb_time:timestamp(),
     if
         (Role =:= ?leader) and (Now < Ts) ->
@@ -708,18 +672,16 @@ decide_hb_internal(Ballot, Id, Ts, S=#state{synod_role=Role,
                     {ok, S};
 
                 not_prepared ->
-                    ?LOG_DEBUG("~p: DECIDE_HEARTBEAT(~b, ~p) := not_prepared, buffering", [S#state.partition, Ballot, Id]),
-                    %% buffer the decision and reserve our commit spot
-                    %% until we receive a matching ACCEPT from the leader
-                    ok = grb_paxos_state:reserve_decision(Id, ok, Ts, SynodState0),
-                    {ok, S#state{decision_buffer=Buffer#{{Id, Ballot} => Ts}}}
+                    ok = grb_measurements:log_counter({?MODULE, out_of_order_decision}),
+                    %% fixme(borja, red): something very wrong happened due to FIFO, leader might have changed
+                    ?LOG_ERROR("~p: out-of-order decision (~b) for a not prepared transaction ~p", [S#state.partition, Ballot, Id]),
+                    {ok, S}
             end
     end.
 
 -spec decide_internal(ballot(), term(), red_vote(), vclock(), #state{}) -> {ok, #state{}} | {not_ready, non_neg_integer()}.
 decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
-                                                           synod_state=SynodState0,
-                                                           decision_buffer=Buffer}) ->
+                                                           synod_state=SynodState0}) ->
     Now = grb_time:timestamp(),
     CommitTs = grb_vclock:get_time(?RED_REPLICA, CommitVC),
     if
@@ -738,11 +700,9 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
 
                 not_prepared ->
                     ok = grb_measurements:log_counter({?MODULE, out_of_order_decision}),
-                    ?LOG_DEBUG("~p: DECIDE(~b, ~p) := not_prepared, buffering", [S#state.partition, Ballot, TxId]),
-                    %% buffer the decision and reserve our commit spot
-                    %% until we receive a matching ACCEPT from the leader
-                    ok = grb_paxos_state:reserve_decision(TxId, Decision, CommitVC, SynodState0),
-                    {ok, S#state{decision_buffer=Buffer#{{TxId, Ballot} => {Decision, CommitVC}}}}
+                    %% fixme(borja, red): something very wrong happened due to FIFO, leader might have changed
+                    ?LOG_ERROR("~p: out-of-order decision (~b) for a not prepared transaction ~p", [S#state.partition, Ballot, TxId]),
+                    {ok, S}
             end
     end.
 
