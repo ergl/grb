@@ -667,6 +667,7 @@ decide_hb_internal(Ballot, Id, Ts, S=#state{synod_role=Role,
                     {ok, S#state{synod_state=SynodState}};
 
                 bad_ballot ->
+                    ok = grb_measurements:log_counter({?MODULE, bad_ballot}),
                     %% fixme(borja, red): should this initiate a leader recovery, or ignore?
                     ?LOG_ERROR("~p: bad heartbeat ballot ~b", [S#state.partition, Ballot]),
                     {ok, S};
@@ -694,6 +695,7 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
                     {ok, S#state{synod_state=SynodState}};
 
                 bad_ballot ->
+                    ok = grb_measurements:log_counter({?MODULE, bad_ballot}),
                     %% fixme(borja, red): should this initiate a leader recovery, or ignore?
                     ?LOG_ERROR("~p: bad ballot ~b for ~p", [S#state.partition, Ballot, TxId]),
                     {ok, S};
