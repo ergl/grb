@@ -124,66 +124,53 @@ current_ballot(#state{ballot=B}) ->
                                     | {grb_time:ts(), [ {?heartbeat, term()} | {term(), tx_label(), writeset(), vclock()} ]}.
 
 get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx}) ->
-    case get_first_committed(LastDelivered, Idx) of
+    %% We use an empty list here, since we know that record ids are tuples,
+    %% and the built-in Erlang term ordering ensures that tuples < lists,
+    %% for any tuple and list. An empty list will always compare larger than
+    %% a record_id, so this basically allows us to skip any transactions with
+    %% LastDelivered as its commit timestamp. Another option would be to use
+    %% {(LastDelivered + 1), 0} to have the first key with Ts > LastDelivered.
+    case get_first_committed(ets:next(Idx, {LastDelivered, []}), Idx) of
         false ->
             false;
 
         {CommitTime, FirstCommitId} ->
-            case prep_committed_between(LastDelivered, CommitTime, Idx) of
-                true ->
+            %% The above already returns `false` if it found a prepared transaction between
+            %% `LastDelivered` and `CommitTime`, so we only need to check if there's a prepared
+            %% (committed) transaction with the same commit time:
+            PreparedAtCommit = ets:select_count(Idx, [{ #index_entry{key={CommitTime, '_'}, state=prepared, vote=ok},
+                                                        [],
+                                                        [true]}]),
+            if
+                PreparedAtCommit > 0 ->
                     false;
-                false ->
-                    %% get the rest of committed transactions with this commit time
-                    %% since they have the same committed time, they all pass the check above
-                    %%
-                    %% Can't use ets:fun2ms/1 here, since it can't bind CommitTime as the key prefix
+
+                true ->
+                    %% Now get all the other transactions with this commit time.
                     MoreIds = ets:select(Idx, [{ #index_entry{key={CommitTime, '$1'}, state=decided, vote=ok},
                                                  [{'=/=', '$1', {const, FirstCommitId}}],
                                                  ['$1'] }]),
+
                     Ready = lists:map(fun(Id) -> data_for_id(Id, EntryMap) end, [FirstCommitId | MoreIds]),
                     {CommitTime, Ready}
             end
     end.
 
--spec get_first_committed(grb_time:ts(), cache_id()) -> {grb_time:ts(), record_id()} | false.
-get_first_committed(LastDelivered, Table) ->
-    Res = ets:select(Table, ets:fun2ms(
-        fun(#index_entry{key={Ts, TxId}, state=decided, vote=ok})
-            when Ts > LastDelivered ->
-                {Ts, TxId}
-        end),
-        1
-    ),
-    case Res of
-        {[{CommitTime, TxId}], _} -> {CommitTime, TxId};
-        _Other -> false
-    end.
-
--spec prep_committed_between(grb_time:ts(), grb_time:ts(), cache_id()) -> boolean().
-prep_committed_between(From, To, Table) ->
-    prep_committed_between(ets:next(Table, {From, 0}), From, To, Table).
-
-prep_committed_between(IdxKey={KeyTime, _}, From, To, Table) when KeyTime =:= From ->
-    %% skip while we have the same commit time
-    prep_committed_between(ets:next(Table, IdxKey), From, To, Table);
-
-prep_committed_between(IdxKey={KeyTime, _Id}, From, To, Table) when KeyTime > From andalso KeyTime =< To ->
-    %% when we're in range, check for a prepared commit
-    case ets:lookup_element(Table, IdxKey, #index_entry.state) of
-        prepared ->
-            case ets:lookup_element(Table, IdxKey, #index_entry.vote) of
-                ok ->
-                    true;
-                _ ->
-                    prep_committed_between(ets:next(Table, IdxKey), From, To, Table)
-            end;
+-spec get_first_committed({grb_time:ts(), record_id()} | '$end_of_table', cache_id()) -> false | {grb_time:ts(), record_id()}.
+get_first_committed('$end_of_table', _Table) ->
+    false;
+get_first_committed(Key, Table) ->
+    case ets:lookup(Table, Key) of
+        [#index_entry{state=prepared, vote=ok}] ->
+            %% We have found a prepared commit before we ever reached a matching transaction,
+            %% which means we're not ready to deliver
+            false;
+        [#index_entry{state=decided, vote=ok}] ->
+            %% This should be the first commit we find, return
+            Key;
         _ ->
-            prep_committed_between(ets:next(Table, IdxKey), From, To, Table)
-    end;
-
-prep_committed_between(_Key, _From, _To, _Table) ->
-    %% if we went out of range, bail out
-    false.
+            get_first_committed(ets:next(Table, Key), Table)
+    end.
 
 -spec data_for_id(record_id(), #{record_id() => tx_data()}) -> {?heartbeat, term()} | {term(), tx_label(), #{}, vclock()}.
 data_for_id({?heartbeat, Id}, _) -> {?heartbeat, Id};
