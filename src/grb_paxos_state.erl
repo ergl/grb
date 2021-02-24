@@ -52,7 +52,9 @@
 -type decision_error() :: bad_ballot | not_prepared.
 -type t() :: #state{}.
 
--export_type([t/0, prepare_result/0, prepare_hb_result/0, decision_error/0]).
+-type ready_tx() :: [ {?heartbeat, term()} | {term(), tx_label(), writeset(), vclock()}, ... ].
+
+-export_type([t/0, prepare_result/0, prepare_hb_result/0, decision_error/0, ready_tx/0]).
 
 %% constructors
 -export([new/0,
@@ -120,8 +122,7 @@ current_ballot(#state{ballot=B}) ->
 %%%===================================================================
 
 -spec get_next_ready(LastDelivered :: grb_time:ts(),
-                     State :: t()) -> false
-                                    | {grb_time:ts(), [ {?heartbeat, term()} | {term(), tx_label(), writeset(), vclock()} ]}.
+                     State :: t()) -> false | {grb_time:ts(), ready_tx()}.
 
 get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx}) ->
     %% We use an empty list here, since we know that record ids are tuples,
@@ -130,49 +131,55 @@ get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx}) ->
     %% a record_id, so this basically allows us to skip any transactions with
     %% LastDelivered as its commit timestamp. Another option would be to use
     %% {(LastDelivered + 1), 0} to have the first key with Ts > LastDelivered.
-    case get_first_committed(ets:next(Idx, {LastDelivered, []}), Idx) of
-        false ->
-            false;
+    get_next_ready_continue(ets:next(Idx, {LastDelivered, []}), Idx, EntryMap).
 
-        {CommitTime, FirstCommitId} ->
-            %% The above already returns `false` if it found a prepared transaction between
-            %% `LastDelivered` and `CommitTime`, so we only need to check if there's a prepared
-            %% (committed) transaction with the same commit time:
-            PreparedAtCommit = ets:select_count(Idx, [{ #index_entry{key={CommitTime, '_'}, state=prepared, vote=ok},
-                                                        [],
-                                                        [true]}]),
-            if
-                PreparedAtCommit > 0 ->
-                    false;
+-spec get_next_ready_continue(Key :: {grb_time:ts(), record_id()} | '$end_of_table',
+                              IdxTable ::  cache_id(),
+                              EntryMap :: #{record_id() => tx_data()}) -> false | {grb_time:ts(), ready_tx()}.
 
-                true ->
-                    %% Now get all the other transactions with this commit time.
-                    MoreIds = ets:select(Idx, [{ #index_entry{key={CommitTime, '$1'}, state=decided, vote=ok},
-                                                 [{'=/=', '$1', {const, FirstCommitId}}],
-                                                 ['$1'] }]),
-
-                    Ready = lists:map(fun(Id) -> data_for_id(Id, EntryMap) end, [FirstCommitId | MoreIds]),
-                    {CommitTime, Ready}
-            end
-    end.
-
--spec get_first_committed({grb_time:ts(), record_id()} | '$end_of_table', cache_id()) -> false | {grb_time:ts(), record_id()}.
-get_first_committed('$end_of_table', _Table) ->
+get_next_ready_continue('$end_of_table', _IdxTable, _EntryMap) ->
     false;
-get_first_committed(Key, Table) ->
-    case ets:lookup(Table, Key) of
+
+get_next_ready_continue(Key={CommitTime, Id}, IdxTable, EntryMap) ->
+    case ets:lookup(IdxTable, Key) of
         [#index_entry{state=prepared, vote=ok}] ->
             %% We have found a prepared commit before we ever reached a matching transaction,
             %% which means we're not ready to deliver
             false;
         [#index_entry{state=decided, vote=ok}] ->
-            %% This should be the first commit we find, return
-            Key;
+            %% Found a commit with no previous prepares,
+            %% continue with this commit time.
+            get_next_ready_continue(ets:next(IdxTable, Key), CommitTime,
+                                    IdxTable, EntryMap, [data_for_id(Id, EntryMap)]);
         _ ->
-            get_first_committed(ets:next(Table, Key), Table)
+            %% the transaction might be aborted, continue
+            get_next_ready_continue(ets:next(IdxTable, Key), IdxTable, EntryMap)
     end.
 
--spec data_for_id(record_id(), #{record_id() => tx_data()}) -> {?heartbeat, term()} | {term(), tx_label(), #{}, vclock()}.
+-spec get_next_ready_continue(Key :: {grb_time:ts(), record_id()} | '$end_of_table',
+                              CommitTime :: grb_time:ts(),
+                              IdxTable :: cache_id(),
+                              EntryMap :: #{record_id() => tx_data()},
+                              Acc :: ready_tx()) -> false | {grb_time:ts(), ready_tx()}.
+
+get_next_ready_continue(Key={CommitTime, Id}, CommitTime, IdxTable, EntryMap, Acc) ->
+    case ets:lookup(IdxTable, Key) of
+        [#index_entry{state=prepared, vote=ok}] ->
+            %% Found a prepared transaction with our commit time, we're not ready
+            false;
+        [#index_entry{state=decided, vote=ok}] ->
+            %% Good transaction, add it to the pile
+            get_next_ready_continue(ets:next(IdxTable, Key), CommitTime, IdxTable, EntryMap, [data_for_id(Id, EntryMap) | Acc]);
+        _ ->
+            %% the transaction might be aborted, continue
+            get_next_ready_continue(ets:next(IdxTable, Key), CommitTime, IdxTable, EntryMap, Acc)
+    end;
+
+get_next_ready_continue(_, CommitTime, _, _, Acc) ->
+    %% As soon as we go out of range, return the accumulator.
+    {CommitTime, Acc}.
+
+-spec data_for_id(record_id(), #{record_id() => tx_data()}) -> {?heartbeat, term()} | {term(), tx_label(), writeset(), vclock()}.
 data_for_id({?heartbeat, Id}, _) -> {?heartbeat, Id};
 data_for_id(Id, EntryMap) ->
     #tx_data{label=Label, writeset=WS, clock=CommitVC} = maps:get(Id, EntryMap),
@@ -657,8 +664,11 @@ grb_paxos_state_tx_clash_test() ->
         {ok, F4} = grb_paxos_state:decision(0, tx_2, ok, VC(5), F3),
 
         %% Now we can deliver, since tx_2 moved out of the prepare queue
-        ?assertEqual({5, [ {tx_1, <<>>, #{a => 0}, VC(5)},
-                           {tx_2, <<>>, #{a => 1}, VC(5)} ]}, grb_paxos_state:get_next_ready(0, F4) )
+        %% Order is not guaranteed, so sort both.
+        {CommitTime, Ready} = grb_paxos_state:get_next_ready(0, F4),
+        ?assertEqual(5, CommitTime),
+        ?assertEqual(lists:sort([ {tx_1, <<>>, #{a => 0}, VC(5)},
+                                  {tx_2, <<>>, #{a => 1}, VC(5)} ]), lists:sort(Ready) )
     end).
 
 grb_paxos_state_check_prepared_sym_test() ->
