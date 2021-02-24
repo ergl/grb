@@ -56,6 +56,9 @@
 -define(TO_DELIVERY_TS_KEY(__P), {?MODULE, __P, seen_to_delivery_time}).
 -define(TO_ABORT_TS_KEY(__P), {?MODULE, __P, seen_to_abort_time}).
 
+-define(NEXT_READY_DURATION(__P), {?MODULE, __P, get_next_ready_ts}).
+-define(DELIVER_DURATION(__P), {?MODULE, __P, deliver_updates_ts}).
+
 -define(leader, leader).
 -define(follower, follower).
 -type role() :: ?leader | ?follower.
@@ -122,6 +125,22 @@
 
         ok
     end).
+
+-export([deliver_updates/4]).
+
+-define(GET_NEXT_READY(__P, __From, __State),
+    begin
+        {__Took, __Res} = timer:tc(grb_paxos_state, get_next_ready, [__From, __State]),
+        grb_measurements:log_stat(?NEXT_READY_DURATION(__P), __Took),
+        __Res
+    end).
+
+-define(DELIVER_UPDATES(__P, __B, __F, __S),
+    begin
+        {__Took, __Res} = timer:tc(?MODULE, deliver_updates, [__P, __B, __F, __S]),
+        grb_measurements:log_stat(?DELIVER_DURATION(__P), __Took),
+        __Res
+    end).
 -else.
 
 -define(INIT_TIMING_TABLE(__S), __S).
@@ -132,6 +151,9 @@
 
 -define(REPORT_LEADER_TS(__Id, __Now, __S), begin _ = __Id, _ = __Now, _= __S, ok end).
 -define(REPORT_FOLLOWER_TS(__Id, __Now, __S), begin _ = __Id, _ = __Now, _ = __S, ok end).
+
+-define(GET_NEXT_READY(__P, __From, __State), begin _ = __P, grb_paxos_state:get_next_ready(__From, __State) end).
+-define(DELIVER_UPDATES(__P, __B, __F, __S), deliver_updates(__P, __B, __F, __S)).
 -endif.
 
 -ifdef(ENABLE_METRICS).
@@ -376,6 +398,9 @@ handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_role=un
     ok = grb_measurements:create_stat(?TO_ABORT_TS_KEY(Partition)),
     ok = grb_measurements:create_stat(?TO_DELIVERY_TS_KEY(Partition)),
 
+    ok = grb_measurements:create_stat(?NEXT_READY_DURATION(Partition)),
+    ok = grb_measurements:create_stat(?DELIVER_DURATION(Partition)),
+
     ReplicaId = grb_dc_manager:replica_id(),
     {ok, Pid} = grb_red_heartbeat:new(ReplicaId, Partition),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
@@ -592,7 +617,7 @@ handle_info(?deliver_event, S=#state{synod_role=?leader,
                                      deliver_interval=Interval}) ->
     ?CANCEL_TIMER_FAST(Timer),
     CurBallot = grb_paxos_state:current_ballot(SynodState),
-    LastDelivered = deliver_updates(Partition, CurBallot, LastDelivered0, SynodState),
+    LastDelivered = ?DELIVER_UPDATES(Partition, CurBallot, LastDelivered0, SynodState),
     if
         LastDelivered > LastDelivered0 ->
             ?LOG_DEBUG("~p DELIVER_HB(~b)", [Partition, LastDelivered]),
@@ -763,7 +788,7 @@ send_abort_buffer(Partition, IOAborts) ->
 -spec deliver_updates(partition_id(), ballot(), grb_time:ts(), grb_paxos_state:t()) -> grb_time:ts().
 deliver_updates(Partition, Ballot, From, SynodState) ->
     Now = grb_time:timestamp(),
-    case grb_paxos_state:get_next_ready(From, SynodState) of
+    case ?GET_NEXT_READY(Partition, From, SynodState) of
         false ->
             From;
 
