@@ -23,7 +23,6 @@
 %% Red transactions
 -export([send_red_prepare/8,
          send_red_accept/10,
-         send_red_accept/11,
          send_red_accept_ack/7,
          send_red_already_decided/6,
          send_red_decision/6,
@@ -231,10 +230,6 @@ send_red_prepare(ToId, Coordinator, Partition, TxId, Label, RS, WS, VC) ->
 send_red_accept(ToId, Coordinator, Partition, Ballot, Vote, TxId, Label, RS, WS, VC) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition,
              grb_dc_messages:red_accept(Coordinator, Ballot, Vote, TxId, Label, RS, WS, VC)).
-
-send_red_accept(ToId, Coordinator, Partition, Ballot, Vote, TxId, Label, RS, WS, VC, LeaderFWD) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition,
-        grb_dc_messages:red_accept(Coordinator, Ballot, Vote, TxId, Label, RS, WS, VC, LeaderFWD)).
 
 -spec send_red_accept_ack(replica_id(), node(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
 send_red_accept_ack(ToId, ToNode, Partition, Ballot, TxId, Vote, PrepareVC) ->

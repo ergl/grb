@@ -121,8 +121,7 @@
     readset :: [term()],
     writeset :: #{},
     decision :: term(),
-    prepare_vc :: vclock(),
-    forward_leader_ack :: boolean()
+    prepare_vc :: vclock()
 }).
 
 -record(red_accept_ack, {
