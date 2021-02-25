@@ -480,10 +480,16 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
             %% skip replicas, this is enough to reply to the client
             reply_already_decided(Coordinator, LocalId, Partition, TxId, Decision, CommitVC);
         {Vote, Ballot, PrepareVC} ->
-            reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
+            case Coordinator of
+                {coord, LocalId, Node} ->
+                    grb_red_coordinator:accept_ack(Node, LocalId, Partition, Ballot, TxId, Vote, PrepareVC);
+                _ ->
+                    %% skip, we'll forward it later
+                    ok
+            end,
             lists:foreach(fun(ReplicaId) ->
-                grb_dc_connection_manager:send_red_accept(ReplicaId, Coordinator, Partition,
-                                                          Ballot, Vote, TxId, Label, RS, WS, PrepareVC)
+                send_red_accept_with_fwd(ReplicaId, Coordinator, Partition,
+                                          Ballot, Vote, TxId, Label, RS, WS, PrepareVC)
             end, grb_dc_connection_manager:connected_replicas())
     end,
     {noreply, ?MARK_SEEN_TX_TS(TxId, Now, S#state{synod_state=LeaderState})};
@@ -674,6 +680,12 @@ start_timers(S=#state{synod_role=?leader, deliver_interval=DeliverInt,
 
 start_timers(S=#state{synod_role=?follower, prune_interval=PruneInt}) ->
     S#state{prune_timer=grb_dc_utils:maybe_send_after(PruneInt, ?prune_event)}.
+
+send_red_accept_with_fwd(ReplicaId, Coordinator={coord, CoordReplica, _},
+                        Partition, Ballot, Vote, TxId, Label, RS, WS, PrepareVC) ->
+
+    grb_dc_connection_manager:send_red_accept(ReplicaId, Coordinator, Partition,
+                                               Ballot, Vote, TxId, Label, RS, WS, PrepareVC, ReplicaId =:= CoordReplica).
 
 -spec reply_accept_ack(red_coord_location(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
 reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC) ->

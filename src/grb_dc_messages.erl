@@ -33,6 +33,7 @@
 
 -export([red_prepare/6,
          red_accept/8,
+         red_accept/9,
          red_accept_ack/5,
          red_decision/4,
          red_already_decided/4,
@@ -127,8 +128,11 @@ red_prepare(Coordinator, TxId, Label, RS, WS, SnapshotVC) ->
 
 -spec red_accept(red_coord_location(), ballot(), red_vote(), term(), tx_label(), readset(), writeset(), vclock()) -> binary().
 red_accept(Coordinator, Ballot, Vote, TxId, Label, RS, WS, PrepareVC) ->
+    red_accept(Coordinator, Ballot, Vote, TxId, Label, RS, WS, PrepareVC, false).
+
+red_accept(Coordinator, Ballot, Vote, TxId, Label, RS, WS, PrepareVC, LeaderFWD) ->
     encode_msg(#red_accept{coord_location=Coordinator, ballot=Ballot, decision=Vote,
-                           tx_id=TxId, tx_label=Label, readset=RS, writeset=WS, prepare_vc=PrepareVC}).
+                           tx_id=TxId, tx_label=Label, readset=RS, writeset=WS, prepare_vc=PrepareVC, forward_leader_ack=LeaderFWD}).
 
 -spec red_accept_ack(node(), ballot(), red_vote(), term(), vclock()) -> binary().
 red_accept_ack(DstNode, Ballot, Vote, TxId, PrepareVC) ->
@@ -181,8 +185,8 @@ encode_payload(#red_prepare{coord_location=Coordinator, tx_id=TxId, tx_label=Lab
     {?RED_PREPARE_KIND, term_to_binary({Coordinator, TxId, Label, RS, WS, VC})};
 
 encode_payload(#red_accept{coord_location=Coordinator, ballot=Ballot, tx_id=TxId,
-                           tx_label=Label, readset=RS, writeset=WS, decision=Vote, prepare_vc=VC}) ->
-    {?RED_ACCEPT_KIND, term_to_binary({Coordinator, Ballot, TxId, Label, RS, WS, Vote, VC})};
+                           tx_label=Label, readset=RS, writeset=WS, decision=Vote, prepare_vc=VC, forward_leader_ack=FWD}) ->
+    {?RED_ACCEPT_KIND, term_to_binary({Coordinator, Ballot, TxId, Label, RS, WS, Vote, VC, FWD})};
 
 encode_payload(#red_accept_ack{target_node=TargetNode, ballot=Ballot,
                                tx_id=TxId, decision=Vote, prepare_vc=PrepareVC}) ->
@@ -253,9 +257,9 @@ decode_payload(<<?RED_PREPARE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     #red_prepare{coord_location=Coordinator, tx_id=Tx, tx_label=Label, readset=RS, writeset=WS, snapshot_vc=VC};
 
 decode_payload(<<?RED_ACCEPT_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {Coordinator, Ballot, TxId, Label, RS, WS, Vote, VC} = binary_to_term(Payload),
+    {Coordinator, Ballot, TxId, Label, RS, WS, Vote, VC, FWD} = binary_to_term(Payload),
     #red_accept{coord_location=Coordinator, ballot=Ballot, tx_id=TxId,
-                tx_label=Label, readset=RS, writeset=WS, decision=Vote, prepare_vc=VC};
+                tx_label=Label, readset=RS, writeset=WS, decision=Vote, prepare_vc=VC, forward_leader_ack=FWD};
 
 decode_payload(<<?RED_ACCEPT_ACK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {TargetNode, Ballot, TxId, Vote, PrepareVC} = binary_to_term(Payload),
