@@ -11,6 +11,8 @@
          bcast_vnode_sync/3,
          bcast_vnode_local_sync/2]).
 
+-export([send_cast/4]).
+
 %% Managing ETS tables
 -export([safe_bin_to_atom/1]).
 
@@ -122,6 +124,12 @@ maybe_send_after(0, _) ->
     undefined;
 maybe_send_after(Time, Msg) ->
     erlang:send_after(Time, self(), Msg).
+
+%% Optimized erpc:cast/4, peeked into its internals.
+-spec send_cast(node(), module(), atom(), [term()]) -> ok.
+send_cast(N, M, F, A) ->
+    _ = erts_internal:dist_spawn_request(N, {M, F, A}, [{reply, no}], spawn_request),
+    ok.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal

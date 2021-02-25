@@ -12,7 +12,9 @@
 -export([commit/7,
          commit_send/2,
          already_decided/3,
-         accept_ack/5]).
+         already_decided/4,
+         accept_ack/5,
+         accept_ack/6]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -109,6 +111,13 @@ already_decided(TxId, Vote, VoteVC) ->
             gen_server:cast(Coordinator, {already_decided, TxId, Vote, VoteVC})
     end.
 
+-spec already_decided(node(), term(), red_vote(), vclock()) -> ok.
+already_decided(Node, TxId, Vote, VoteVC) when Node =:= node() ->
+    already_decided(TxId, Vote, VoteVC);
+
+already_decided(Node, TxId, Vote, VoteVC) ->
+    grb_dc_utils:send_cast(Node, ?MODULE, already_decided, [TxId, Vote, VoteVC]).
+
 -spec accept_ack(partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
 accept_ack(Partition, Ballot, TxId, Vote, AcceptVC) ->
     case grb_red_manager:transaction_coordinator(TxId) of
@@ -116,6 +125,13 @@ accept_ack(Partition, Ballot, TxId, Vote, AcceptVC) ->
         {ok, Coordinator} ->
             gen_server:cast(Coordinator, {accept_ack, Partition, Ballot, TxId, Vote, AcceptVC})
     end.
+
+-spec accept_ack(node(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+accept_ack(Node, Partition, Ballot, TxId, Vote, AcceptVC) when Node =:= node() ->
+    accept_ack(Partition, Ballot, TxId, Vote, AcceptVC);
+
+accept_ack(Node, Partition, Ballot, TxId, Vote, AcceptVC) ->
+    grb_dc_utils:send_cast(Node, ?MODULE, accept_ack, [Partition, Ballot, TxId, Vote, AcceptVC]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
@@ -269,7 +285,7 @@ send_prepare(Coordinator, Partition, TxId, Label, RS, WS, VC) ->
             %% leader is in another replica, but we don't have a direct inter_dc connection, have
             %% to go through a cluster-local proxy at `LocalNode`
             Msg = grb_dc_messages:red_prepare(Coordinator, TxId, Label, RS, WS, VC),
-            ok = erpc:cast(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
+            grb_dc_utils:send_cast(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
     end,
     LeaderLoc.
 
@@ -333,7 +349,7 @@ send_decision(Partition, LeaderLoc, Ballot, TxId, Decision, CommitVC) ->
             %% leader is in another replica, but we don't have a direct inter_dc connection, have
             %% to go through a cluster-local proxy at `LocalNode`
             Msg = grb_dc_messages:red_decision(Ballot, Decision, TxId, CommitVC),
-            ok = erpc:cast(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
+            grb_dc_utils:send_cast(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
     end.
 
 -spec reduce_vote(red_vote(), vclock(), {red_vote(), vclock()}) -> {red_vote(), vclock()}.

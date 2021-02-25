@@ -673,26 +673,20 @@ start_timers(S=#state{synod_role=?follower, prune_interval=PruneInt}) ->
 
 -spec reply_accept_ack(red_coord_location(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
 reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC) ->
-    MyNode = node(),
-    case {Replica, Node} of
-        {MyReplica, MyNode} ->
-            grb_red_coordinator:accept_ack(Partition, Ballot, TxId, Vote, PrepareVC);
-        {MyReplica, OtherNode} ->
-            erpc:cast(OtherNode, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC]);
-        {OtherReplica, _} ->
-            grb_dc_connection_manager:send_red_accept_ack(OtherReplica, Node, Partition, Ballot, TxId, Vote, PrepareVC)
+    if
+        Replica =:= MyReplica ->
+            grb_red_coordinator:accept_ack(Node, Partition, Ballot, TxId, Vote, PrepareVC);
+        true ->
+            grb_dc_connection_manager:send_red_accept_ack(Replica, Node, Partition, Ballot, TxId, Vote, PrepareVC)
     end.
 
 -spec reply_already_decided(red_coord_location(), replica_id(), partition_id(), term(), red_vote(), vclock()) -> ok.
 reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decision, CommitVC) ->
-    MyNode = node(),
-    case {Replica, Node} of
-        {MyReplica, MyNode} ->
-            grb_red_coordinator:already_decided(TxId, Decision, CommitVC);
-        {MyReplica, OtherNode} ->
-            erpc:cast(OtherNode, grb_red_coordinator, already_decided, [TxId, Decision, CommitVC]);
-        {OtherReplica, _} ->
-            grb_dc_connection_manager:send_red_already_decided(OtherReplica, Node, Partition, TxId, Decision, CommitVC)
+    if
+        Replica =:= MyReplica ->
+            grb_red_coordinator:already_decided(Node, TxId, Decision, CommitVC);
+        true ->
+            grb_dc_connection_manager:send_red_already_decided(Replica, Node, Partition, TxId, Decision, CommitVC)
     end.
 
 -spec decide_hb_internal(ballot(), term(), grb_time:ts(), #state{}) -> {ok, #state{}} | {not_ready, non_neg_integer()}.

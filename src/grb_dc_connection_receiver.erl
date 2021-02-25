@@ -195,21 +195,14 @@ handle_request(_, Partition, #red_accept{coord_location=Coordinator, ballot=Ball
 
 handle_request(_, Partition, #red_accept_ack{target_node=Node, ballot=Ballot, tx_id=TxId,
                                              decision=Vote, prepare_vc=PrepareVC}) ->
-    MyNode = node(),
-    case Node of
-        MyNode -> grb_red_coordinator:accept_ack(Partition, Ballot, TxId, Vote, PrepareVC);
-        _ -> erpc:cast(Node, grb_red_coordinator, accept_ack, [Partition, Ballot, TxId, Vote, PrepareVC])
-    end;
+
+    grb_red_coordinator:accept_ack(Node, Partition, Ballot, TxId, Vote, PrepareVC);
 
 handle_request(_, Partition, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->
     grb_paxos_vnode:decide({Partition, node()}, Ballot, TxId, Decision, CommitVC);
 
 handle_request(_, _, #red_already_decided{target_node=Node, tx_id=TxId, decision=Vote, commit_vc=CommitVC}) ->
-    MyNode = node(),
-    case Node of
-        MyNode -> grb_red_coordinator:already_decided(TxId, Vote, CommitVC);
-        _ -> erpc:cast(Node, grb_red_coordinator, already_decided, [TxId, Vote, CommitVC])
-    end;
+    grb_red_coordinator:already_decided(Node, TxId, Vote, CommitVC);
 
 handle_request(_, Partition, #red_learn_abort{ballot=Ballot, tx_id=TxId, reason=Reason, commit_vc=CommitVC}) ->
     grb_paxos_vnode:learn_abort(Partition, Ballot, TxId, Reason, CommitVC);
