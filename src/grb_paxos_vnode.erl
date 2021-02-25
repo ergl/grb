@@ -677,7 +677,7 @@ start_timers(S=#state{synod_role=?follower, prune_interval=PruneInt}) ->
 reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC) ->
     if
         Replica =:= MyReplica ->
-            grb_red_coordinator:accept_ack(Node, Partition, Ballot, TxId, Vote, PrepareVC);
+            grb_red_coordinator:accept_ack(Node, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC);
         true ->
             grb_dc_connection_manager:send_red_accept_ack(Replica, Node, Partition, Ballot, TxId, Vote, PrepareVC)
     end.

@@ -82,6 +82,9 @@ leader_of(Partition) ->
 start_red_coordinators() ->
     {ok, PoolSize} = application:get_env(grb, red_coord_pool_size),
     ok = persistent_term:put({?MODULE, ?POOL_SIZE}, PoolSize),
+    [begin
+         [ grb_measurements:create_stat({grb_red_coordinator, R, P, ack_time}) || P <- grb_dc_utils:my_partitions() ]
+     end || R <- grb_dc_manager:all_replicas() ],
     start_red_coordinators(PoolSize).
 
 -spec start_red_coordinators(non_neg_integer()) -> ok.

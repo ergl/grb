@@ -6,7 +6,7 @@
 
 %% Called by erpc / debug
 -ignore_xref([start_link/1,
-              accept_ack/5,
+              accept_ack/6,
               already_decided/3]).
 
 %% supervision tree
@@ -16,8 +16,8 @@
          commit_send/2,
          already_decided/3,
          already_decided/4,
-         accept_ack/5,
-         accept_ack/6]).
+         accept_ack/6,
+         accept_ack/7]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -28,16 +28,22 @@
 -ifndef(ENABLE_METRICS).
 -define(ADD_PREPARE_TS(__S), __S).
 -define(ADD_FIRST_ACK_TS(__Now, __S), begin _ = __Now, __S end).
--define(REPORT_TS(__Now, __S), begin _ = __Now, _ = __S end).
+-define(ADD_ACK_TS(__Now, __Replica, __Partition, __S), begin _ = __Now, _ = __Replica, _ = __Partition, __S end).
+-define(REPORT_TS(__S), begin _ = __S end).
 -else.
 -define(ADD_PREPARE_TS(__S), __S#tx_acc{prepare_ts=grb_time:timestamp()}).
 -define(ADD_FIRST_ACK_TS(__Now, __S),
     case __S of #tx_acc{ack_ts=0} -> __S#tx_acc{ack_ts=__Now}; _ -> __S end).
--define(REPORT_TS(__Now, __S),
+-define(ADD_ACK_TS(__Now, __Replica, __Partition, __S),
+    __S#tx_acc{ack_ts_map=(__S#tx_acc.ack_ts_map)#{{__Replica, __Partition} => __Now}}).
+-define(REPORT_TS(__S),
     begin
-        #tx_acc{prepare_ts=__PTS, ack_ts=__ATS} = __S,
+        #tx_acc{prepare_ts=__PTS, ack_ts=__ATS, ack_ts_map=__ACK_MAP} = __S,
         ok = grb_measurements:log_stat({?MODULE, prepare_to_first_ack_time}, grb_time:diff_native(__ATS, __PTS)),
-        ok = grb_measurements:log_stat({?MODULE, prepare_to_decision_time}, grb_time:diff_native(__Now, __PTS))
+        ok = grb_measurements:log_stat({?MODULE, prepare_to_decision_time}, grb_time:diff_native(grb_time:timestamp(), __PTS)),
+        [ begin
+              grb_measurements:log_stat({?MODULE, __Repl, __Part, ack_time}, grb_time:diff_native(__ReplTs, __PTS))
+          end || {{__Repl, __Part}, __ReplTs} <- maps:to_list(__ACK_MAP) ]
     end).
 -endif.
 
@@ -53,7 +59,8 @@
     pending_snapshot_vc = undefined :: vclock() | undefined,
     pending_prepares = undefined :: [{partition_id(), readset(), writeset()}] | undefined,
     prepare_ts = 0 :: grb_time:ts(),
-    ack_ts = 0 :: grb_time:ts()
+    ack_ts = 0 :: grb_time:ts(),
+    ack_ts_map = #{} :: #{{replica_id(), partition_id} => grb_time:ts()}
 }).
 -else.
 -record(tx_acc, {
@@ -121,20 +128,20 @@ already_decided(Node, TxId, Vote, VoteVC) when Node =:= node() ->
 already_decided(Node, TxId, Vote, VoteVC) ->
     grb_dc_utils:send_cast(Node, ?MODULE, already_decided, [TxId, Vote, VoteVC]).
 
--spec accept_ack(partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-accept_ack(Partition, Ballot, TxId, Vote, AcceptVC) ->
+-spec accept_ack(replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+accept_ack(SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC) ->
     case grb_red_manager:transaction_coordinator(TxId) of
         error -> ok;
         {ok, Coordinator} ->
-            gen_server:cast(Coordinator, {accept_ack, Partition, Ballot, TxId, Vote, AcceptVC})
+            gen_server:cast(Coordinator, {accept_ack, SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC})
     end.
 
--spec accept_ack(node(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-accept_ack(Node, Partition, Ballot, TxId, Vote, AcceptVC) when Node =:= node() ->
-    accept_ack(Partition, Ballot, TxId, Vote, AcceptVC);
+-spec accept_ack(node(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+accept_ack(Node, SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC) when Node =:= node() ->
+    accept_ack(SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC);
 
-accept_ack(Node, Partition, Ballot, TxId, Vote, AcceptVC) ->
-    grb_dc_utils:send_cast(Node, ?MODULE, accept_ack, [Partition, Ballot, TxId, Vote, AcceptVC]).
+accept_ack(Node, SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC) ->
+    grb_dc_utils:send_cast(Node, ?MODULE, accept_ack, [SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC]).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
@@ -185,14 +192,16 @@ handle_cast({already_decided, TxId, Vote, VoteVC}, S0=#state{self_pid=Pid, accum
     end,
     {noreply, S};
 
-handle_cast({accept_ack, From, Ballot, TxId, Vote, AcceptVC}, S0=#state{self_pid=Pid,
-                                                                        accumulators=TxAcc}) ->
+handle_cast({accept_ack, FromReplica, From, Ballot, TxId, Vote, AcceptVC}, S0=#state{self_pid=Pid,
+                                                                                     accumulators=TxAcc}) ->
+    Now = grb_time:timestamp(),
     S = case maps:get(TxId, TxAcc, undefined) of
         undefined ->
             ?LOG_DEBUG("missed ACCEPT_ACK(~b, ~p, ~p) from ~p", [Ballot, TxId, Vote, From]),
             S0;
         TxState ->
-            S0#state{accumulators=handle_ack(Pid, From, Ballot, TxId, Vote, AcceptVC, TxAcc, TxState)}
+            TxState1 = ?ADD_FIRST_ACK_TS(Now, ?ADD_ACK_TS(Now, FromReplica, From, TxState)),
+            S0#state{accumulators=handle_ack(Pid, From, Ballot, TxId, Vote, AcceptVC, TxAcc, TxState1)}
     end,
     {noreply, S};
 
@@ -302,7 +311,6 @@ send_prepare(Coordinator, Partition, TxId, Label, RS, WS, VC) ->
                  TxState :: #tx_acc{}) -> TxAcc :: #{term() => #tx_acc{}}.
 
 handle_ack(SelfPid, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0, TxState) ->
-    Now = grb_time:timestamp(),
     #tx_acc{ballots=Ballots0, quorums_to_ack=Quorums0, accumulator=Acc0} = TxState,
 
     {ok, Ballots} = check_ballot(FromPartition, Ballot, Ballots0),
@@ -316,9 +324,9 @@ handle_ack(SelfPid, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0, TxState
     end,
     case map_size(Quorums) of
         N when N > 0 ->
-            TxAcc0#{TxId => ?ADD_FIRST_ACK_TS(Now, TxState#tx_acc{quorums_to_ack=Quorums, accumulator=Acc, ballots=Ballots})};
+            TxAcc0#{TxId => TxState#tx_acc{quorums_to_ack=Quorums, accumulator=Acc, ballots=Ballots}};
         0 ->
-            ?REPORT_TS(Now, TxState),
+            ?REPORT_TS(TxState),
             Outcome={Decision, CommitVC} = decide_transaction(Acc),
             reply_to_client(Outcome, TxState#tx_acc.promise),
 
