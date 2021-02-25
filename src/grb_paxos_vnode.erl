@@ -265,21 +265,19 @@ init_follower_state() ->
 
 -spec prepare_heartbeat(partition_id(), term()) -> ok.
 prepare_heartbeat(Partition, Id) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {prepare_hb, Id},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition, {prepare_hb, Id}, ?master).
 
 -spec accept_heartbeat(partition_id(), replica_id(), term(), ballot(), grb_time:ts()) -> ok.
 accept_heartbeat(Partition, SourceReplica, Ballot, Id, Ts) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {accept_hb, SourceReplica, Ballot, Id, Ts},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {accept_hb, SourceReplica, Ballot, Id, Ts},
+                               ?master).
 
--spec decide_heartbeat(index_node(), ballot(), term(), grb_time:ts()) -> ok.
-decide_heartbeat(IndexNode, Ballot, Id, Ts) ->
-    riak_core_vnode_master:command(IndexNode,
-                                   {decide_hb, Ballot, Id, Ts},
-                                   ?master).
+-spec decide_heartbeat(partition_id(), ballot(), term(), grb_time:ts()) -> ok.
+decide_heartbeat(Partition, Ballot, Id, Ts) ->
+    grb_dc_utils:vnode_command(Partition,
+                               {decide_hb, Ballot, Id, Ts},
+                               ?master).
 
 -spec prepare(IndexNode :: index_node(),
               TxId :: term(),
@@ -306,16 +304,18 @@ prepare(IndexNode, TxId, Label, ReadSet, Writeset, SnapshotVC, Coord) ->
              Coord :: red_coord_location()) -> ok.
 
 accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, Coord) ->
+    grb_dc_utils:vnode_command(Partition,
+                               {accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
+                               Coord,
+                               ?master),
+
     %% For blue transactions, any pending operations are removed during blue commit, since
     %% it is performed at the replica / partitions where the client originally performed the
     %% operations. For red commit, however, the client can start the red commit at any
     %% partition, so we aren't able to prune them. With this, we prune the operations
     %% for red transactions when we accept them
     ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
-    riak_core_vnode_master:command({Partition, node()},
-                                   {accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
-                                   Coord,
-                                   ?master).
+    ok.
 
 -spec decide(index_node(), ballot(), term(), red_vote(), vclock()) -> ok.
 decide(IndexNode, Ballot, TxId, Decision, CommitVC) ->
@@ -325,15 +325,15 @@ decide(IndexNode, Ballot, TxId, Decision, CommitVC) ->
 
 -spec learn_abort(partition_id(), ballot(), term(), term(), vclock()) -> ok.
 learn_abort(Partition, Ballot, TxId, Reason, CommitVC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {learn_abort, Ballot, TxId, Reason, CommitVC},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {learn_abort, Ballot, TxId, Reason, CommitVC},
+                               ?master).
 
 -spec deliver(partition_id(), ballot(), grb_time:ts(), [ {term(), term(), #{}, vclock()} | {term(), term()} ]) -> ok.
 deliver(Partition, Ballot, Timestamp, Transactions) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {deliver_transactions, Ballot, Timestamp, Transactions},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {deliver_transactions, Ballot, Timestamp, Transactions},
+                               ?master).
 
 %%%===================================================================
 %%% api riak_core callbacks
@@ -343,6 +343,8 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
+    ok = grb_dc_utils:register_vnode_pid(?master, Partition, self()),
+
     {ok, DeliverInterval} = application:get_env(grb, red_delivery_interval),
     PruningInterval = application:get_env(grb, red_prune_interval, 0),
 

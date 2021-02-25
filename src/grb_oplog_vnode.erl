@@ -72,8 +72,6 @@
 -define(PREPARED_TABLE_IDX, prepared_blue_table_idx).
 -define(PENDING_TX_OPS, pending_tx_ops).
 
--define(VNODE_PID, vnode_pid_entry).
-
 -type op_log() :: cache(key(), grb_version_log:t()).
 -type pending_tx_ops() :: cache({term(), key()}, operation()).
 -type last_vc() :: cache({key(), tx_label()}, vclock()).
@@ -181,7 +179,7 @@ prepared_blue_idx_table(Partition) ->
 
 -spec process_pid(partition_id()) -> pid().
 process_pid(Partition) ->
-    persistent_term:get({?MODULE, Partition, ?VNODE_PID}).
+    grb_dc_utils:get_vnode_pid(?master, Partition).
 
 -ifdef(TEST).
 -spec transaction_ops(partition_id(), term()) -> non_neg_integer().
@@ -357,9 +355,9 @@ handle_replicate(Partition, SourceReplica, WS, VC) ->
         false ->
             ok; %% de-dup, we already received this
         true ->
-            riak_core_vnode_master:command({Partition, node()},
-                                           {handle_remote_tx, SourceReplica, WS, CommitTime, VC},
-                                           ?master)
+            grb_dc_utils:vnode_command(Partition,
+                                       {handle_remote_tx, SourceReplica, WS, CommitTime, VC},
+                                       ?master)
     end.
 
 -spec handle_replicate_array(partition_id(), replica_id(),
@@ -373,9 +371,9 @@ handle_replicate_array(Partition, SourceReplica, Tx1, Tx2, Tx3, Tx4={_, VC}) ->
         false ->
             ok; %% de-dup, we already received this
         true ->
-            riak_core_vnode_master:command({Partition, node()},
-                                           {handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4},
-                                           ?master)
+            grb_dc_utils:vnode_command(Partition,
+                                       {handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4},
+                                       ?master)
     end.
 
 -spec handle_replicate_array(partition_id(), replica_id(),
@@ -389,20 +387,20 @@ handle_replicate_array(Partition, SourceReplica, Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, T
         false ->
             ok; %% de-dup, we already received this
         true ->
-            riak_core_vnode_master:command({Partition, node()},
-                                           {handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4},
-                                           ?master),
+            grb_dc_utils:vnode_command(Partition,
+                                       {handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4},
+                                       ?master),
 
-            riak_core_vnode_master:command({Partition, node()},
-                                           {handle_remote_tx_array, SourceReplica, Tx5, Tx6, Tx7, Tx8},
-                                           ?master)
+            grb_dc_utils:vnode_command(Partition,
+                                       {handle_remote_tx_array, SourceReplica, Tx5, Tx6, Tx7, Tx8},
+                                       ?master)
     end.
 
 -spec handle_red_transaction(partition_id(), tx_label(), writeset(), vclock()) -> ok.
 handle_red_transaction(Partition, Label, WS, VC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {handle_red_tx, Label, WS, VC},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {handle_red_tx, Label, WS, VC},
+                               ?master).
 
 %%%===================================================================
 %%% api riak_core callbacks
@@ -413,6 +411,8 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
+    ok = grb_dc_utils:register_vnode_pid(?master, Partition, self()),
+
     {ok, KeyLogSize} = application:get_env(grb, version_log_size),
     %% We're not using the timer:send_interval/2 or timer:send_after/2 functions for
     %% two reasons:
@@ -529,8 +529,6 @@ handle_command(start_blue_hb_timer, _From, S = #state{partition=Partition,
        true ->
            undefined
     end,
-
-    ok = persistent_term:put({?MODULE, Partition, ?VNODE_PID}, self()),
 
     {reply, ok, S#state{blue_tick_pid=TickProcess, stalled_blue_check_timer=TimerRef}};
 

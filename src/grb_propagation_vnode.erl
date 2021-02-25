@@ -279,9 +279,9 @@ update_stable_vc_sync(Partition, SVC) ->
 
 -spec append_blue_commit(partition_id(), writeset(), vclock()) -> ok.
 append_blue_commit(Partition, WS, CommitVC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {append_blue, WS, CommitVC},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {append_blue, WS, CommitVC},
+                               ?master).
 
 -spec append_remote_blue_commit(replica_id(), partition_id(), grb_time:ts(), #{}, vclock()) -> ok.
 append_remote_blue_commit(ReplicaId, Partition, CommitTime, WS, CommitVC) ->
@@ -305,16 +305,16 @@ append_remote_blue_commit_no_hb(ReplicaId, Partition, WS, CommitVC) ->
 merge_remote_stable_vc(Partition, VC) ->
     S0 = stable_vc(Partition),
     S1 = grb_vclock:max_at_keys(grb_dc_manager:remote_replicas(), S0, VC),
-    riak_core_vnode_master:command({Partition, node()},
-                                   {cure_update_svc, S1},
-                                   ?master),
+    grb_dc_utils:vnode_command(Partition,
+                               {cure_update_svc, S1},
+                               ?master),
     S1.
 
 -spec merge_into_stable_vc(partition_id(), vclock()) -> ok.
 merge_into_stable_vc(Partition, VC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {cure_update_svc_no_return, VC},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {cure_update_svc_no_return, VC},
+                               ?master).
 
 -endif.
 
@@ -328,9 +328,9 @@ uniform_vc(Partition) ->
 
 -spec update_uniform_vc(partition_id(), vclock()) -> ok.
 update_uniform_vc(Partition, SVC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {update_uniform_vc, SVC},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {update_uniform_vc, SVC},
+                               ?master).
 
 %% @doc Update the uniformVC at all replicas but the current one, return result
 -spec merge_remote_uniform_vc(partition_id(), vclock()) -> vclock().
@@ -343,9 +343,9 @@ merge_remote_uniform_vc(Partition, VC) ->
 %% @doc Update the uniformVC at all replicas but the current one, doesn't return anything
 -spec merge_into_uniform_vc(partition_id(), vclock()) -> ok.
 merge_into_uniform_vc(Partition, VC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {merge_uniform_vc, VC},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {merge_uniform_vc, VC},
+                               ?master).
 
 -spec handle_blue_heartbeat(partition_id(), replica_id(), grb_time:ts()) -> ok.
 handle_blue_heartbeat(Partition, ReplicaId, Ts) ->
@@ -369,42 +369,42 @@ handle_blue_heartbeat_unsafe(ReplicaId, Time, Table) ->
 
 -spec handle_clock_update(partition_id(), replica_id(), vclock()) -> ok.
 handle_clock_update(Partition, FromReplicaId, KnownVC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {remote_clock_update, FromReplicaId, KnownVC},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {remote_clock_update, FromReplicaId, KnownVC},
+                               ?master).
 
 %% @doc Same as handle_clock_update/3, but treat knownVC as a blue heartbeat
 -spec handle_clock_heartbeat_update(partition_id(), replica_id(), vclock()) -> ok.
 handle_clock_heartbeat_update(Partition, FromReplicaId, KnownVC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {remote_clock_heartbeat_update, FromReplicaId, KnownVC},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {remote_clock_heartbeat_update, FromReplicaId, KnownVC},
+                               ?master).
 
 -spec handle_clock_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
 handle_clock_update(Partition, FromReplicaId, KnownVC, StableVC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {remote_clock_update, FromReplicaId, KnownVC, StableVC},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {remote_clock_update, FromReplicaId, KnownVC, StableVC},
+                               ?master).
 
 %% @doc Same as handle_clock_update/4, but treat knownVC as a blue heartbeat
 -spec handle_clock_heartbeat_update(partition_id(), replica_id(), vclock(), vclock()) -> ok.
 handle_clock_heartbeat_update(Partition, FromReplicaId, KnownVC, StableVC) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {remote_clock_heartbeat_update, FromReplicaId, KnownVC, StableVC},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {remote_clock_heartbeat_update, FromReplicaId, KnownVC, StableVC},
+                               ?master).
 
 
 -spec register_uniform_barrier(grb_promise:t(), partition_id(), grb_time:ts()) -> ok.
 register_uniform_barrier(Promise, Partition, Timestamp) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {uniform_barrier, Promise, Timestamp},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {uniform_barrier, Promise, Timestamp},
+                               ?master).
 
 -spec register_red_uniform_barrier(partition_id(), grb_time:ts(), red_coordinator(), term()) -> ok.
 register_red_uniform_barrier(Partition, Timestamp, Pid, TxId) ->
-    riak_core_vnode_master:command({Partition, node()},
-                                   {red_uniform_barrier, Pid, TxId, Timestamp},
-                                   ?master).
+    grb_dc_utils:vnode_command(Partition,
+                               {red_uniform_barrier, Pid, TxId, Timestamp},
+                               ?master).
 
 %%%===================================================================
 %%% api riak_core callbacks
@@ -414,6 +414,8 @@ start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, ?MODULE).
 
 init([Partition]) ->
+    ok = grb_dc_utils:register_vnode_pid(?master, Partition, self()),
+
     {ok, ReplInt} = application:get_env(grb, basic_replication_interval),
     {ok, PruneInterval} = application:get_env(grb, prune_committed_blue_interval),
     {ok, UniformInterval} = application:get_env(grb, uniform_replication_interval),

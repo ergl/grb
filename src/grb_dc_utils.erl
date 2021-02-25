@@ -13,6 +13,11 @@
 
 -export([send_cast/4]).
 
+-export([get_vnode_pid/2,
+         register_vnode_pid/3,
+         vnode_command/3,
+         vnode_command/4]).
+
 %% Managing ETS tables
 -export([safe_bin_to_atom/1]).
 
@@ -130,6 +135,36 @@ maybe_send_after(Time, Msg) ->
 send_cast(N, M, F, A) ->
     _ = erts_internal:dist_spawn_request(N, {M, F, A}, [{reply, no}], spawn_request),
     ok.
+
+-spec register_vnode_pid(atom(), partition_id(), pid()) -> ok.
+register_vnode_pid(VMaster, Partition, Pid) ->
+    persistent_term:put({?MODULE, VMaster, Partition}, Pid).
+
+-spec get_vnode_pid(atom(), partition_id()) -> pid().
+get_vnode_pid(VMaster, Partition) ->
+    persistent_term:get({?MODULE, VMaster, Partition}).
+
+%% Optimized riak_core_vnode:command/3 when we're in the same Erlang node.
+-spec vnode_command(partition_id(), term(), atom()) -> ok.
+vnode_command(Partition, Request, VMaster) ->
+    vnode_command(Partition, Request, ignore, VMaster).
+
+%% Optimized riak_core_vnode:command/4 when we're in the same Erlang node.
+%%
+%% Riak core will always route requests through proxy processes, unless we pass
+%% the process pid of the target vnode process. If we register that identifier
+%% when the process starts, we can bypass proxies, and simply send a gen_fsm
+%% message to the vnode pid.
+%%
+%% It also avoids allocating tuples / lists having to do with preference lists,
+%% as we always have the size of the preflist set to 1.
+%%
+%% We looked at the internals of riak_core_vnode_master for this.
+%%
+-spec vnode_command(partition_id(), term(), _, atom()) -> ok.
+vnode_command(Partition, Request, Sender, VMaster) ->
+    gen_fsm_compat:send_event(get_vnode_pid(VMaster, Partition),
+                              riak_core_vnode_master:make_request(Request, Sender, Partition)).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal

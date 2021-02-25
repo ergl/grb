@@ -4,7 +4,10 @@
 -include("dc_messages.hrl").
 -include_lib("kernel/include/logger.hrl").
 
--ignore_xref([start_link/1]).
+%% Called by erpc / debug
+-ignore_xref([start_link/1,
+              accept_ack/5,
+              already_decided/3]).
 
 %% supervision tree
 -export([start_link/1]).
