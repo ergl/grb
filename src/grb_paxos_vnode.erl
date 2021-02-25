@@ -309,6 +309,7 @@ accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, Coord) ->
                                Coord,
                                ?master),
 
+    %% FIXME(borja): Remove this, put it at the coordinator level
     %% For blue transactions, any pending operations are removed during blue commit, since
     %% it is performed at the replica / partitions where the client originally performed the
     %% operations. For red commit, however, the client can start the red commit at any
@@ -469,6 +470,7 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
     %% operations. For red commit, however, the client can start the red commit at any
     %% partition, so we aren't able to prune them. With this, we prune the operations
     %% for red transactions when we prepare them
+    %% FIXME(borja): Remove this, put it at the coordinator level
     ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
 
     {Result, LeaderState} = grb_paxos_state:prepare(TxId, Label, RS, WS, SnapshotVC, LastRed, Conflicts, LeaderState0),
