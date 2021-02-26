@@ -28,6 +28,10 @@
          handle_cast/2,
          handle_info/2]).
 
+-ifdef(ENABLE_METRICS).
+-export([metrics_table/0]).
+-endif.
+
 -define(COORD_TABLE, grb_red_manager_coordinators).
 -define(QUORUM_KEY, quorum_size).
 -define(POOL_SIZE, pool_size).
@@ -82,9 +86,22 @@ leader_of(Partition) ->
 start_red_coordinators() ->
     {ok, PoolSize} = application:get_env(grb, red_coord_pool_size),
     ok = persistent_term:put({?MODULE, ?POOL_SIZE}, PoolSize),
-    [begin
-         [ grb_measurements:create_stat({grb_red_coordinator, R, P, ack_time}) || P <- grb_dc_utils:my_partitions() ]
-     end || R <- grb_dc_manager:all_replicas() ],
+
+    AllReplicas = grb_dc_manager:all_replicas(),
+    lists:foreach(
+        fun(P) ->
+            grb_measurements:create_stat({grb_red_coordinator, P, sent_to_first_ack}),
+            grb_measurements:create_stat({grb_red_coordinator, P, sent_to_decision}),
+            lists:foreach(
+                fun(R) ->
+                    grb_measurements:create_stat({grb_red_coordinator, P, R, sent_to_ack})
+                end,
+                AllReplicas
+            )
+        end,
+        grb_dc_utils:my_partitions()
+    ),
+
     start_red_coordinators(PoolSize).
 
 -spec start_red_coordinators(non_neg_integer()) -> ok.
@@ -118,10 +135,24 @@ unregister_coordinator(TxId, Pid) ->
 %% gen_server callbacks
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+-ifdef(ENABLE_METRICS).
+init([]) ->
+    CoordTable = ets:new(?COORD_TABLE, [set, public, named_table,
+                                        {read_concurrency, true}, {write_concurrency, true}]),
+    Ref = ets:new(coord_metrics, [ordered_set, public,
+                                  {read_concurrency, true}, {write_concurrency, true}]),
+    ok = persistent_term:put({?MODULE, coord_metrics}, Ref),
+    {ok, #state{pid_for_tx=CoordTable}}.
+
+-spec metrics_table() -> reference().
+metrics_table() ->
+    persistent_term:get({?MODULE, coord_metrics}).
+-else.
 init([]) ->
     CoordTable = ets:new(?COORD_TABLE, [set, public, named_table,
                                         {read_concurrency, true}, {write_concurrency, true}]),
     {ok, #state{pid_for_tx=CoordTable}}.
+-endif.
 
 handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),

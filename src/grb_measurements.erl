@@ -5,10 +5,7 @@
 -define(AGGREGATE_TABLE, aggregate_table).
 -define(COUNTER_TABLE, counter_table).
 
--define(DEFAULT_STAT_SPECS, [
-    {grb_red_coordinator, prepare_to_first_ack_time},
-    {grb_red_coordinator, prepare_to_decision_time}
-]).
+-define(DEFAULT_STAT_SPECS, []).
 
 -record(stat_entry, {
     key :: term(),
