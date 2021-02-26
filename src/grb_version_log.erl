@@ -32,7 +32,8 @@
 -export([apply_raw/2]).
 
 -ifdef(TEST).
--export([from_list/5]).
+-export([to_list/1,
+         from_list/5]).
 -endif.
 
 -spec new(crdt(), grb_crdt:t(), [all_replica_id()], non_neg_integer()) -> t().
@@ -85,7 +86,30 @@ insert_old_first(Op, Actors, InVC, [{FirstVC, _}=Entry | Rest], Acc) ->
         true ->
             lists:reverse(Acc, [{InVC, Op}, Entry | Rest]);
         false ->
-            insert_old_first(Op, Actors, InVC, Rest, [Entry | Acc])
+            case grb_vclock:leq_at_keys(Actors, FirstVC, InVC) of
+                false ->
+                    insert_old_concurrent(Op, Actors, InVC, Rest, [Entry], Acc);
+                true ->
+                    insert_old_first(Op, Actors, InVC, Rest, [Entry | Acc])
+            end
+    end.
+
+-spec insert_old_concurrent(Op :: operation(),
+                            Actors :: [all_replica_id()],
+                            CommitVC :: vclock(),
+                            Operations0 :: [{vclock(), operation()}],
+                            Concurrent :: [{vclock(), operation()}],
+                            Acc :: [{vclock(), operation()}]) -> Operations :: [{vclock(), operation()}].
+
+insert_old_concurrent(Op, _, InVC, [], Concurrent, Acc) ->
+    lists:reverse(Acc, lists:sort(fun erlang:'>='/2, [{InVC, Op} | Concurrent]));
+
+insert_old_concurrent(Op, Actors, InVC, [{LastVC, _}=Entry | Rest], Concurrent, Acc) ->
+    case concurrent_at_keys(Actors, InVC, LastVC) of
+        true ->
+            insert_old_concurrent(Op, Actors, InVC, Rest, [Entry | Concurrent], Acc);
+        false ->
+            lists:reverse(Acc, lists:sort(fun erlang:'>='/2, [{InVC, Op}, Entry | Concurrent])) ++  Rest
     end.
 
 -spec insert_new_first(Op :: operation(),
@@ -110,8 +134,36 @@ insert_new_first(Op, Actors,InVC, [{LastVC, _}=Entry | Rest], Acc) ->
         true ->
             lists:reverse(Acc, [{InVC, Op}, Entry | Rest]);
         false ->
-            insert_new_first(Op, Actors, InVC, Rest, [Entry | Acc])
+            case grb_vclock:leq_at_keys(Actors, InVC, LastVC) of
+                false ->
+                    insert_new_concurrent(Op, Actors, InVC, Rest, [Entry], Acc);
+                true ->
+                    insert_new_first(Op, Actors, InVC, Rest, [Entry | Acc])
+            end
     end.
+
+-spec insert_new_concurrent(Op :: operation(),
+                            Actors :: [all_replica_id()],
+                            CommitVC :: vclock(),
+                            Operations0 :: [{vclock(), operation()}],
+                            Concurrent :: [{vclock(), operation()}],
+                            Acc :: [{vclock(), operation()}]) -> Operations :: [{vclock(), operation()}].
+
+insert_new_concurrent(Op, _, InVC, [], Concurrent, Acc) ->
+    lists:reverse(Acc, lists:sort([{InVC, Op} | Concurrent]));
+
+insert_new_concurrent(Op, Actors, InVC, [{LastVC, _}=Entry | Rest], Concurrent, Acc) ->
+    case concurrent_at_keys(Actors, InVC, LastVC) of
+        true ->
+            insert_new_concurrent(Op, Actors, InVC, Rest, [Entry | Concurrent], Acc);
+        false ->
+            lists:reverse(Acc, lists:sort([{InVC, Op}, Entry | Concurrent])) ++ Rest
+    end.
+
+-spec concurrent_at_keys([all_replica_id()], vclock(), vclock()) -> boolean().
+concurrent_at_keys(Keys, VC1, VC2) ->
+    (not grb_vclock:leq_at_keys(Keys, VC1, VC2))
+        andalso (not grb_vclock:leq_at_keys(Keys, VC2, VC1)).
 
 -spec maybe_gc(t()) -> t().
 maybe_gc(S=#state{size=N, max_size=M})
@@ -255,12 +307,81 @@ snapshot_lower_new_first_concurrent(VC, Actors, Acc, [{OpVC, Op} | Rest]) ->
 
 -ifdef(TEST).
 
+-spec to_list(t()) -> [{vclock(), operation()}].
+to_list(#state{operations=Operations}) -> Operations.
+
 -spec from_list(crdt(), grb_crdt:t(), [all_replica_id()], non_neg_integer(), [{vclock(), operation()}]) -> t().
 from_list(Type, Base, Actors, Size, Ops) ->
     from_list_(Ops, new(Type, Base, Actors, Size)).
 
 from_list_([], S) -> S;
 from_list_([{VC, Op} | Rest], S) -> from_list_(Rest, insert(Op, VC, S)).
+
+grb_version_log_insert_concurrent_lww_test() ->
+    DC1 = replica_1, DC2 = replica_2, DC3 = replica_3,
+    Actors = [DC1, DC2, DC3],
+    VC = fun maps:from_list/1,
+    Type = ?lww,
+    Base = grb_crdt:new(Type),
+
+    Op1 = {VC([{DC1, 2}, {DC2, 1}, {DC3, 1}]), grb_crdt:make_op(Type, 0)},
+    Op2 = {VC([{DC1, 1}, {DC2, 2}, {DC3, 1}]), grb_crdt:make_op(Type, 1)},
+    Op3 = {VC([{DC1, 1}, {DC2, 1}, {DC3, 2}]), grb_crdt:make_op(Type, 2)},
+
+    Log1 = to_list(from_list(Type, Base, Actors, 10, [Op1, Op2, Op3])),
+    Log2 = to_list(from_list(Type, Base, Actors, 10, [Op1, Op3, Op2])),
+    Log3 = to_list(from_list(Type, Base, Actors, 10, [Op2, Op1, Op3])),
+    Log4 = to_list(from_list(Type, Base, Actors, 10, [Op3, Op2, Op1])),
+
+    ?assertEqual(Log2, Log1),
+    ?assertEqual(Log3, Log2),
+    ?assertEqual(Log4, Log3),
+
+    ok.
+
+grb_version_log_insert_concurrent_maxtuple_test() ->
+    DC1 = replica_1, DC2 = replica_2, DC3 = replica_3,
+    Actors = [DC1, DC2, DC3],
+    VC = fun maps:from_list/1,
+    Type = ?maxtuple,
+    Base = grb_crdt:new(Type),
+
+    Op1 = {VC([{DC1, 2}, {DC2, 1}, {DC3, 1}]), grb_crdt:make_op(Type, {0, <<>>})},
+    Op2 = {VC([{DC1, 1}, {DC2, 2}, {DC3, 1}]), grb_crdt:make_op(Type, {1, <<>>})},
+    Op3 = {VC([{DC1, 1}, {DC2, 1}, {DC3, 2}]), grb_crdt:make_op(Type, {2, <<>>})},
+
+    Log1 = to_list(from_list(Type, Base, Actors, 10, [Op1, Op2, Op3])),
+    Log2 = to_list(from_list(Type, Base, Actors, 10, [Op1, Op3, Op2])),
+    Log3 = to_list(from_list(Type, Base, Actors, 10, [Op2, Op1, Op3])),
+    Log4 = to_list(from_list(Type, Base, Actors, 10, [Op3, Op2, Op1])),
+
+    ?assertEqual(Log2, Log1),
+    ?assertEqual(Log3, Log2),
+    ?assertEqual(Log4, Log3),
+
+    ok.
+
+grb_version_log_insert_concurrent_gset_test() ->
+    DC1 = replica_1, DC2 = replica_2, DC3 = replica_3,
+    Actors = [DC1, DC2, DC3],
+    VC = fun maps:from_list/1,
+    Type = ?gset,
+    Base = grb_crdt:new(Type),
+
+    Op1 = {VC([{DC1, 2}, {DC2, 1}, {DC3, 1}]), grb_crdt:make_op(Type, 0)},
+    Op2 = {VC([{DC1, 1}, {DC2, 2}, {DC3, 1}]), grb_crdt:make_op(Type, 1)},
+    Op3 = {VC([{DC1, 1}, {DC2, 1}, {DC3, 2}]), grb_crdt:make_op(Type, 2)},
+
+    Log1 = to_list(from_list(Type, Base, Actors, 10, [Op1, Op2, Op3])),
+    Log2 = to_list(from_list(Type, Base, Actors, 10, [Op1, Op3, Op2])),
+    Log3 = to_list(from_list(Type, Base, Actors, 10, [Op2, Op1, Op3])),
+    Log4 = to_list(from_list(Type, Base, Actors, 10, [Op3, Op2, Op1])),
+
+    ?assertEqual(Log2, Log1),
+    ?assertEqual(Log3, Log2),
+    ?assertEqual(Log4, Log3),
+
+    ok.
 
 grb_version_log_snapshot_lower_lww_test() ->
     DC1 = replica_1, DC2 = replica_2, DC3 = replica_3,
