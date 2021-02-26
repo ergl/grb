@@ -79,11 +79,11 @@ insert_old_first(Op, Actors, VC, L) ->
                        Acc :: [{vclock(), operation()}]) -> Operations :: [{vclock(), operation()}].
 
 insert_old_first(Op, _, VC, [], Acc) ->
-    lists:reverse(Acc) ++ [{VC, Op}];
+    lists:reverse(Acc, [{VC, Op}]);
 insert_old_first(Op, Actors, InVC, [{FirstVC, _}=Entry | Rest], Acc) ->
     case grb_vclock:leq_at_keys(Actors, InVC, FirstVC) of
         true ->
-            lists:reverse(Acc) ++ [{InVC, Op}, Entry | Rest];
+            lists:reverse(Acc, [{InVC, Op}, Entry | Rest]);
         false ->
             insert_old_first(Op, Actors, InVC, Rest, [Entry | Acc])
     end.
@@ -104,11 +104,11 @@ insert_new_first(Op, Actors, VC, L) ->
                        Acc :: [{vclock(), operation()}]) -> Operations :: [{vclock(), operation()}].
 
 insert_new_first(Op, _, VC, [], Acc) ->
-    lists:reverse(Acc) ++ [{VC, Op}];
+    lists:reverse(Acc, [{VC, Op}]);
 insert_new_first(Op, Actors,InVC, [{LastVC, _}=Entry | Rest], Acc) ->
     case grb_vclock:leq_at_keys(Actors, LastVC, InVC) of
         true ->
-            lists:reverse(Acc) ++ [{InVC, Op}, Entry | Rest];
+            lists:reverse(Acc, [{InVC, Op}, Entry | Rest]);
         false ->
             insert_new_first(Op, Actors, InVC, Rest, [Entry | Acc])
     end.
