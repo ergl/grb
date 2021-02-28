@@ -480,11 +480,8 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
             %% skip replicas, this is enough to reply to the client
             reply_already_decided(Coordinator, LocalId, Partition, TxId, Decision, CommitVC);
         {Vote, Ballot, PrepareVC} ->
-            reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
-            lists:foreach(fun(ReplicaId) ->
-                grb_dc_connection_manager:send_red_accept(ReplicaId, Coordinator, Partition,
-                                                          Ballot, Vote, TxId, Label, RS, WS, PrepareVC)
-            end, grb_dc_connection_manager:connected_replicas())
+            ok = reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
+            ok = send_accepts(Partition, Coordinator, Ballot, TxId, Label, Vote, RS, WS, PrepareVC)
     end,
     {noreply, ?MARK_SEEN_TX_TS(TxId, Now, S#state{synod_state=LeaderState})};
 
@@ -692,6 +689,25 @@ reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decisi
         true ->
             grb_dc_connection_manager:send_red_already_decided(Replica, Node, Partition, TxId, Decision, CommitVC)
     end.
+
+-spec send_accepts(Partition :: partition_id(),
+                   Coordinator :: red_coord_location(),
+                   Ballot :: ballot(),
+                   TxId :: term(),
+                   Label :: tx_label(),
+                   Decision :: red_vote(),
+                   RS :: readset(),
+                   WS :: writeset(),
+                   PrepareVC :: vclock()) -> ok.
+
+send_accepts(Partition, Coordinator, Ballot, TxId, Label, Decision, RS, WS, PrepareVC) ->
+    AcceptMsg = grb_dc_messages:frame(
+        grb_dc_messages:red_accept(Coordinator, Ballot, Decision, TxId, Label, RS, WS, PrepareVC)
+    ),
+    lists:foreach(
+        fun(R) -> grb_dc_connection_manager:send_raw_framed(R, Partition, AcceptMsg) end,
+        grb_dc_connection_manager:connected_replicas()
+    ).
 
 -spec decide_hb_internal(ballot(), term(), grb_time:ts(), #state{}) -> {ok, #state{}} | {not_ready, non_neg_integer()}.
 %% this is here due to grb_paxos_state:decision_hb/4, that dialyzer doesn't like
