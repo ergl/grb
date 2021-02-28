@@ -59,6 +59,8 @@
 -define(NEXT_READY_DURATION(__P), {?MODULE, __P, get_next_ready_ts}).
 -define(DELIVER_DURATION(__P), {?MODULE, __P, deliver_updates_ts}).
 
+-define(ACCEPT_FLIGHT_TS(__P), {?MODULE, __P, accept_in_flight}).
+
 -define(leader, leader).
 -define(follower, follower).
 -type role() :: ?leader | ?follower.
@@ -303,6 +305,7 @@ prepare(IndexNode, TxId, Label, ReadSet, Writeset, SnapshotVC, Coord) ->
              PrepareVC :: vclock(),
              Coord :: red_coord_location()) -> ok.
 
+-ifndef(ENABLE_METRICS).
 accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, Coord) ->
     grb_dc_utils:vnode_command(Partition,
                                {accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
@@ -317,6 +320,24 @@ accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, Coord) ->
     %% for red transactions when we accept them
     ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
     ok.
+-else.
+accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, {SentTs, Coord}) ->
+    Elapsed = grb_time:diff_native(grb_time:timestamp(), SentTs),
+    grb_measurements:log_stat(?ACCEPT_FLIGHT_TS(Partition), Elapsed),
+    grb_dc_utils:vnode_command(Partition,
+                               {accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
+                               Coord,
+                               ?master),
+
+    %% FIXME(borja): Remove this, put it at the coordinator level
+    %% For blue transactions, any pending operations are removed during blue commit, since
+    %% it is performed at the replica / partitions where the client originally performed the
+    %% operations. For red commit, however, the client can start the red commit at any
+    %% partition, so we aren't able to prune them. With this, we prune the operations
+    %% for red transactions when we accept them
+    ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
+    ok.
+-endif.
 
 -spec decide(index_node(), ballot(), term(), red_vote(), vclock()) -> ok.
 decide(IndexNode, Ballot, TxId, Decision, CommitVC) ->
@@ -416,6 +437,7 @@ handle_command(init_follower, _Sender, S=#state{synod_role=undefined, synod_stat
     ok = grb_measurements:create_stat(?QUEUE_KEY(S#state.partition)),
     ok = grb_measurements:create_stat(?TO_ABORT_TS_KEY(S#state.partition)),
     ok = grb_measurements:create_stat(?TO_DELIVERY_TS_KEY(S#state.partition)),
+    ok = grb_measurements:create_stat(?ACCEPT_FLIGHT_TS(S#state.partition)),
 
     ReplicaId = grb_dc_manager:replica_id(),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
@@ -673,6 +695,7 @@ start_timers(S=#state{synod_role=?follower, prune_interval=PruneInt}) ->
     S#state{prune_timer=grb_dc_utils:maybe_send_after(PruneInt, ?prune_event)}.
 
 -spec reply_accept_ack(red_coord_location(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+-ifndef(ENABLE_METRICS).
 reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC) ->
     if
         Replica =:= MyReplica ->
@@ -680,6 +703,16 @@ reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vot
         true ->
             grb_dc_connection_manager:send_red_accept_ack(Replica, Node, Partition, Ballot, TxId, Vote, PrepareVC)
     end.
+-else.
+reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC) ->
+    SendTS = grb_time:timestamp(),
+    if
+        Replica =:= MyReplica ->
+            grb_red_coordinator:accept_ack({SendTS, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC);
+        true ->
+            grb_dc_connection_manager:send_red_accept_ack(Replica, {SendTS, Node}, Partition, Ballot, TxId, Vote, PrepareVC)
+    end.
+-endif.
 
 -spec reply_already_decided(red_coord_location(), replica_id(), partition_id(), term(), red_vote(), vclock()) -> ok.
 reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decision, CommitVC) ->
@@ -700,6 +733,7 @@ reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decisi
                    WS :: writeset(),
                    PrepareVC :: vclock()) -> ok.
 
+-ifndef(ENABLE_METRICS).
 send_accepts(Partition, Coordinator, Ballot, TxId, Label, Decision, RS, WS, PrepareVC) ->
     AcceptMsg = grb_dc_messages:frame(
         grb_dc_messages:red_accept(Coordinator, Ballot, Decision, TxId, Label, RS, WS, PrepareVC)
@@ -708,6 +742,17 @@ send_accepts(Partition, Coordinator, Ballot, TxId, Label, Decision, RS, WS, Prep
         fun(R) -> grb_dc_connection_manager:send_raw_framed(R, Partition, AcceptMsg) end,
         grb_dc_connection_manager:connected_replicas()
     ).
+-else.
+send_accepts(Partition, Coordinator, Ballot, TxId, Label, Decision, RS, WS, PrepareVC) ->
+    SendTS = grb_time:timestamp(),
+    AcceptMsg = grb_dc_messages:frame(
+        grb_dc_messages:red_accept({SendTS, Coordinator}, Ballot, Decision, TxId, Label, RS, WS, PrepareVC)
+    ),
+    lists:foreach(
+        fun(R) -> grb_dc_connection_manager:send_raw_framed(R, Partition, AcceptMsg) end,
+        grb_dc_connection_manager:connected_replicas()
+    ).
+-endif.
 
 -spec decide_hb_internal(ballot(), term(), grb_time:ts(), #state{}) -> {ok, #state{}} | {not_ready, non_neg_integer()}.
 %% this is here due to grb_paxos_state:decision_hb/4, that dialyzer doesn't like

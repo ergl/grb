@@ -192,11 +192,24 @@ accept_ack(SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC) ->
     end.
 
 -spec accept_ack(node(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+-ifndef(ENABLE_METRICS).
 accept_ack(Node, SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC) when Node =:= node() ->
     accept_ack(SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC);
 
 accept_ack(Node, SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC) ->
     grb_dc_utils:send_cast(Node, ?MODULE, accept_ack, [SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC]).
+-else.
+accept_ack({SentTs, Node}, SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC) ->
+    Elapsed = grb_time:diff_native(grb_time:timestamp(), SentTs),
+    grb_measurements:log_stat({?MODULE, Partition, SenderReplica, ack_in_flight}, Elapsed),
+    if
+        Node =:= node() ->
+            accept_ack(SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC);
+        true ->
+            ok = grb_measurements:log_counter({?MODULE, Partition, SenderReplica, fwd_accept_ack}),
+            grb_dc_utils:send_cast(Node, ?MODULE, accept_ack, [SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC])
+    end.
+-endif.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
@@ -351,6 +364,7 @@ send_prepare(Coordinator, Partition, TxId, Label, RS, WS, VC) ->
             ok = grb_dc_connection_manager:send_red_prepare(RemoteReplica, Coordinator, Partition,
                                                             TxId, Label, RS, WS, VC);
         {proxy, LocalNode, RemoteReplica} ->
+            ok = grb_measurements:log_counter({?MODULE, Partition, RemoteReplica, fwd_send_prepare}),
             %% leader is in another replica, but we don't have a direct inter_dc connection, have
             %% to go through a cluster-local proxy at `LocalNode`
             Msg = grb_dc_messages:red_prepare(Coordinator, TxId, Label, RS, WS, VC),
@@ -414,6 +428,7 @@ send_decision(Partition, LeaderLoc, Ballot, TxId, Decision, CommitVC) ->
             ok = grb_dc_connection_manager:send_red_decision(RemoteReplica, Partition, Ballot,
                                                              TxId, Decision, CommitVC);
         {proxy, LocalNode, RemoteReplica} ->
+            ok = grb_measurements:log_counter({?MODULE, Partition, RemoteReplica, fwd_send_decision}),
             %% leader is in another replica, but we don't have a direct inter_dc connection, have
             %% to go through a cluster-local proxy at `LocalNode`
             Msg = grb_dc_messages:red_decision(Ballot, Decision, TxId, CommitVC),
