@@ -9,6 +9,8 @@
 -export([start_connection/4,
          send/2,
          send_framed/2,
+         send_process/2,
+         send_process_framed/2,
          close/1]).
 
 %% gen_server callbacks
@@ -44,6 +46,14 @@ send(#handle{socket=Socket}, Msg) ->
 send_framed(#handle{socket=Socket}, Msg) ->
     gen_tcp:send(Socket, Msg).
 
+-spec send_process(t(), iodata()) -> ok.
+send_process(#handle{pid=Pid}, Msg) ->
+    gen_server:cast(Pid, {send, Msg}).
+
+-spec send_process_framed(t(), iolist()) -> ok.
+send_process_framed(#handle{pid=Pid}, Msg) ->
+    gen_server:cast(Pid, {send_framed, Msg}).
+
 -spec close(t()) -> ok.
 close(#handle{pid=Pid}) ->
     gen_server:cast(Pid, close).
@@ -69,6 +79,14 @@ handle_call(socket, _From, S=#state{socket=Socket}) ->
 handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
+
+handle_cast({send, Msg}, S=#state{socket=Socket}) ->
+    ok = gen_tcp:send(Socket, grb_dc_messages:frame(Msg)),
+    {noreply, S};
+
+handle_cast({send_framed, Msg}, S=#state{socket=Socket}) ->
+    ok = gen_tcp:send(Socket, Msg),
+    {noreply, S};
 
 handle_cast(stop, S) ->
     {stop, normal, S};

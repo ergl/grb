@@ -282,7 +282,7 @@ send_raw(ToId, Partition, Msg) ->
 send_raw_framed(ToId, Partition, IOList) ->
     try
         Connection = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
-        grb_dc_connection_sender:send_framed(Connection, IOList)
+        grb_dc_connection_sender:send_process_framed(Connection, IOList)
     catch _:_  ->
         {error, gone}
     end.
@@ -291,7 +291,7 @@ send_raw_framed(ToId, Partition, IOList) ->
 send_raw(Table, ToId, Partition, Msg) ->
     try
         Connection = ets:lookup_element(Table, {Partition, ToId}, 2),
-        grb_dc_connection_sender:send(Connection, Msg)
+        grb_dc_connection_sender:send_process(Connection, Msg)
     catch _:_  ->
         {error, gone}
     end.
