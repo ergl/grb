@@ -66,7 +66,7 @@ init([TargetReplica, Partition, Ip, Port]) ->
     ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, message_queue_len}),
     ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, send_elapsed}),
     Opts = lists:keyreplace(packet, 1, ?INTER_DC_SOCK_OPTS, {packet, raw}),
-    case gen_tcp:connect(Ip, Port, Opts) of
+    case gen_tcp:connect(Ip, Port, [{inet_backend, socket} | Opts]) of
         {error, Reason} ->
             {stop, Reason};
         {ok, Socket} ->
