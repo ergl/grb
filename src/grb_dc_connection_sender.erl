@@ -63,6 +63,7 @@ close(#handle{pid=Pid}) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 init([TargetReplica, Partition, Ip, Port]) ->
+    ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, message_queue_len}),
     Opts = lists:keyreplace(packet, 1, ?INTER_DC_SOCK_OPTS, {packet, raw}),
     case gen_tcp:connect(Ip, Port, Opts) of
         {error, Reason} ->
@@ -80,11 +81,13 @@ handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
-handle_cast({send, Msg}, S=#state{socket=Socket}) ->
+handle_cast({send, Msg}, S=#state{socket=Socket, connected_dc=R, connected_partition=P}) ->
+    grb_measurements:log_queue_length({?MODULE, P, R}),
     ok = gen_tcp:send(Socket, grb_dc_messages:frame(Msg)),
     {noreply, S};
 
-handle_cast({send_framed, Msg}, S=#state{socket=Socket}) ->
+handle_cast({send_framed, Msg}, S=#state{socket=Socket, connected_dc=R, connected_partition=P}) ->
+    grb_measurements:log_queue_length({?MODULE, P, R, message_queue_len}),
     ok = gen_tcp:send(Socket, Msg),
     {noreply, S};
 
