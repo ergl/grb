@@ -11,6 +11,7 @@
          send_framed/2,
          send_process/2,
          send_process_framed/2,
+         send_process_framed_delay/3,
          close/1]).
 
 %% gen_server callbacks
@@ -53,6 +54,10 @@ send_process(#handle{pid=Pid}, Msg) ->
 -spec send_process_framed(t(), iolist()) -> ok.
 send_process_framed(#handle{pid=Pid}, Msg) ->
     gen_server:cast(Pid, {send_framed, Msg}).
+
+send_process_framed_delay(#handle{pid=Pid}, Msg, Delay) ->
+    _ = erlang:send_after(Delay, Pid, {send_framed, Msg}),
+    ok.
 
 -spec close(t()) -> ok.
 close(#handle{pid=Pid}) ->
@@ -108,6 +113,11 @@ send_through_socket(#state{socket=Socket, connected_dc=R, connected_partition=P}
     ok = grb_measurements:log_stat({?MODULE, P, R, send_elapsed}, Took),
     ok.
 -endif.
+
+handle_info({send_framed, Msg}, S=#state{connected_dc=R, connected_partition=P}) ->
+    grb_measurements:log_queue_length({?MODULE, P, R, message_queue_len}),
+    ok = send_through_socket(S, Msg),
+    {noreply, S};
 
 handle_info({tcp, Socket, Data}, State=#state{socket=Socket, connected_dc=Target}) ->
     ?LOG_INFO("~p: Received unexpected data ~p", [?MODULE, Target, Data]),
