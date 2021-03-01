@@ -687,7 +687,7 @@ reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vot
             grb_red_coordinator:accept_ack({SendTS, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC);
         true ->
             Msg = grb_dc_messages:frame(grb_dc_messages:red_accept_ack({SendTS, Node}, Ballot, Vote, TxId, PrepareVC)),
-            grb_dc_connection_manager:send_raw_framed(Replica, Partition, Msg, 20)
+            grb_dc_connection_manager:send_raw_framed(Replica, Partition, Msg, 5)
     end.
 -endif.
 
