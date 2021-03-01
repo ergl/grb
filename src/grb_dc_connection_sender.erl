@@ -64,6 +64,7 @@ close(#handle{pid=Pid}) ->
 
 init([TargetReplica, Partition, Ip, Port]) ->
     ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, message_queue_len}),
+    ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, send_elapsed}),
     Opts = lists:keyreplace(packet, 1, ?INTER_DC_SOCK_OPTS, {packet, raw}),
     case gen_tcp:connect(Ip, Port, Opts) of
         {error, Reason} ->
@@ -81,14 +82,14 @@ handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
-handle_cast({send, Msg}, S=#state{socket=Socket, connected_dc=R, connected_partition=P}) ->
-    grb_measurements:log_queue_length({?MODULE, P, R}),
-    ok = gen_tcp:send(Socket, grb_dc_messages:frame(Msg)),
+handle_cast({send, Msg}, S=#state{connected_dc=R, connected_partition=P}) ->
+    grb_measurements:log_queue_length({?MODULE, P, R, message_queue_len}),
+    ok = send_through_socket(S, grb_dc_messages:frame(Msg)),
     {noreply, S};
 
-handle_cast({send_framed, Msg}, S=#state{socket=Socket, connected_dc=R, connected_partition=P}) ->
+handle_cast({send_framed, Msg}, S=#state{connected_dc=R, connected_partition=P}) ->
     grb_measurements:log_queue_length({?MODULE, P, R, message_queue_len}),
-    ok = gen_tcp:send(Socket, Msg),
+    ok = send_through_socket(S, Msg),
     {noreply, S};
 
 handle_cast(stop, S) ->
@@ -97,6 +98,16 @@ handle_cast(stop, S) ->
 handle_cast(E, S) ->
     ?LOG_WARNING("~p unexpected cast: ~p~n", [?MODULE, E]),
     {noreply, S}.
+
+-ifndef(ENABLE_METRICS).
+send_through_socket(#state{socket=Socket}, Data) ->
+    ok = gen_tcp:send(Socket, Data).
+-else.
+send_through_socket(#state{socket=Socket, connected_dc=R, connected_partition=P}, Data) ->
+    {Took, ok} = timer:tc(gen_tcp, send, [Socket, Data]),
+    ok = grb_measurements:log_stat({?MODULE, P, R, send_elapsed}, Took),
+    ok.
+-endif.
 
 handle_info({tcp, Socket, Data}, State=#state{socket=Socket, connected_dc=Target}) ->
     ?LOG_INFO("~p: Received unexpected data ~p", [?MODULE, Target, Data]),
