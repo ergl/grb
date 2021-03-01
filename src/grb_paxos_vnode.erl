@@ -310,16 +310,7 @@ accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, Coord) ->
     grb_dc_utils:vnode_command(Partition,
                                {accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
                                Coord,
-                               ?master),
-
-    %% FIXME(borja): Remove this, put it at the coordinator level
-    %% For blue transactions, any pending operations are removed during blue commit, since
-    %% it is performed at the replica / partitions where the client originally performed the
-    %% operations. For red commit, however, the client can start the red commit at any
-    %% partition, so we aren't able to prune them. With this, we prune the operations
-    %% for red transactions when we accept them
-    ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
-    ok.
+                               ?master).
 -else.
 accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, {SentTs, Coord}) ->
     Elapsed = grb_time:diff_native(grb_time:timestamp(), SentTs),
@@ -327,16 +318,7 @@ accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, {SentTs, Coord})
     grb_dc_utils:vnode_command(Partition,
                                {accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
                                Coord,
-                               ?master),
-
-    %% FIXME(borja): Remove this, put it at the coordinator level
-    %% For blue transactions, any pending operations are removed during blue commit, since
-    %% it is performed at the replica / partitions where the client originally performed the
-    %% operations. For red commit, however, the client can start the red commit at any
-    %% partition, so we aren't able to prune them. With this, we prune the operations
-    %% for red transactions when we accept them
-    ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
-    ok.
+                               ?master).
 -endif.
 
 -spec decide(index_node(), ballot(), term(), red_vote(), vclock()) -> ok.
@@ -487,14 +469,6 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
 
     ?LOG_QUEUE_LEN(Partition),
 
-    %% For blue transactions, any pending operations are removed during blue commit, since
-    %% it is performed at the replica / partitions where the client originally performed the
-    %% operations. For red commit, however, the client can start the red commit at any
-    %% partition, so we aren't able to prune them. With this, we prune the operations
-    %% for red transactions when we prepare them
-    %% FIXME(borja): Remove this, put it at the coordinator level
-    ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
-
     {Result, LeaderState} = grb_paxos_state:prepare(TxId, Label, RS, WS, SnapshotVC, LastRed, Conflicts, LeaderState0),
     ?LOG_DEBUG("~p: ~p prepared as ~p, reply to coordinator ~p", [Partition, TxId, Result, Coordinator]),
     case Result of
@@ -556,6 +530,7 @@ handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{pa
 
 handle_command({learn_abort, Ballot, TxId, Reason, CommitVC}, _Sender, S0=#state{partition=Partition}) ->
     ?LOG_DEBUG("~p LEARN_ABORT(~b, ~p, ~p)", [Partition, Ballot, TxId]),
+    ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
     {ok, S} = decide_internal(Ballot, TxId, {abort, Reason}, CommitVC, S0),
     {noreply, ?REPORT_ABORT_TS(TxId, S)};
 
@@ -587,7 +562,7 @@ handle_command({deliver_transactions, Ballot, Timestamp, Transactions}, _Sender,
 
                         %% Since it's committed, we can deliver it immediately
                         ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, Timestamp, Label, WS]),
-                        ok = grb_oplog_vnode:handle_red_transaction(Partition, Label, WS, CommitVC),
+                        ok = grb_oplog_vnode:handle_red_transaction(Partition, TxId, Label, WS, CommitVC),
                         SAcc
                 end,
                 S0,
@@ -620,11 +595,12 @@ handle_info({retry_decide_hb, Ballot, Id, Ts}, S0) ->
     end,
     {ok, S};
 
-handle_info({retry_decision, Ballot, TxId, Decision, CommitVC}, S0=#state{synod_role=?leader}) ->
+handle_info({retry_decision, Ballot, TxId, Decision, CommitVC}, S0=#state{synod_role=?leader,
+                                                                          partition=Partition}) ->
     S = case decide_internal(Ballot, TxId, Decision, CommitVC, S0) of
         {not_ready, Ms} ->
             %% This shouldn't happen, we already made sure that we'd be ready when we received this message
-            ?LOG_ERROR("DECIDE(~p, ~p) retry", [Ballot, TxId]),
+            ?LOG_ERROR("DECIDE(~p, ~p, ~p) retry", [Partition, Ballot, TxId]),
             erlang:send_after(Ms, self(), {retry_decision, Ballot, TxId, Decision, CommitVC}),
             S0;
         {ok, S1} ->
@@ -820,7 +796,7 @@ maybe_buffer_abort(_Ballot, TxId, ok, _CommitVC, State) ->
 maybe_buffer_abort(Ballot, TxId, {abort, Reason}, CommitVC, State=#state{partition=Partition,
                                                                          abort_buffer_io=AbortBuffer,
                                                                          send_aborts_interval_ms=Ms}) ->
-
+    ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
     FramedAbortMsg = grb_dc_messages:frame(grb_dc_messages:red_learn_abort(Ballot, TxId, Reason, CommitVC)),
     ?REPORT_ABORT_TS(TxId, if
         Ms > 0 ->
@@ -864,7 +840,7 @@ deliver_updates(Partition, Ballot, From, SynodState) ->
                         when is_map(WriteSet) andalso map_size(WriteSet) =/= 0 ->
                             ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, NextFrom, Label, WriteSet]),
                             ?REPORT_LEADER_TS(TxId, Now, Partition),
-                            ok = grb_oplog_vnode:handle_red_transaction(Partition, Label, WriteSet, CommitVC),
+                            ok = grb_oplog_vnode:handle_red_transaction(Partition, TxId, Label, WriteSet, CommitVC),
                             true;
 
                     (_) ->

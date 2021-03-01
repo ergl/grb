@@ -36,7 +36,7 @@
          handle_replicate/4,
          handle_replicate_array/6,
          handle_replicate_array/10,
-         handle_red_transaction/4]).
+         handle_red_transaction/5]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -396,10 +396,10 @@ handle_replicate_array(Partition, SourceReplica, Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, T
                                        ?master)
     end.
 
--spec handle_red_transaction(partition_id(), tx_label(), writeset(), vclock()) -> ok.
-handle_red_transaction(Partition, Label, WS, VC) ->
+-spec handle_red_transaction(partition_id(), term(), tx_label(), writeset(), vclock()) -> ok.
+handle_red_transaction(Partition, TxId, Label, WS, VC) ->
     grb_dc_utils:vnode_command(Partition,
-                               {handle_red_tx, Label, WS, VC},
+                               {handle_red_tx, TxId, Label, WS, VC},
                                ?master).
 
 %%%===================================================================
@@ -579,11 +579,12 @@ handle_command({handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4}, _Fro
     ok = handle_remote_tx_array_internal(SourceReplica, Tx1, Tx2, Tx3, Tx4, State),
     {noreply, State};
 
-handle_command({handle_red_tx, Label, WS, VC}, _From, S=#state{all_replicas=AllReplicas,
-                                                               op_log=OperationLog,
-                                                               op_log_size=LogSize,
-                                                               op_last_vc=LastVC}) ->
-
+handle_command({handle_red_tx, TxId, Label, WS, VC}, _From, S=#state{all_replicas=AllReplicas,
+                                                                     op_log=OperationLog,
+                                                                     op_log_size=LogSize,
+                                                                     op_last_vc=LastVC,
+                                                                     pending_client_ops=PendingOpsTable}) ->
+    ok = clean_transaction_ops_with_table(PendingOpsTable, TxId),
     ok = append_red_writeset(AllReplicas, Label, WS, VC, OperationLog, LogSize, LastVC),
     {noreply, S};
 
