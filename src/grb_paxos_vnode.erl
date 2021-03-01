@@ -711,21 +711,17 @@ reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decisi
 
 -ifndef(ENABLE_METRICS).
 send_accepts(Partition, Coordinator, Ballot, TxId, Label, Decision, RS, WS, PrepareVC) ->
-    AcceptMsg = grb_dc_messages:frame(
-        grb_dc_messages:red_accept(Coordinator, Ballot, Decision, TxId, Label, RS, WS, PrepareVC)
-    ),
+    AcceptMsg = grb_dc_messages:red_accept(Coordinator, Ballot, Decision, TxId, Label, RS, WS, PrepareVC),
     lists:foreach(
-        fun(R) -> grb_dc_connection_manager:send_raw_framed(R, Partition, AcceptMsg) end,
+        fun(R) -> grb_dc_connection_manager:send_raw(R, Partition, AcceptMsg) end,
         grb_dc_connection_manager:connected_replicas()
     ).
 -else.
 send_accepts(Partition, Coordinator, Ballot, TxId, Label, Decision, RS, WS, PrepareVC) ->
     SendTS = grb_time:timestamp(),
-    AcceptMsg = grb_dc_messages:frame(
-        grb_dc_messages:red_accept({SendTS, Coordinator}, Ballot, Decision, TxId, Label, RS, WS, PrepareVC)
-    ),
+    AcceptMsg = grb_dc_messages:red_accept({SendTS, Coordinator}, Ballot, Decision, TxId, Label, RS, WS, PrepareVC),
     lists:foreach(
-        fun(R) -> grb_dc_connection_manager:send_raw_framed(R, Partition, AcceptMsg) end,
+        fun(R) -> grb_dc_connection_manager:send_raw(R, Partition, AcceptMsg) end,
         grb_dc_connection_manager:connected_replicas()
     ).
 -endif.

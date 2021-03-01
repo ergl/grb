@@ -46,9 +46,28 @@
 -export([frame/1]).
 
 -spec frame(iodata()) -> iodata().
+-ifndef(ENABLE_METRICS).
 frame(Data) ->
     Size = erlang:iolist_size(Data),
     [<<?header(?INTER_DC_SOCK_PACKET_OPT, Size)>>, Data].
+-else.
+frame(<<?VERSION:?VERSION_BITS, ?DC_PING:?MSG_KIND_BITS, _Rest/binary>>=All) ->
+    frame_1(All);
+
+frame(<<?VERSION:?VERSION_BITS, Rest/binary>>) ->
+    Msg = <<?VERSION:?VERSION_BITS,
+            (grb_time:timestamp()):8/unit:8-integer-big-unsigned,
+            Rest/binary>>,
+    Size = erlang:iolist_size(Msg),
+    [<<?header(?INTER_DC_SOCK_PACKET_OPT, Size)>>, Msg];
+
+frame(All) ->
+    frame_1(All).
+
+frame_1(Data) ->
+    Size = erlang:iolist_size(Data),
+    [<<?header(?INTER_DC_SOCK_PACKET_OPT, Size)>>, Data].
+-endif.
 
 -spec ping(replica_id(), partition_id()) -> binary().
 ping(ReplicaId, Partition) ->
@@ -145,17 +164,9 @@ red_already_decided(DstNode, Decision, TxId, CommitVC) ->
     encode_msg(#red_already_decided{target_node=DstNode, decision=Decision, tx_id=TxId, commit_vc=CommitVC}).
 
 -spec encode_msg(replica_message()) -> binary().
--ifndef(ENABLE_METRICS).
 encode_msg(Payload) ->
     {MsgKind, Msg} = encode_payload(Payload),
     <<?VERSION:?VERSION_BITS, MsgKind:?MSG_KIND_BITS, Msg/binary>>.
--else.
-encode_msg(Payload) ->
-    {MsgKind, Msg} = encode_payload(Payload),
-    <<?VERSION:?VERSION_BITS,
-        (grb_time:timestamp()):8/unit:8-integer-big-unsigned,
-        MsgKind:?MSG_KIND_BITS, Msg/binary>>.
--endif.
 
 %% blue payloads
 encode_payload(#blue_heartbeat{timestamp=Ts}) ->
@@ -240,7 +251,10 @@ decode_payload(FromReplica, Partition,
             Now = grb_time:timestamp(),
             grb_measurements:log_stat({?MODULE, Partition, FromReplica, Other}, grb_time:diff_native(Now, SentTimestamp))
     end,
-    decode_payload(<<MsgKind:?MSG_KIND_BITS, Payload/binary>>).
+    decode_payload(<<MsgKind:?MSG_KIND_BITS, Payload/binary>>);
+
+decode_payload(_, _, Payload) ->
+    decode_payload(Payload).
 -endif.
 
 decode_payload(<<?BLUE_HB_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
