@@ -41,6 +41,8 @@
 
 -export([decode_payload/1]).
 
+-export([decode_payload/3]).
+
 -export([frame/1]).
 
 -spec frame(iodata()) -> iodata().
@@ -143,10 +145,17 @@ red_already_decided(DstNode, Decision, TxId, CommitVC) ->
     encode_msg(#red_already_decided{target_node=DstNode, decision=Decision, tx_id=TxId, commit_vc=CommitVC}).
 
 -spec encode_msg(replica_message()) -> binary().
+-ifndef(ENABLE_METRICS).
 encode_msg(Payload) ->
     {MsgKind, Msg} = encode_payload(Payload),
     <<?VERSION:?VERSION_BITS, MsgKind:?MSG_KIND_BITS, Msg/binary>>.
-
+-else.
+encode_msg(Payload) ->
+    {MsgKind, Msg} = encode_payload(Payload),
+    <<?VERSION:?VERSION_BITS,
+        (grb_time:timestamp()):8/unit:8-integer-big-unsigned,
+        MsgKind:?MSG_KIND_BITS, Msg/binary>>.
+-endif.
 
 %% blue payloads
 encode_payload(#blue_heartbeat{timestamp=Ts}) ->
@@ -215,7 +224,25 @@ encode_payload(#update_clocks_cure{known_vc=KnownVC}) ->
 encode_payload(#update_clocks_cure_heartbeat{known_vc=KnownVC}) ->
     {?UPDATE_CLOCK_CURE_HEARTBEAT_KIND, term_to_binary(KnownVC)}.
 
--spec decode_payload(binary()) -> replica_message().
+-spec decode_payload(replica_id(), partition_id(), binary()) -> replica_message().
+-ifndef(ENABLE_METRICS).
+decode_payload(_FromReplica, _Partition, Payload) ->
+    decode_payload(Payload).
+-else.
+decode_payload(FromReplica, Partition,
+               <<SentTimestamp:8/unit:8-integer-big-unsigned,
+                 MsgKind:?MSG_KIND_BITS,
+                 Payload/binary>>) ->
+    case kind_to_type(MsgKind) of
+        ignore ->
+            ok;
+        Other ->
+            Now = grb_time:timestamp(),
+            grb_measurements:log_stat({?MODULE, Partition, FromReplica, Other}, grb_time:diff_native(Now, SentTimestamp))
+    end,
+    decode_payload(<<MsgKind:?MSG_KIND_BITS, Payload/binary>>).
+-endif.
+
 decode_payload(<<?BLUE_HB_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     #blue_heartbeat{timestamp=binary_to_term(Payload)};
 
@@ -290,6 +317,14 @@ decode_payload(<<?UPDATE_CLOCK_CURE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
 
 decode_payload(<<?UPDATE_CLOCK_CURE_HEARTBEAT_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     #update_clocks_cure_heartbeat{known_vc=binary_to_term(Payload)}.
+
+-ifdef(ENABLE_METRICS).
+-spec kind_to_type(non_neg_integer()) -> atom().
+kind_to_type(?RED_ACCEPT_KIND) -> red_accept;
+kind_to_type(?RED_ACCEPT_ACK_KIND) -> red_accept_ack;
+kind_to_type(?RED_DECIDE_KIND) -> red_decide;
+kind_to_type(_) -> ignore.
+-endif.
 
 %% Util functions
 

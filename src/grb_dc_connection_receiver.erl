@@ -132,7 +132,7 @@ handle_info(
                    sender_partition=Partition,
                    sender_replica=SenderReplica}
 ) ->
-    Request = grb_dc_messages:decode_payload(Payload),
+    Request = grb_dc_messages:decode_payload(SenderReplica, Partition, Payload),
     ?LOG_DEBUG("Received msg to ~p: ~p", [Partition, Request]),
     ok = handle_request(SenderReplica, Partition, Request),
     Transport:setopts(Socket, [{active, once}]),

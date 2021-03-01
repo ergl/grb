@@ -95,7 +95,11 @@ start_red_coordinators() ->
             lists:foreach(
                 fun(R) ->
                     grb_measurements:create_stat({grb_red_coordinator, P, R, sent_to_ack}),
-                    grb_measurements:create_stat({grb_red_coordinator, P, R, ack_in_flight})
+                    grb_measurements:create_stat({grb_red_coordinator, P, R, ack_in_flight}),
+
+                    grb_measurements:create_stat({grb_dc_messages, P, R, red_accept}),
+                    grb_measurements:create_stat({grb_dc_messages, P, R, red_accept_ack}),
+                    grb_measurements:create_stat({grb_dc_messages, P, R, red_decide})
                 end,
                 AllReplicas
             )
