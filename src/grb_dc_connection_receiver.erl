@@ -188,9 +188,16 @@ handle_request(_, Partition, #forward_transaction{replica=SourceReplica, writese
 handle_request(_, Partition, #red_prepare{coord_location=Coordinator, tx_id=TxId, tx_label=Label, readset=RS, writeset=WS, snapshot_vc=VC}) ->
     grb_paxos_vnode:prepare({Partition, node()}, TxId, Label, RS, WS, VC, Coordinator);
 
-handle_request(_, Partition, #red_accept{coord_location=Coordinator, ballot=Ballot, tx_id=TxId,
-                                         tx_label=Label, readset=RS, writeset=WS, decision=Vote, prepare_vc=VC}) ->
-
+handle_request(ConnReplica, Partition, #red_accept{coord_location=Coordinator, ballot=Ballot, tx_id=TxId,
+                                                   tx_label=Label, readset=RS, writeset=WS, decision=Vote, prepare_vc=VC}) ->
+    LocalId = grb_dc_manager:replica_id(),
+    case Coordinator of
+        {_, {coord, LocalId, CoordNode}} ->
+            grb_red_coordinator:accept_ack({grb_time:timestamp(), CoordNode}, ConnReplica,
+                                           Partition, Ballot, TxId, Vote, VC);
+        _ ->
+            ok
+    end,
     grb_paxos_vnode:accept(Partition, Ballot, TxId, Label, RS, WS, Vote, VC, Coordinator);
 
 handle_request(ConnReplica, Partition, #red_accept_ack{target_node=Node, ballot=Ballot, tx_id=TxId,

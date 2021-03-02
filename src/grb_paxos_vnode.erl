@@ -476,7 +476,7 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
             %% skip replicas, this is enough to reply to the client
             reply_already_decided(Coordinator, LocalId, Partition, TxId, Decision, CommitVC);
         {Vote, Ballot, PrepareVC} ->
-            ok = reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
+            ok = reply_accept_ack_if_local(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
             ok = send_accepts(Partition, Coordinator, Ballot, TxId, Label, Vote, RS, WS, PrepareVC)
     end,
     {noreply, ?MARK_SEEN_TX_TS(TxId, Now, S#state{synod_state=LeaderState})};
@@ -687,8 +687,22 @@ reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vot
             grb_red_coordinator:accept_ack({SendTS, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC);
         true ->
             Msg = grb_dc_messages:frame(grb_dc_messages:red_accept_ack({SendTS, Node}, Ballot, Vote, TxId, PrepareVC)),
-            grb_dc_connection_manager:send_raw_framed(Replica, Partition, Msg, 20)
+            grb_dc_connection_manager:send_raw_framed(Replica, Partition, Msg)
     end.
+-endif.
+
+-ifndef(ENABLE_METRICS).
+reply_accept_ack_if_local({coord, CoordReplica, Node}, LocalReplica, Partition, Ballot, TxId, Vote, PrepareVC)
+    when CoordReplica =:= LocalReplica ->
+        grb_red_coordinator:accept_ack(Node, LocalReplica, Partition, Ballot, TxId, Vote, PrepareVC);
+reply_accept_ack_if_local(_, _, _, _, _, _, _) ->
+    ok.
+-else.
+reply_accept_ack_if_local({coord, CoordReplica, Node}, LocalReplica, Partition, Ballot, TxId, Vote, PrepareVC)
+    when CoordReplica =:= LocalReplica ->
+        grb_red_coordinator:accept_ack({grb_time:timestamp(), Node}, LocalReplica, Partition, Ballot, TxId, Vote, PrepareVC);
+reply_accept_ack_if_local(_, _, _, _, _, _, _) ->
+    ok.
 -endif.
 
 -spec reply_already_decided(red_coord_location(), replica_id(), partition_id(), term(), red_vote(), vclock()) -> ok.
