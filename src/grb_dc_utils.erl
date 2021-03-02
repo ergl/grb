@@ -22,7 +22,9 @@
 -export([safe_bin_to_atom/1]).
 
 %% Starting timers
--export([maybe_send_after/2]).
+-export([maybe_send_after/2,
+         maybe_send_after/3,
+         maybe_cancel_timer/1]).
 
 %% For external script
 -export([is_ring_owner/0,
@@ -129,6 +131,18 @@ maybe_send_after(0, _) ->
     undefined;
 maybe_send_after(Time, Msg) ->
     erlang:send_after(Time, self(), Msg).
+
+-spec maybe_send_after(non_neg_integer(), pid(), term()) -> reference() | undefined.
+maybe_send_after(0, _, _) ->
+    undefined;
+maybe_send_after(Time, Dest, Msg) ->
+    erlang:send_after(Time, Dest, Msg).
+
+-spec maybe_cancel_timer(reference() | undefined) -> ok.
+maybe_cancel_timer(Ref) when is_reference(Ref) ->
+    ?CANCEL_TIMER_FAST(Ref);
+maybe_cancel_timer(_) ->
+    ok.
 
 %% Optimized erpc:cast/4, peeked into its internals.
 -spec send_cast(node(), module(), atom(), [term()]) -> ok.

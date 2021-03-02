@@ -646,7 +646,7 @@ stop_propagation_timers(State) -> stop_propagation_timers_internal(State).
 
 start_propagation_timers_internal(State) ->
     State#state{
-        replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req)
+        replication_timer=grb_dc_utils:maybe_send_after(State#state.replication_interval, self(), ?replication_req)
     }.
 
 
@@ -662,17 +662,17 @@ stop_propagation_timers_internal(State) ->
 
 start_propagation_timers_internal(State) ->
     State#state{
-        prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
-        uniform_timer=erlang:send_after(State#state.uniform_interval, self(), ?uniform_req),
-        replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req),
-        replicate_clocks_timer=erlang:send_after(State#state.replicate_clocks_interval, self(), ?clock_send_req)
+        prune_timer=grb_dc_utils:maybe_send_after(State#state.prune_interval, self(), ?prune_req),
+        uniform_timer=grb_dc_utils:maybe_send_after(State#state.uniform_interval, self(), ?uniform_req),
+        replication_timer=grb_dc_utils:maybe_send_after(State#state.replication_interval, self(), ?replication_req),
+        replicate_clocks_timer=grb_dc_utils:maybe_send_after(State#state.replicate_clocks_interval, self(), ?clock_send_req)
     }.
 
 stop_propagation_timers_internal(State) ->
-    erlang:cancel_timer(State#state.prune_timer),
-    erlang:cancel_timer(State#state.uniform_timer),
-    erlang:cancel_timer(State#state.replication_timer),
-    erlang:cancel_timer(State#state.replicate_clocks_timer),
+    grb_dc_utils:maybe_cancel_timer(State#state.prune_timer),
+    grb_dc_utils:maybe_cancel_timer(State#state.uniform_timer),
+    grb_dc_utils:maybe_cancel_timer(State#state.replication_timer),
+    grb_dc_utils:maybe_cancel_timer(State#state.replicate_clocks_timer),
     State#state{
         prune_timer=undefined,
         uniform_timer=undefined,
@@ -684,15 +684,15 @@ stop_propagation_timers_internal(State) ->
 
 start_propagation_timers_internal(State) ->
     State#state{
-        prune_timer=erlang:send_after(State#state.prune_interval, self(), ?prune_req),
-        uniform_timer=erlang:send_after(State#state.uniform_interval, self(), ?uniform_req),
-        replication_timer=erlang:send_after(State#state.replication_interval, self(), ?replication_req)
+        prune_timer=grb_dc_utils:maybe_send_after(State#state.prune_interval, self(), ?prune_req),
+        uniform_timer=grb_dc_utils:maybe_send_after(State#state.uniform_interval, self(), ?uniform_req),
+        replication_timer=grb_dc_utils:maybe_send_after(State#state.replication_interval, self(), ?replication_req)
     }.
 
 stop_propagation_timers_internal(State) ->
-    erlang:cancel_timer(State#state.prune_timer),
-    erlang:cancel_timer(State#state.uniform_timer),
-    erlang:cancel_timer(State#state.replication_timer),
+    grb_dc_utils:maybe_cancel_timer(State#state.prune_timer),
+    grb_dc_utils:maybe_cancel_timer(State#state.uniform_timer),
+    grb_dc_utils:maybe_cancel_timer(State#state.replication_timer),
     State#state{
         prune_timer=undefined,
         uniform_timer=undefined,
