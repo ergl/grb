@@ -69,9 +69,10 @@ close(#handle{pid=Pid}) ->
 
 init([TargetReplica, Partition, Ip, Port]) ->
     ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, message_queue_len}),
-    ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, send_elapsed}),
+    ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, port_command_send_elapsed}),
+    ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, port_command_rcv_elapsed}),
     Opts = lists:keyreplace(packet, 1, ?INTER_DC_SOCK_OPTS, {packet, raw}),
-    case gen_tcp:connect(Ip, Port, [{inet_backend, socket} | Opts]) of
+    case gen_tcp:connect(Ip, Port, Opts) of
         {error, Reason} ->
             {stop, Reason};
         {ok, Socket} ->
@@ -109,9 +110,24 @@ send_through_socket(#state{socket=Socket}, Data) ->
     ok = gen_tcp:send(Socket, Data).
 -else.
 send_through_socket(#state{socket=Socket, connected_dc=R, connected_partition=P}, Data) ->
-    {Took, ok} = timer:tc(gen_tcp, send, [Socket, Data]),
-    ok = grb_measurements:log_stat({?MODULE, P, R, send_elapsed}, Took),
-    ok.
+    T0 = erlang:monotonic_time(),
+    case erlang:port_command(Socket, Data, [nosuspend]) of
+        false ->
+            grb_measurements:log_counter({?MODULE, P, R, busy_socket}),
+            erlang:send_after(5, self(), {send_framed, Data}),
+            ok;
+      true ->
+            T1 = erlang:monotonic_time(),
+            receive
+                {inet_reply, Socket, Status} ->
+                    T2 = erlang:monotonic_time(),
+                    SendElapsed = erlang:convert_time_unit(T1 - T0, native, microsecond),
+                    RcvElapsed = erlang:convert_time_unit(T2 - T1, native, microsecond),
+                    ok = grb_measurements:log_stat({?MODULE, P, R, port_command_send_elapsed}, SendElapsed),
+                    ok = grb_measurements:log_stat({?MODULE, P, R, port_command_rcv_elapsed}, RcvElapsed),
+                    Status
+            end
+    end.
 -endif.
 
 handle_info({send_framed, Msg}, S=#state{connected_dc=R, connected_partition=P}) ->
