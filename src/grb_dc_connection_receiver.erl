@@ -192,6 +192,9 @@ handle_request(ConnReplica, Partition, #red_accept{coord_location=Coordinator, b
                                                    tx_label=Label, readset=RS, writeset=WS, decision=Vote, prepare_vc=VC}) ->
     LocalId = grb_dc_manager:replica_id(),
     case Coordinator of
+        {coord, LocalId, CoordNode} ->
+            grb_red_coordinator:accept_ack(CoordNode, ConnReplica,
+                                           Partition, Ballot, TxId, Vote, VC);
         {_, {coord, LocalId, CoordNode}} ->
             grb_red_coordinator:accept_ack({grb_time:timestamp(), CoordNode}, ConnReplica,
                                            Partition, Ballot, TxId, Vote, VC);
