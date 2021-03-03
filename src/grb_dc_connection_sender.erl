@@ -92,7 +92,7 @@ start_connection(TargetReplica, Partition, Ip, Port) ->
 
 -spec send_process(t(), iodata()) -> ok.
 send_process(#handle{pid=Pid}, Msg) ->
-    gen_server:cast(Pid, {send, grb_dc_messages:frame(Msg)}).
+    gen_server:cast(Pid, {send_needs_framing, Msg}).
 
 -spec send_process_framed(t(), iolist()) -> ok.
 send_process_framed(#handle{pid=Pid}, Msg) ->
@@ -132,6 +132,14 @@ handle_cast({send, Msg}, S=#state{busy={true, _}, pending_to_send=Pending}) ->
 
 handle_cast({send, Msg}, S0=#state{busy=false}) ->
     {ok, S} = socket_send(S0, Msg),
+    {noreply, S};
+
+handle_cast({send_needs_framing, Msg}, S=#state{busy={true, _}, pending_to_send=Pending}) ->
+    ok = grb_measurements:log_counter(?queue_data(S)),
+    {noreply, S#state{pending_to_send=[Pending, grb_dc_messages:frame(Msg)]}};
+
+handle_cast({send_needs_framing, Msg}, S0=#state{busy=false}) ->
+    {ok, S} = socket_send(S0, grb_dc_messages:frame(Msg)),
     {noreply, S};
 
 handle_cast(stop, S) ->
