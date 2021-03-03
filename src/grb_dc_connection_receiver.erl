@@ -22,8 +22,6 @@
 -define(SERVICE, grb_inter_dc).
 -define(SERVICE_POOL, (1 * erlang:system_info(schedulers_online))).
 
--define(ACTIVE_BACKLOG, true).
-
 -record(state, {
     socket :: inet:socket(),
     transport :: module(),
@@ -51,8 +49,7 @@ start_link(Ref, _Sock, Transport, Opts) ->
 init({Ref, Transport, _Opts}) ->
     {ok, Socket} = ranch:handshake(Ref),
     ok = ranch:remove_connection(Ref),
-    Opts = lists:keyreplace(active, 1, ?INTER_DC_SOCK_OPTS, {active, ?ACTIVE_BACKLOG}),
-    ok = Transport:setopts(Socket, Opts),
+    ok = Transport:setopts(Socket, ?INTER_DC_SOCK_OPTS),
     State = #state{socket=Socket, transport=Transport},
     gen_server:enter_loop(?MODULE, [], State).
 
@@ -76,7 +73,7 @@ handle_info(
     IPs = binary_to_term(IPsBin, [safe]),
     Resp = grb_dc_manager:create_replica_groups(ip_addresses, IPs),
     Transport:send(Socket, term_to_binary(Resp)),
-    maybe_reset_active_backlog(Socket, Transport),
+    Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
 handle_info(
@@ -84,7 +81,7 @@ handle_info(
     State = #state{socket=Socket, transport=Transport}
 ) ->
     Transport:send(Socket, term_to_binary(grb_dc_manager:replica_descriptor())),
-    maybe_reset_active_backlog(Socket, Transport),
+    Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
 handle_info(
@@ -95,7 +92,7 @@ handle_info(
     Descriptors = binary_to_term(Payload),
     Res = grb_dc_manager:connect_to_replicas(Descriptors),
     Transport:send(Socket, term_to_binary(Res)),
-    maybe_reset_active_backlog(Socket, Transport),
+    Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
 handle_info(
@@ -103,7 +100,7 @@ handle_info(
     State = #state{socket=Socket, transport=Transport}
 ) ->
     Transport:send(Socket, term_to_binary(grb_dc_manager:start_propagation_processes())),
-    maybe_reset_active_backlog(Socket, Transport),
+    Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
 handle_info(
@@ -114,7 +111,7 @@ handle_info(
     LeaderId = binary_to_term(LeaderIdB),
     ok = grb_dc_manager:start_paxos_follower(LeaderId),
     Transport:send(Socket, <<>>),
-    maybe_reset_active_backlog(Socket, Transport),
+    Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
 handle_info(
@@ -125,7 +122,7 @@ handle_info(
 ) ->
     SenderReplica = binary_to_term(Payload),
     ?LOG_DEBUG("Received connect ping from ~p:~p", [SenderReplica, P]),
-    maybe_reset_active_backlog(Socket, Transport),
+    Transport:setopts(Socket, [{active, once}]),
     {noreply, State#state{sender_partition=P, sender_replica=SenderReplica}};
 
 handle_info(
@@ -138,17 +135,12 @@ handle_info(
     Request = grb_dc_messages:decode_payload(SenderReplica, Partition, Payload),
     ?LOG_DEBUG("Received msg to ~p: ~p", [Partition, Request]),
     ok = handle_request(SenderReplica, Partition, Request),
-    maybe_reset_active_backlog(Socket, Transport),
+    Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
 handle_info({tcp, Socket, Data}, State = #state{transport=Transport}) ->
     ?LOG_WARNING("~p received unknown data ~p", [?MODULE, Data]),
-    maybe_reset_active_backlog(Socket, Transport),
-    {noreply, State};
-
-handle_info({tcp_passive, Socket}, State = #state{socket=Socket,
-                                                  transport=Transport}) ->
-    Transport:setopts(Socket, [{active, ?ACTIVE_BACKLOG}]),
+    Transport:setopts(Socket, [{active, once}]),
     {noreply, State};
 
 handle_info({tcp_closed, _Socket}, S) ->
@@ -166,15 +158,6 @@ handle_info(timeout, State) ->
 handle_info(E, S) ->
     ?LOG_WARNING("replication server received unexpected info with msg ~w", [E]),
     {noreply, S}.
-
--if(?ACTIVE_BACKLOG =:= once).
-maybe_reset_active_backlog(Socket, Transport) ->
-    Transport:setopts(Socket, [{active, once}]),
-    ok.
--else.
-maybe_reset_active_backlog(_Socket, _Transport) ->
-    ok.
--endif.
 
 -spec handle_request(replica_id(), partition_id(), replica_message()) -> ok.
 handle_request(ConnReplica, Partition, #blue_heartbeat{timestamp=Ts}) ->
