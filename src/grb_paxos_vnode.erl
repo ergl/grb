@@ -476,7 +476,7 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
             %% skip replicas, this is enough to reply to the client
             reply_already_decided(Coordinator, LocalId, Partition, TxId, Decision, CommitVC);
         {Vote, Ballot, PrepareVC} ->
-            ok = reply_accept_ack_at_leader(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
+            ok = reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
             ok = send_accepts(Partition, Coordinator, Ballot, TxId, Label, Vote, RS, WS, PrepareVC)
     end,
     {noreply, ?MARK_SEEN_TX_TS(TxId, Now, S#state{synod_state=LeaderState})};
@@ -688,29 +688,6 @@ reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vot
         true ->
             Msg = grb_dc_messages:frame(grb_dc_messages:red_accept_ack({SendTS, Node}, Ballot, Vote, TxId, PrepareVC)),
             grb_dc_connection_manager:send_raw_framed(Replica, Partition, Msg)
-    end.
--endif.
-
--ifndef(ENABLE_METRICS).
-reply_accept_ack_at_leader({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC) ->
-    case Replica of
-        MyReplica ->
-            grb_red_coordinator:accept_ack(Node, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC);
-        {'us-east-1', _} ->
-            grb_dc_connection_manager:send_red_accept_ack(Replica, Node, Partition, Ballot, TxId, Vote, PrepareVC);
-        _ ->
-            ok
-    end.
--else.
-reply_accept_ack_at_leader({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC) ->
-    SendTS = grb_time:timestamp(),
-    case Replica of
-        MyReplica ->
-            grb_red_coordinator:accept_ack({SendTS, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC);
-        {'us-east-1', _} ->
-            grb_dc_connection_manager:send_red_accept_ack(Replica, {SendTS, Node}, Partition, Ballot, TxId, Vote, PrepareVC);
-        _ ->
-            ok
     end.
 -endif.
 
