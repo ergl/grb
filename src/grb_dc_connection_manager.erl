@@ -34,8 +34,7 @@
          send_red_heartbeat_ack/5]).
 
 -export([send_raw/3,
-         send_raw_framed/3,
-         send_raw_framed/4]).
+         send_raw_framed/3]).
 
 %% Managemenet API
 -export([connection_closed/2,
@@ -284,14 +283,6 @@ send_raw_framed(ToId, Partition, IOList) ->
     try
         Connection = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
         grb_dc_connection_sender:send_process_framed(Connection, IOList)
-    catch _:_  ->
-        {error, gone}
-    end.
-
-send_raw_framed(ToId, Partition, IOList, Delay) ->
-    try
-        Connection = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
-        grb_dc_connection_sender:send_process_framed_delay(Connection, IOList, Delay)
     catch _:_  ->
         {error, gone}
     end.

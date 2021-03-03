@@ -7,11 +7,8 @@
 -ignore_xref([start_link/4]).
 
 -export([start_connection/4,
-         send/2,
-         send_framed/2,
          send_process/2,
          send_process_framed/2,
-         send_process_framed_delay/3,
          close/1]).
 
 %% gen_server callbacks
@@ -21,13 +18,47 @@
          handle_info/2,
          terminate/2]).
 
+-define(raw_socket(S),
+        {'$inet', gen_tcp_socket, {_, S}}).
+
+-define(busy_socket(S),
+    {?MODULE, S#state.connected_partition, S#state.connected_dc, busy_socket}).
+
+-define(queue_data(S),
+    {?MODULE, S#state.connected_partition, S#state.connected_dc, queue_data}).
+
+-ifndef(ENABLE_METRICS).
+-define(report_busy_elapsed(S), begin _ = S, ok end).
+-else.
+-define(report_busy_elapsed(S),
+    grb_measurements:log_stat(
+        {?MODULE, S#state.connected_partition, S#state.connected_dc, busy_elapsed},
+        erlang:convert_time_unit(erlang:monotonic_time() - (S#state.busy_ts), native, microsecond)
+    )).
+-endif.
+
+-ifdef(ENABLE_METRICS).
 -record(state, {
     connected_dc :: replica_id(),
     connected_partition :: partition_id(),
-    socket :: gen_tcp:socket()
+    socket :: socket:socket(),
+    gen_tcp_socket :: gen_tcp:socket(),
+    busy = false :: false | {true, reference()},
+    busy_ts = undefined :: non_neg_integer() | undefined,
+    pending_to_send = [] :: iodata()
 }).
+-else.
+-record(state, {
+    connected_dc :: replica_id(),
+    connected_partition :: partition_id(),
+    socket :: socket:socket(),
+    gen_tcp_socket :: gen_tcp:socket(),
+    busy = false :: false | {true, reference()},
+    pending_to_send = [] :: iodata()
+}).
+-endif.
 
--record(handle, { pid :: pid(), socket :: gen_tcp:socket() }).
+-record(handle, { pid :: pid()  }).
 -type t() :: #handle{}.
 -export_type([t/0]).
 
@@ -39,25 +70,13 @@ start_connection(TargetReplica, Partition, Ip, Port) ->
     {ok, Pid} = grb_dc_connection_sender_sup:start_connection(TargetReplica, Partition, Ip, Port),
     establish_connection(Pid, Partition).
 
--spec send(t(), iodata()) -> ok | {error, term()}.
-send(#handle{socket=Socket}, Msg) ->
-    gen_tcp:send(Socket, grb_dc_messages:frame(Msg)).
-
--spec send_framed(t(), iolist()) -> ok | {error, term()}.
-send_framed(#handle{socket=Socket}, Msg) ->
-    gen_tcp:send(Socket, Msg).
-
 -spec send_process(t(), iodata()) -> ok.
 send_process(#handle{pid=Pid}, Msg) ->
-    gen_server:cast(Pid, {send, Msg}).
+    gen_server:cast(Pid, {send, grb_dc_messages:frame(Msg)}).
 
 -spec send_process_framed(t(), iolist()) -> ok.
 send_process_framed(#handle{pid=Pid}, Msg) ->
-    gen_server:cast(Pid, {send_framed, Msg}).
-
-send_process_framed_delay(#handle{pid=Pid}, Msg, Delay) ->
-    _ = erlang:send_after(Delay, Pid, {send_framed, Msg}),
-    ok.
+    gen_server:cast(Pid, {send, Msg}).
 
 -spec close(t()) -> ok.
 close(#handle{pid=Pid}) ->
@@ -69,33 +88,28 @@ close(#handle{pid=Pid}) ->
 
 init([TargetReplica, Partition, Ip, Port]) ->
     ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, message_queue_len}),
-    ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, port_command_send_elapsed}),
-    ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, port_command_rcv_elapsed}),
+    ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, busy_elapsed}),
     Opts = lists:keyreplace(packet, 1, ?INTER_DC_SOCK_OPTS, {packet, raw}),
-    case gen_tcp:connect(Ip, Port, Opts) of
+    case gen_tcp:connect(Ip, Port, [{inet_backend, socket} | Opts]) of
         {error, Reason} ->
             {stop, Reason};
-        {ok, Socket} ->
+        {ok, GenSocket=?raw_socket(Socket)} ->
             {ok, #state{connected_dc=TargetReplica,
                         connected_partition=Partition,
-                        socket=Socket}}
+                        socket=Socket,
+                        gen_tcp_socket=GenSocket}}
     end.
-
-handle_call(socket, _From, S=#state{socket=Socket}) ->
-    {reply, {ok, Socket}, S};
 
 handle_call(E, _From, S) ->
     ?LOG_WARNING("~p unexpected call: ~p~n", [?MODULE, E]),
     {reply, ok, S}.
 
-handle_cast({send, Msg}, S=#state{connected_dc=R, connected_partition=P}) ->
-    grb_measurements:log_queue_length({?MODULE, P, R, message_queue_len}),
-    ok = send_through_socket(S, grb_dc_messages:frame(Msg)),
-    {noreply, S};
+handle_cast({send, Msg}, S=#state{busy={true, _}, pending_to_send=Pending}) ->
+    ok = grb_measurements:log_counter(?queue_data(S)),
+    {noreply, S#state{pending_to_send=[Pending, Msg]}};
 
-handle_cast({send_framed, Msg}, S=#state{connected_dc=R, connected_partition=P}) ->
-    grb_measurements:log_queue_length({?MODULE, P, R, message_queue_len}),
-    ok = send_through_socket(S, Msg),
+handle_cast({send, Msg}, S0=#state{busy=false}) ->
+    {ok, S} = socket_send(S0, Msg),
     {noreply, S};
 
 handle_cast(stop, S) ->
@@ -105,39 +119,22 @@ handle_cast(E, S) ->
     ?LOG_WARNING("~p unexpected cast: ~p~n", [?MODULE, E]),
     {noreply, S}.
 
--ifndef(ENABLE_METRICS).
-send_through_socket(#state{socket=Socket}, Data) ->
-    ok = gen_tcp:send(Socket, Data).
--else.
-send_through_socket(#state{socket=Socket, connected_dc=R, connected_partition=P}, Data) ->
-    T0 = erlang:monotonic_time(),
-    case erlang:port_command(Socket, Data, [nosuspend]) of
-        false ->
-            grb_measurements:log_counter({?MODULE, P, R, busy_socket}),
-            erlang:send_after(5, self(), {send_framed, Data}),
-            ok;
-      true ->
-            T1 = erlang:monotonic_time(),
-            receive
-                {inet_reply, Socket, Status} ->
-                    T2 = erlang:monotonic_time(),
-                    SendElapsed = erlang:convert_time_unit(T1 - T0, native, microsecond),
-                    RcvElapsed = erlang:convert_time_unit(T2 - T1, native, microsecond),
-                    ok = grb_measurements:log_stat({?MODULE, P, R, port_command_send_elapsed}, SendElapsed),
-                    ok = grb_measurements:log_stat({?MODULE, P, R, port_command_rcv_elapsed}, RcvElapsed),
-                    Status
-            end
-    end.
--endif.
+handle_info({'$socket', Socket, select, Ref}, S=#state{socket=Socket, busy={true, Ref}, pending_to_send=[]}) ->
+    ?report_busy_elapsed(S),
+    {noreply, S#state{busy=false}};
 
-handle_info({send_framed, Msg}, S=#state{connected_dc=R, connected_partition=P}) ->
-    grb_measurements:log_queue_length({?MODULE, P, R, message_queue_len}),
-    ok = send_through_socket(S, Msg),
+handle_info({'$socket', Socket, select, Ref}, S0=#state{socket=Socket, busy={true, Ref}, pending_to_send=Pending}) ->
+    ?report_busy_elapsed(S0),
+    %% Go through backlog first
+    {ok, S} = socket_send(S0#state{busy=false, pending_to_send=[]}, Pending),
     {noreply, S};
 
-handle_info({tcp, Socket, Data}, State=#state{socket=Socket, connected_dc=Target}) ->
+handle_info({'$socket', Socket, abort, {Ref, closed}}, S=#state{socket=Socket, busy={true, Ref}}) ->
+    {stop, normal, S#state{busy=false}};
+
+handle_info({tcp, GenSocket, Data}, State=#state{gen_tcp_socket=GenSocket, connected_dc=Target}) ->
     ?LOG_INFO("~p: Received unexpected data ~p", [?MODULE, Target, Data]),
-    ok = inet:setopts(Socket, [{active, once}]),
+    ok = inet:setopts(GenSocket, [{active, once}]),
     {noreply, State};
 
 handle_info({tcp_closed, _Socket}, S) ->
@@ -151,8 +148,8 @@ handle_info(Info, State) ->
     ?LOG_WARNING("~p Unhandled msg ~p", [?MODULE, Info]),
     {noreply, State}.
 
-terminate(_Reason, #state{socket=Socket, connected_dc=Replica, connected_partition=Partition}) ->
-    ok = gen_tcp:close(Socket),
+terminate(_Reason, #state{gen_tcp_socket=GenSocket, connected_dc=Replica, connected_partition=Partition}) ->
+    ok = gen_tcp:close(GenSocket),
     ok = grb_dc_connection_manager:connection_closed(Replica, Partition),
     ok.
 
@@ -162,11 +159,54 @@ terminate(_Reason, #state{socket=Socket, connected_dc=Replica, connected_partiti
 
 -spec establish_connection(pid(), partition_id()) -> {ok, t()}.
 establish_connection(Pid, Partition) ->
-    Handle = make_handle(Pid),
-    ok = send(Handle, grb_dc_messages:ping(grb_dc_manager:replica_id(), Partition)),
+    Handle = #handle{pid=Pid},
+    ok = send_process(Handle, grb_dc_messages:ping(grb_dc_manager:replica_id(), Partition)),
     {ok, Handle}.
 
--spec make_handle(pid()) -> t().
-make_handle(Pid) ->
-    {ok, Socket} = gen_server:call(Pid, socket, infinity),
-    #handle{pid=Pid, socket=Socket}.
+
+-spec socket_send(#state{}, iodata()) -> {ok, #state{}} | {error, term()}.
+-ifndef(ENABLE_METRICS).
+socket_send(State=#state{socket=Socket,
+                         pending_to_send=Pending}, Data) ->
+    case socket:send(Socket, Data, [], nowait) of
+        ok ->
+            {ok, State};
+
+        {ok, {More, {select_info, _, Ref}}} ->
+            %% If we couldn't send everything, queue it in the front
+            {ok, State#state{busy={true, Ref},
+                             pending_to_send=[More | Pending]}};
+
+        {select, {select_info, _, Ref}} ->
+            %% Socket is busy, queue data and send later
+            {ok, State#state{busy={true, Ref},
+                             pending_to_send=[Data | Pending]}};
+
+        {error, Reason} ->
+            {error, Reason}
+    end.
+-else.
+socket_send(State=#state{socket=Socket,
+                         pending_to_send=Pending}, Data) ->
+    case socket:send(Socket, Data, [], nowait) of
+        ok ->
+            {ok, State};
+
+        {ok, {More, {select_info, _, Ref}}} ->
+            ok = grb_measurements:log_counter(?busy_socket(State)),
+            %% If we couldn't send everything, queue it in the front
+            {ok, State#state{busy={true, Ref},
+                             busy_ts=erlang:monotonic_time(),
+                             pending_to_send=[More | Pending]}};
+
+        {select, {select_info, _, Ref}} ->
+            ok = grb_measurements:log_counter(?busy_socket(State)),
+            %% Socket is busy, queue data and send later
+            {ok, State#state{busy={true, Ref},
+                             busy_ts=erlang:monotonic_time(),
+                             pending_to_send=[Data | Pending]}};
+
+        {error, Reason} ->
+            {error, Reason}
+    end.
+-endif.
