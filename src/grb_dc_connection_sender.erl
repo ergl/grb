@@ -28,13 +28,33 @@
     {?MODULE, S#state.connected_partition, S#state.connected_dc, queue_data}).
 
 -ifndef(ENABLE_METRICS).
--define(report_busy_elapsed(S), begin _ = S, ok end).
+-define(report_busy_elapsed(S), S).
+-define(report_pending_size(S), begin _ = S, ok end).
 -else.
--define(report_busy_elapsed(S),
-    grb_measurements:log_stat(
-        {?MODULE, S#state.connected_partition, S#state.connected_dc, busy_elapsed},
-        erlang:convert_time_unit(erlang:monotonic_time() - (S#state.busy_ts), native, microsecond)
-    )).
+-define(report_busy_elapsed(__S),
+    begin
+        case __S#state.busy_ts of
+            undefined ->
+                __S;
+            _ ->
+                grb_measurements:log_stat(
+                    {?MODULE, __S#state.connected_partition, __S#state.connected_dc, busy_elapsed},
+                    grb_time:diff_native(grb_time:timestamp(), __S#state.busy_ts)
+                ),
+                __S#state{busy_ts=undefined}
+        end
+    end).
+-define(report_pending_size(__S),
+    begin
+        grb_measurements:log_stat(
+            {?MODULE, __S#state.connected_partition, __S#state.connected_dc, pending_queue_len},
+            erlang:length(__S#state.pending_to_send)
+        ),
+        grb_measurements:log_stat(
+            {?MODULE, __S#state.connected_partition, __S#state.connected_dc, pending_queue_bytes},
+            erlang:iolist_size(__S#state.pending_to_send)
+        )
+    end).
 -endif.
 
 -ifdef(ENABLE_METRICS).
@@ -89,6 +109,8 @@ close(#handle{pid=Pid}) ->
 init([TargetReplica, Partition, Ip, Port]) ->
     ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, message_queue_len}),
     ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, busy_elapsed}),
+    ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, pending_queue_len}),
+    ok = grb_measurements:create_stat({?MODULE, Partition, TargetReplica, pending_queue_bytes}),
     Opts = lists:keyreplace(packet, 1, ?INTER_DC_SOCK_OPTS, {packet, raw}),
     case gen_tcp:connect(Ip, Port, [{inet_backend, socket} | Opts]) of
         {error, Reason} ->
@@ -120,14 +142,15 @@ handle_cast(E, S) ->
     {noreply, S}.
 
 handle_info({'$socket', Socket, select, Ref}, S=#state{socket=Socket, busy={true, Ref}, pending_to_send=[]}) ->
-    ?report_busy_elapsed(S),
-    {noreply, S#state{busy=false}};
+    S1 = ?report_busy_elapsed(S),
+    {noreply, S1#state{busy=false}};
 
 handle_info({'$socket', Socket, select, Ref}, S0=#state{socket=Socket, busy={true, Ref}, pending_to_send=Pending}) ->
-    ?report_busy_elapsed(S0),
+    S1 = ?report_busy_elapsed(S0),
+    ?report_pending_size(S1),
     %% Go through backlog first
-    {ok, S} = socket_send(S0#state{busy=false, pending_to_send=[]}, Pending),
-    {noreply, S};
+    {ok, S2} = socket_send(S1#state{busy=false, pending_to_send=[]}, Pending),
+    {noreply, S2};
 
 handle_info({'$socket', Socket, abort, {Ref, closed}}, S=#state{socket=Socket, busy={true, Ref}}) ->
     {stop, normal, S#state{busy=false}};
@@ -196,14 +219,14 @@ socket_send(State=#state{socket=Socket,
             ok = grb_measurements:log_counter(?busy_socket(State)),
             %% If we couldn't send everything, queue it in the front
             {ok, State#state{busy={true, Ref},
-                             busy_ts=erlang:monotonic_time(),
+                             busy_ts=grb_time:timestamp(),
                              pending_to_send=[More | Pending]}};
 
         {select, {select_info, _, Ref}} ->
             ok = grb_measurements:log_counter(?busy_socket(State)),
             %% Socket is busy, queue data and send later
             {ok, State#state{busy={true, Ref},
-                             busy_ts=erlang:monotonic_time(),
+                             busy_ts=grb_time:timestamp(),
                              pending_to_send=[Data | Pending]}};
 
         {error, Reason} ->
