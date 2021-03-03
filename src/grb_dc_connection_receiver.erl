@@ -191,17 +191,20 @@ handle_request(_, Partition, #red_prepare{coord_location=Coordinator, tx_id=TxId
 handle_request(ConnReplica, Partition, #red_accept{coord_location=Coordinator, ballot=Ballot, tx_id=TxId,
                                                    tx_label=Label, readset=RS, writeset=WS, decision=Vote, prepare_vc=VC}) ->
     LocalId = grb_dc_manager:replica_id(),
-    case Coordinator of
-        {coord, LocalId, CoordNode} ->
+    case {element(1, LocalId), Coordinator} of
+        {'us-west-1', {coordinator, LocalId, CoordNode}} ->
+            %% we're at california, no need to accept, simply treat as ack
             grb_red_coordinator:accept_ack(CoordNode, ConnReplica,
                                            Partition, Ballot, TxId, Vote, VC);
-        {_, {coord, LocalId, CoordNode}} ->
+        {'us-west-1', {_, {coordinator, LocalId, CoordNode}}} ->
+            %% we're at california, no need to accept, simply treat as ack
             grb_red_coordinator:accept_ack({grb_time:timestamp(), CoordNode}, ConnReplica,
-                                           Partition, Ballot, TxId, Vote, VC);
+                                            Partition, Ballot, TxId, Vote, VC);
         _ ->
-            ok
-    end,
-    grb_paxos_vnode:accept(Partition, Ballot, TxId, Label, RS, WS, Vote, VC, Coordinator);
+            %% we're at virginia, or the coordinator is somewhere else, process the accept
+            %% so the remote node can receive our ACK
+            grb_paxos_vnode:accept(Partition, Ballot, TxId, Label, RS, WS, Vote, VC, Coordinator)
+    end;
 
 handle_request(ConnReplica, Partition, #red_accept_ack{target_node=Node, ballot=Ballot, tx_id=TxId,
                                              decision=Vote, prepare_vc=PrepareVC}) ->
