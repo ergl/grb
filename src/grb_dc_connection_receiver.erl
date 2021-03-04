@@ -53,7 +53,6 @@ init({Ref, Transport, _Opts}) ->
     {ok, Socket} = ranch:handshake(Ref),
     ok = ranch:remove_connection(Ref),
     ok = Transport:setopts(Socket, ?INTER_DC_SOCK_OPTS),
-    ok = expand_drv_buffer(Transport, Socket),
     State = #state{socket=Socket, transport=Transport},
     gen_server:enter_loop(?MODULE, [], State).
 
@@ -127,6 +126,7 @@ handle_info(
     SenderReplica = binary_to_term(Payload),
     ?LOG_DEBUG("Received connect ping from ~p:~p", [SenderReplica, P]),
     Transport:setopts(Socket, [{active, once}]),
+    ok = expand_drv_buffer(Transport, Socket),
     {noreply, State#state{sender_partition=P, sender_replica=SenderReplica,
                           recalc_buffer_timer=erlang:send_after(?EXPAND_BUFFER_INTERVAL, self(), recalc_buffer)}};
 
