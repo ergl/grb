@@ -27,6 +27,8 @@
 -define(queue_data(S),
     {?MODULE, S#state.connected_partition, S#state.connected_dc, queue_data}).
 
+-define(EXPAND_SND_BUF_INTERVAL, 500).
+
 -ifndef(ENABLE_METRICS).
 -define(report_busy_elapsed(S), S).
 -define(report_pending_size(S), begin _ = S, ok end).
@@ -65,7 +67,8 @@
     gen_tcp_socket :: gen_tcp:socket(),
     busy = false :: false | {true, reference()},
     busy_ts = undefined :: non_neg_integer() | undefined,
-    pending_to_send = [] :: iodata()
+    pending_to_send = [] :: iodata(),
+    expand_buffer_timer :: reference()
 }).
 -else.
 -record(state, {
@@ -74,7 +77,8 @@
     socket :: socket:socket(),
     gen_tcp_socket :: gen_tcp:socket(),
     busy = false :: false | {true, reference()},
-    pending_to_send = [] :: iodata()
+    pending_to_send = [] :: iodata(),
+    expand_buffer_timer :: reference()
 }).
 -endif.
 
@@ -116,10 +120,12 @@ init([TargetReplica, Partition, Ip, Port]) ->
         {error, Reason} ->
             {stop, Reason};
         {ok, GenSocket=?raw_socket(Socket)} ->
+            ok = expand_snd_buf(Socket),
             {ok, #state{connected_dc=TargetReplica,
                         connected_partition=Partition,
                         socket=Socket,
-                        gen_tcp_socket=GenSocket}}
+                        gen_tcp_socket=GenSocket,
+                        expand_buffer_timer=erlang:send_after(?EXPAND_SND_BUF_INTERVAL, self(), expand_snd_buf)}}
     end.
 
 handle_call(E, _From, S) ->
@@ -174,6 +180,11 @@ handle_info({tcp_closed, _Socket}, S) ->
 handle_info({tcp_error, _Socket, Reason}, S=#state{connected_partition=P, connected_dc=R}) ->
     ?LOG_INFO("~p to ~p:~p got tcp_error", [?MODULE, R, P]),
     {stop, Reason, S};
+
+handle_info(expand_snd_buf, S=#state{expand_buffer_timer=Timer}) ->
+    ?CANCEL_TIMER_FAST(Timer),
+    ok = expand_snd_buf(S#state.socket),
+    {noreply, S#state{expand_buffer_timer=erlang:send_after(?EXPAND_SND_BUF_INTERVAL, self(), expand_snd_buf)}};
 
 handle_info(Info, State) ->
     ?LOG_WARNING("~p Unhandled msg ~p", [?MODULE, Info]),
@@ -241,3 +252,10 @@ socket_send(State=#state{socket=Socket,
             {error, Reason}
     end.
 -endif.
+
+%% Expand the send buffer size from time to time.
+%% This will eventually settle in a stable state if the sndbuf stops changing.
+-spec expand_snd_buf(socket:socket()) -> ok.
+expand_snd_buf(Socket) ->
+    {ok, SndBuf} = socket:getopt(Socket, socket, sndbuf),
+    ok = socket:setopt(Socket, socket, sndbuf, SndBuf * 2).
