@@ -22,11 +22,14 @@
 -define(SERVICE, grb_inter_dc).
 -define(SERVICE_POOL, (1 * erlang:system_info(schedulers_online))).
 
+-define(EXPAND_BUFFER_INTERVAL, 500).
+
 -record(state, {
     socket :: inet:socket(),
     transport :: module(),
     sender_partition = undefined :: partition_id() | undefined,
-    sender_replica = undefined :: replica_id() | undefined
+    sender_replica = undefined :: replica_id() | undefined,
+    recalc_buffer_timer = undefined :: reference() | undefined
 }).
 
 -spec start_service() -> ok.
@@ -50,6 +53,7 @@ init({Ref, Transport, _Opts}) ->
     {ok, Socket} = ranch:handshake(Ref),
     ok = ranch:remove_connection(Ref),
     ok = Transport:setopts(Socket, ?INTER_DC_SOCK_OPTS),
+    ok = expand_drv_buffer(Transport, Socket),
     State = #state{socket=Socket, transport=Transport},
     gen_server:enter_loop(?MODULE, [], State).
 
@@ -123,7 +127,8 @@ handle_info(
     SenderReplica = binary_to_term(Payload),
     ?LOG_DEBUG("Received connect ping from ~p:~p", [SenderReplica, P]),
     Transport:setopts(Socket, [{active, once}]),
-    {noreply, State#state{sender_partition=P, sender_replica=SenderReplica}};
+    {noreply, State#state{sender_partition=P, sender_replica=SenderReplica,
+                          recalc_buffer_timer=erlang:send_after(?EXPAND_BUFFER_INTERVAL, self(), recalc_buffer)}};
 
 handle_info(
     {tcp, Socket, <<?VERSION:?VERSION_BITS, Payload/binary>>},
@@ -155,9 +160,26 @@ handle_info(timeout, State) ->
     ?LOG_INFO("replication server received timeout"),
     {stop, normal, State};
 
+handle_info(recalc_buffer, State = #state{socket=Socket,
+                                          transport=Transport,
+                                          recalc_buffer_timer=Ref}) ->
+    ?CANCEL_TIMER_FAST(Ref),
+    ok = expand_drv_buffer(Transport, Socket),
+    {noreply, State#state{recalc_buffer_timer=erlang:send_after(?EXPAND_BUFFER_INTERVAL, self(), recalc_buffer)}};
+
 handle_info(E, S) ->
     ?LOG_WARNING("replication server received unexpected info with msg ~w", [E]),
     {noreply, S}.
+
+%% Expand driver buffer size from time to time
+%% This will eventually settle in a stable state if the recbuf stops changing.
+-spec expand_drv_buffer(module(), gen_tcp:socket()) -> ok.
+expand_drv_buffer(Transport, Socket) ->
+    {ok, Proplist} = Transport:getopts(Socket, [recbuf, buffer]),
+    {recbuf, RecBuffer} = lists:keyfind(recbuf, 1, Proplist),
+    {buffer, DrvBuffer0} = lists:keyfind(buffer, 1, Proplist),
+    DrvBuffer = erlang:max(RecBuffer * 2, DrvBuffer0),
+    ok = Transport:setopts(Socket, [{buffer, DrvBuffer}]).
 
 -spec handle_request(replica_id(), partition_id(), replica_message()) -> ok.
 handle_request(ConnReplica, Partition, #blue_heartbeat{timestamp=Ts}) ->
