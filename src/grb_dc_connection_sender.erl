@@ -27,7 +27,7 @@
 -define(queue_data(S),
     {?MODULE, S#state.connected_partition, S#state.connected_dc, queue_data}).
 
--define(EXPAND_SND_BUF_INTERVAL, 500).
+-define(EXPAND_SND_BUF_INTERVAL, 100).
 
 -ifndef(ENABLE_METRICS).
 -define(report_busy_elapsed(S), S).

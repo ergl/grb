@@ -22,7 +22,7 @@
 -define(SERVICE, grb_inter_dc).
 -define(SERVICE_POOL, (1 * erlang:system_info(schedulers_online))).
 
--define(EXPAND_BUFFER_INTERVAL, 500).
+-define(EXPAND_BUFFER_INTERVAL, 100).
 
 -record(state, {
     socket :: inet:socket(),
