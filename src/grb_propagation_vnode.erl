@@ -421,7 +421,8 @@ init([Partition]) ->
     {ok, UniformInterval} = application:get_env(grb, uniform_replication_interval),
     {ok, SendClockInterval} = application:get_env(grb, remote_clock_broadcast_interval),
 
-    ClockTable = ets:new(?PARTITION_CLOCK_TABLE, [ordered_set, public, {read_concurrency, true}]),
+    ClockTable = ets:new(?PARTITION_CLOCK_TABLE, [ordered_set, public,
+                                                  {read_concurrency, true}, {write_concurrency, true}]),
     ok = persistent_term:put({?MODULE, Partition, ?PARTITION_CLOCK_TABLE}, ClockTable),
 
     true = ets:insert(ClockTable, [{?uniform_key, grb_vclock:new()},
