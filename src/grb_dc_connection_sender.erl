@@ -258,4 +258,10 @@ socket_send(State=#state{socket=Socket,
 -spec expand_snd_buf(socket:socket()) -> ok.
 expand_snd_buf(Socket) ->
     {ok, SndBuf} = socket:getopt(Socket, socket, sndbuf),
-    ok = socket:setopt(Socket, socket, sndbuf, SndBuf * 2).
+    case socket:setopt(Socket, socket, sndbuf, SndBuf * 2) of
+        {error, _} ->
+            %% Perhaps there's no room to continue to expand, keep it the way it was
+            ok = socket:setopt(Socket, socket, sndbuf, SndBuf);
+        ok ->
+            ok
+    end.

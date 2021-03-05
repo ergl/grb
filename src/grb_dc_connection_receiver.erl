@@ -179,7 +179,13 @@ expand_drv_buffer(Transport, Socket) ->
     {recbuf, RecBuffer} = lists:keyfind(recbuf, 1, Proplist),
     {buffer, DrvBuffer0} = lists:keyfind(buffer, 1, Proplist),
     DrvBuffer = erlang:max(RecBuffer * 2, DrvBuffer0),
-    ok = Transport:setopts(Socket, [{buffer, DrvBuffer}]).
+    case Transport:setopts(Socket, [{buffer, DrvBuffer}]) of
+        {error, _} ->
+            %% No room to expand, keep it the same
+            ok = Transport:setopts(Socket, [{buffer, DrvBuffer0}]);
+        ok ->
+            ok
+    end.
 
 -spec handle_request(replica_id(), partition_id(), replica_message()) -> ok.
 handle_request(ConnReplica, Partition, #blue_heartbeat{timestamp=Ts}) ->
