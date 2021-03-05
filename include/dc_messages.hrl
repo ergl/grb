@@ -129,7 +129,7 @@
     ballot :: ballot(),
     tx_id :: term(),
     decision :: term(),
-    prepare_vc :: vclock()
+    prepare_ts :: non_neg_integer()
 }).
 
 -record(red_decision, {

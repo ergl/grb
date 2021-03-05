@@ -231,10 +231,10 @@ send_red_accept(ToId, Coordinator, Partition, Ballot, Vote, TxId, Label, RS, WS,
     send_raw(?CONN_POOL_TABLE, ToId, Partition,
              grb_dc_messages:red_accept(Coordinator, Ballot, Vote, TxId, Label, RS, WS, VC)).
 
--spec send_red_accept_ack(replica_id(), node(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-send_red_accept_ack(ToId, ToNode, Partition, Ballot, TxId, Vote, PrepareVC) ->
+-spec send_red_accept_ack(replica_id(), node(), partition_id(), ballot(), term(), red_vote(), grb_time:ts()) -> ok.
+send_red_accept_ack(ToId, ToNode, Partition, Ballot, TxId, Vote, PrepareTS) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition,
-             grb_dc_messages:red_accept_ack(ToNode, Ballot, Vote, TxId, PrepareVC)).
+             grb_dc_messages:red_accept_ack(ToNode, Ballot, Vote, TxId, PrepareTS)).
 
 -spec send_red_already_decided(replica_id(), node(), partition_id(), term(), red_vote(), vclock()) -> ok.
 send_red_already_decided(ToId, ToNode, Partition, TxId, Decision, CommitVC) ->

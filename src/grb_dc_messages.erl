@@ -151,9 +151,9 @@ red_accept(Coordinator, Ballot, Vote, TxId, Label, RS, WS, PrepareVC) ->
     encode_msg(#red_accept{coord_location=Coordinator, ballot=Ballot, decision=Vote,
                            tx_id=TxId, tx_label=Label, readset=RS, writeset=WS, prepare_vc=PrepareVC}).
 
--spec red_accept_ack(node(), ballot(), red_vote(), term(), vclock()) -> binary().
-red_accept_ack(DstNode, Ballot, Vote, TxId, PrepareVC) ->
-    encode_msg(#red_accept_ack{target_node=DstNode, ballot=Ballot, decision=Vote, tx_id=TxId, prepare_vc=PrepareVC}).
+-spec red_accept_ack(node(), ballot(), red_vote(), term(), grb_time:ts()) -> binary().
+red_accept_ack(DstNode, Ballot, Vote, TxId, PrepareTS) ->
+    encode_msg(#red_accept_ack{target_node=DstNode, ballot=Ballot, decision=Vote, tx_id=TxId, prepare_ts=PrepareTS}).
 
 -spec red_decision(ballot(), red_vote(), term(), vclock()) -> binary().
 red_decision(Ballot, Decision, TxId, CommitVC) ->
@@ -205,8 +205,8 @@ encode_payload(#red_accept{coord_location=Coordinator, ballot=Ballot, tx_id=TxId
     {?RED_ACCEPT_KIND, term_to_binary({Coordinator, Ballot, TxId, Label, RS, WS, Vote, VC})};
 
 encode_payload(#red_accept_ack{target_node=TargetNode, ballot=Ballot,
-                               tx_id=TxId, decision=Vote, prepare_vc=PrepareVC}) ->
-    {?RED_ACCEPT_ACK_KIND, term_to_binary({TargetNode, Ballot, TxId, Vote, PrepareVC})};
+                               tx_id=TxId, decision=Vote, prepare_ts=PrepareTS}) ->
+    {?RED_ACCEPT_ACK_KIND, term_to_binary({TargetNode, Ballot, TxId, Vote, PrepareTS})};
 
 encode_payload(#red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->
     {?RED_DECIDE_KIND, term_to_binary({Ballot, TxId, Decision, CommitVC})};
@@ -299,8 +299,8 @@ decode_payload(<<?RED_ACCEPT_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
                 tx_label=Label, readset=RS, writeset=WS, decision=Vote, prepare_vc=VC};
 
 decode_payload(<<?RED_ACCEPT_ACK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {TargetNode, Ballot, TxId, Vote, PrepareVC} = binary_to_term(Payload),
-    #red_accept_ack{target_node=TargetNode, ballot=Ballot, tx_id=TxId, decision=Vote, prepare_vc=PrepareVC};
+    {TargetNode, Ballot, TxId, Vote, PrepareTS} = binary_to_term(Payload),
+    #red_accept_ack{target_node=TargetNode, ballot=Ballot, tx_id=TxId, decision=Vote, prepare_ts=PrepareTS};
 
 decode_payload(<<?RED_DECIDE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {Ballot, TxId, Decision, CommitVC} = binary_to_term(Payload),
@@ -402,7 +402,7 @@ grb_dc_message_utils_test() ->
             decision = ok,
             prepare_vc = VC
         },
-        #red_accept_ack{target_node=TargetNode, ballot=0, tx_id=ignore, decision=ok, prepare_vc=VC},
+        #red_accept_ack{target_node=TargetNode, ballot=0, tx_id=ignore, decision=ok, prepare_ts=0},
         #red_decision{ballot=10, tx_id=ignore, decision=ok, commit_vc=VC},
         #red_already_decided{target_node=TargetNode, tx_id=ignore, decision=ok, commit_vc=VC},
         #red_learn_abort{ballot=10, tx_id=ignore, commit_vc=VC},

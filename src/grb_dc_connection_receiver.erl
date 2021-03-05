@@ -221,9 +221,9 @@ handle_request(_ConnReplica, Partition, #red_accept{coord_location=Coordinator, 
     grb_paxos_vnode:accept(Partition, Ballot, TxId, Label, RS, WS, Vote, VC, Coordinator);
 
 handle_request(ConnReplica, Partition, #red_accept_ack{target_node=Node, ballot=Ballot, tx_id=TxId,
-                                             decision=Vote, prepare_vc=PrepareVC}) ->
+                                                       decision=Vote, prepare_ts=PrepareTs}) ->
 
-    grb_red_coordinator:accept_ack(Node, ConnReplica, Partition, Ballot, TxId, Vote, PrepareVC);
+    grb_red_coordinator:accept_ack(Node, ConnReplica, Partition, Ballot, TxId, Vote, PrepareTs);
 
 handle_request(_, Partition, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->
     grb_paxos_vnode:decide({Partition, node()}, Ballot, TxId, Decision, CommitVC);

@@ -119,11 +119,11 @@
     locations = [] :: [{partition_id(), leader_location()}],
     quorums_to_ack = #{} :: #{partition_id() => pos_integer()},
     ballots = #{} :: partition_ballots(),
-    accumulator = #{} :: #{partition_id() => {red_vote(), vclock()}},
+    accumulator = #{} :: #{partition_id() => {red_vote(), grb_time:ts()}},
+    snapshot_vc :: vclock(),
 
     %% pending data, hold the data while we wait for the uniform barrier to lift
     pending_label = undefined :: tx_label() | undefined,
-    pending_snapshot_vc = undefined :: vclock() | undefined,
     pending_prepares = undefined :: [{partition_id(), readset(), writeset()}] | undefined
 }).
 
@@ -178,8 +178,8 @@ already_decided(Node, TxId, Vote, VoteVC) when Node =:= node() ->
 already_decided(Node, TxId, Vote, VoteVC) ->
     grb_dc_utils:send_cast(Node, ?MODULE, already_decided, [TxId, Vote, VoteVC]).
 
--spec accept_ack(replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-accept_ack(SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC) ->
+-spec accept_ack(replica_id(), partition_id(), ballot(), term(), red_vote(), grb_time:ts()) -> ok.
+accept_ack(SenderReplica, Partition, Ballot, TxId, Vote, AcceptTs) ->
     ?ADD_ACK_TS(SenderReplica, Partition, TxId),
     case grb_red_manager:transaction_coordinator(TxId) of
         error ->
@@ -188,26 +188,26 @@ accept_ack(SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC) ->
             ok;
 
         {ok, Coordinator} ->
-            gen_server:cast(Coordinator, {accept_ack, Partition, Ballot, TxId, Vote, AcceptVC})
+            gen_server:cast(Coordinator, {accept_ack, Partition, Ballot, TxId, Vote, AcceptTs})
     end.
 
--spec accept_ack(node(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+-spec accept_ack(node(), replica_id(), partition_id(), ballot(), term(), red_vote(), grb_time:ts()) -> ok.
 -ifndef(ENABLE_METRICS).
-accept_ack(Node, SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC) when Node =:= node() ->
-    accept_ack(SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC);
+accept_ack(Node, SenderReplica, Partition, Ballot, TxId, Vote, AcceptTs) when Node =:= node() ->
+    accept_ack(SenderReplica, Partition, Ballot, TxId, Vote, AcceptTs);
 
-accept_ack(Node, SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC) ->
-    grb_dc_utils:send_cast(Node, ?MODULE, accept_ack, [SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC]).
+accept_ack(Node, SenderReplica, Partition, Ballot, TxId, Vote, AcceptTs) ->
+    grb_dc_utils:send_cast(Node, ?MODULE, accept_ack, [SenderReplica, Partition, Ballot, TxId, Vote, AcceptTs]).
 -else.
-accept_ack({SentTs, Node}, SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC) ->
+accept_ack({SentTs, Node}, SenderReplica, Partition, Ballot, TxId, Vote, AcceptTs) ->
     Elapsed = grb_time:diff_native(grb_time:timestamp(), SentTs),
     grb_measurements:log_stat({?MODULE, Partition, SenderReplica, ack_in_flight}, Elapsed),
     if
         Node =:= node() ->
-            accept_ack(SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC);
+            accept_ack(SenderReplica, Partition, Ballot, TxId, Vote, AcceptTs);
         true ->
             ok = grb_measurements:log_counter({?MODULE, Partition, SenderReplica, fwd_accept_ack}),
-            grb_dc_utils:send_cast(Node, ?MODULE, accept_ack, [SenderReplica, Partition, Ballot, TxId, Vote, AcceptVC])
+            grb_dc_utils:send_cast(Node, ?MODULE, accept_ack, [SenderReplica, Partition, Ballot, TxId, Vote, AcceptTs])
     end.
 -endif.
 
@@ -261,7 +261,7 @@ handle_cast({already_decided, TxId, Vote, VoteVC}, S0=#state{self_pid=Pid, accum
     end,
     {noreply, S};
 
-handle_cast({accept_ack, From, Ballot, TxId, Vote, AcceptVC}, S0=#state{self_pid=Pid,
+handle_cast({accept_ack, From, Ballot, TxId, Vote, AcceptTs}, S0=#state{self_pid=Pid,
                                                                         accumulators=TxAcc}) ->
     S = case maps:get(TxId, TxAcc, undefined) of
         undefined ->
@@ -269,7 +269,7 @@ handle_cast({accept_ack, From, Ballot, TxId, Vote, AcceptVC}, S0=#state{self_pid
             ?CLEANUP_TS(TxId),
             S0;
         TxState ->
-            S0#state{accumulators=handle_ack(Pid, From, Ballot, TxId, Vote, AcceptVC, TxAcc, TxState)}
+            S0#state{accumulators=handle_ack(Pid, From, Ballot, TxId, Vote, AcceptTs, TxAcc, TxState)}
     end,
     {noreply, S};
 
@@ -287,9 +287,9 @@ handle_info(Info, State) ->
 
 init_tx(Promise, TxId, Label, SnapshotVC, Prepares, S=#state{accumulators=Acc}) ->
     S#state{accumulators=Acc#{TxId => #tx_acc{promise=Promise,
+                                              snapshot_vc=SnapshotVC,
                                               pending_label=Label,
-                                              pending_prepares=Prepares,
-                                              pending_snapshot_vc=SnapshotVC}}}.
+                                              pending_prepares=Prepares}}}.
 
 init_tx_and_send(Promise, TxId, Label, SnapshotVC, Prepares, S=#state{self_location=SelfCoord,
                                                                       quorum_size=QuorumSize,
@@ -298,6 +298,7 @@ init_tx_and_send(Promise, TxId, Label, SnapshotVC, Prepares, S=#state{self_locat
     ?ADD_SENT_TS(TxId),
     {LeaderLocations, QuorumsToAck} = send_loop(SelfCoord, TxId, Label, SnapshotVC, QuorumSize, Prepares),
     S#state{accumulators=Acc#{TxId => #tx_acc{promise=Promise,
+                                              snapshot_vc=SnapshotVC,
                                               locations=LeaderLocations,
                                               quorums_to_ack=QuorumsToAck}}}.
 
@@ -307,13 +308,12 @@ send_tx_prepares(TxId, S=#state{self_location=SelfCoord,
 
     TxData = #tx_acc{pending_label=Label,
                      pending_prepares=Prepares,
-                     pending_snapshot_vc=SnapshotVC} = maps:get(TxId, Acc),
+                     snapshot_vc=SnapshotVC} = maps:get(TxId, Acc),
 
     ?ADD_SENT_TS(TxId),
     {LeaderLocations, QuorumsToAck} = send_loop(SelfCoord, TxId, Label, SnapshotVC, QuorumSize, Prepares),
     S#state{accumulators=Acc#{TxId => TxData#tx_acc{pending_label=undefined,
                                                     pending_prepares=undefined,
-                                                    pending_snapshot_vc=undefined,
                                                     locations=LeaderLocations,
                                                     quorums_to_ack=QuorumsToAck}}}.
 
@@ -377,15 +377,15 @@ send_prepare(Coordinator, Partition, TxId, Label, RS, WS, VC) ->
                  Ballot :: ballot(),
                  TxId :: term(),
                  Vote :: red_vote(),
-                 AcceptVC :: vclock(),
+                 AcceptTs :: grb_time:ts(),
                  TxAcc0 :: #{term() => #tx_acc{}},
                  TxState :: #tx_acc{}) -> TxAcc :: #{term() => #tx_acc{}}.
 
-handle_ack(SelfPid, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0, TxState) ->
+handle_ack(SelfPid, FromPartition, Ballot, TxId, Vote, AcceptTs, TxAcc0, TxState) ->
     #tx_acc{ballots=Ballots0, quorums_to_ack=Quorums0, accumulator=Acc0} = TxState,
 
     {ok, Ballots} = check_ballot(FromPartition, Ballot, Ballots0),
-    Acc = Acc0#{FromPartition => {Vote, AcceptVC}},
+    Acc = Acc0#{FromPartition => {Vote, AcceptTs}},
     ?LOG_DEBUG("ACCEPT_ACK(~b, ~p) from ~p", [Ballot, TxId, FromPartition]),
     Quorums = case maps:get(FromPartition, Quorums0, undefined) of
         %% we already received a quorum from this partition, and we removed it
@@ -398,7 +398,7 @@ handle_ack(SelfPid, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0, TxState
             TxAcc0#{TxId => TxState#tx_acc{quorums_to_ack=Quorums, accumulator=Acc, ballots=Ballots}};
         0 ->
             ?ADD_DECISION_TS(TxId),
-            Outcome={Decision, CommitVC} = decide_transaction(Acc),
+            Outcome={Decision, CommitVC} = decide_transaction(TxState#tx_acc.snapshot_vc, Acc),
             reply_to_client(Outcome, TxState#tx_acc.promise),
 
             lists:foreach(fun({Partition, Location}) ->
@@ -410,12 +410,16 @@ handle_ack(SelfPid, FromPartition, Ballot, TxId, Vote, AcceptVC, TxAcc0, TxState
             maps:remove(TxId, TxAcc0)
     end.
 
--spec decide_transaction(#{partition_id() => {red_vote(), vclock()}}) -> {red_vote(), vclock()}.
-decide_transaction(VoteMap) ->
-    maps:fold(fun
-        (_, {Vote, VC}, undefined) -> {Vote, VC};
-        (_, {Vote, VC}, VoteAcc) -> reduce_vote(Vote, VC, VoteAcc)
-    end, undefined, VoteMap).
+-spec decide_transaction(vclock(), #{partition_id() => {red_vote(), grb_time:ts()}}) -> {red_vote(), vclock()}.
+decide_transaction(SnapshotVC, VoteMap) ->
+    {Decision, Ts} = maps:fold(fun
+        (_, {Vote, Ts}, undefined) -> {Vote, Ts};
+        (_, {Vote, Ts}, TsAcc) -> reduce_vote(Vote, Ts, TsAcc)
+    end, undefined, VoteMap),
+    {
+        Decision,
+        grb_vclock:set_max_time(?RED_REPLICA, Ts, SnapshotVC)
+    }.
 
 -spec send_decision(partition_id(), leader_location(), ballot(), term(), red_vote(), vclock()) -> ok.
 send_decision(Partition, LeaderLoc, Ballot, TxId, Decision, CommitVC) ->
@@ -435,10 +439,10 @@ send_decision(Partition, LeaderLoc, Ballot, TxId, Decision, CommitVC) ->
             grb_dc_utils:send_cast(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
     end.
 
--spec reduce_vote(red_vote(), vclock(), {red_vote(), vclock()}) -> {red_vote(), vclock()}.
+-spec reduce_vote(red_vote(), grb_time:ts(), {red_vote(), grb_time:ts()}) -> {red_vote(), grb_time:ts()}.
 reduce_vote(_, _, {{abort, _}, _}=Err) -> Err;
-reduce_vote({abort, _}=Err, VC, _) -> {Err, VC};
-reduce_vote(ok, CommitVC, {ok, AccCommitVC}) -> {ok, grb_vclock:max(CommitVC, AccCommitVC)}.
+reduce_vote({abort, _}=Err, Ts, _) -> {Err, Ts};
+reduce_vote(ok, Ts, {ok, AccTs}) -> {ok, max(Ts, AccTs)}.
 
 -spec reply_to_client({red_vote(), vclock()}, grb_promise:t()) -> ok.
 reply_to_client({ok, CommitVC}, Promise) ->

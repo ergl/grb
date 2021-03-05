@@ -476,7 +476,8 @@ handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
             %% skip replicas, this is enough to reply to the client
             reply_already_decided(Coordinator, LocalId, Partition, TxId, Decision, CommitVC);
         {Vote, Ballot, PrepareVC} ->
-            ok = reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
+            PrepareTs = grb_vclock:get_time(?RED_REPLICA, PrepareVC),
+            ok = reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareTs),
             ok = send_accepts(Partition, Coordinator, Ballot, TxId, Label, Vote, RS, WS, PrepareVC)
     end,
     {noreply, ?MARK_SEEN_TX_TS(TxId, Now, S#state{synod_state=LeaderState})};
@@ -516,8 +517,9 @@ handle_command({accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
     Now = grb_time:timestamp(),
     ?LOG_QUEUE_LEN(Partition),
     ?LOG_DEBUG("~p: ACCEPT(~b, ~p, ~p), reply to coordinator ~p", [Partition, Ballot, TxId, Vote, Coordinator]),
+    PrepareTs = grb_vclock:get_time(?RED_REPLICA, PrepareVC),
     {ok, FollowerState} = grb_paxos_state:accept(Ballot, TxId, Label, RS, WS, Vote, PrepareVC, FollowerState0),
-    ok = reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareVC),
+    ok = reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareTs),
     {noreply, ?MARK_SEEN_TX_TS(TxId, Now, State#state{synod_state=FollowerState})};
 
 handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{partition=Partition,
@@ -670,23 +672,23 @@ start_timers(S=#state{synod_role=?leader, deliver_interval=DeliverInt,
 start_timers(S=#state{synod_role=?follower, prune_interval=PruneInt}) ->
     S#state{prune_timer=grb_dc_utils:maybe_send_after(PruneInt, ?prune_event)}.
 
--spec reply_accept_ack(red_coord_location(), replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
+-spec reply_accept_ack(red_coord_location(), replica_id(), partition_id(), ballot(), term(), red_vote(), grb_time:ts()) -> ok.
 -ifndef(ENABLE_METRICS).
-reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC) ->
+reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareTS) ->
     if
         Replica =:= MyReplica ->
-            grb_red_coordinator:accept_ack(Node, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC);
+            grb_red_coordinator:accept_ack(Node, MyReplica, Partition, Ballot, TxId, Vote, PrepareTS);
         true ->
-            grb_dc_connection_manager:send_red_accept_ack(Replica, Node, Partition, Ballot, TxId, Vote, PrepareVC)
+            grb_dc_connection_manager:send_red_accept_ack(Replica, Node, Partition, Ballot, TxId, Vote, PrepareTS)
     end.
 -else.
-reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC) ->
+reply_accept_ack({coord, Replica, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareTS) ->
     SendTS = grb_time:timestamp(),
     if
         Replica =:= MyReplica ->
-            grb_red_coordinator:accept_ack({SendTS, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareVC);
+            grb_red_coordinator:accept_ack({SendTS, Node}, MyReplica, Partition, Ballot, TxId, Vote, PrepareTS);
         true ->
-            Msg = grb_dc_messages:frame(grb_dc_messages:red_accept_ack({SendTS, Node}, Ballot, Vote, TxId, PrepareVC)),
+            Msg = grb_dc_messages:frame(grb_dc_messages:red_accept_ack({SendTS, Node}, Ballot, Vote, TxId, PrepareTS)),
             grb_dc_connection_manager:send_raw_framed(Replica, Partition, Msg)
     end.
 -endif.
