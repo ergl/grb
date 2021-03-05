@@ -234,8 +234,8 @@ handle_request(_, _, #red_already_decided{target_node=Node, tx_id=TxId, decision
 handle_request(_, Partition, #red_learn_abort{ballot=Ballot, tx_id=TxId, reason=Reason, commit_vc=CommitVC}) ->
     grb_paxos_vnode:learn_abort(Partition, Ballot, TxId, Reason, CommitVC);
 
-handle_request(_, Partition, #red_deliver{ballot=Ballot, timestamp=Ts, transactions=Txs}) ->
-    grb_paxos_vnode:deliver(Partition, Ballot, Ts, Txs);
+handle_request(_, Partition, #red_deliver{ballot=Ballot, timestamp=Ts, transactions=TransactionIds}) ->
+    grb_paxos_vnode:deliver(Partition, Ballot, Ts, TransactionIds);
 
 handle_request(ConnReplica, Partition, #red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
     grb_paxos_vnode:accept_heartbeat(Partition, ConnReplica, B, Id, Ts);

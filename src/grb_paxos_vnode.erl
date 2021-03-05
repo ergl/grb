@@ -333,10 +333,10 @@ learn_abort(Partition, Ballot, TxId, Reason, CommitVC) ->
                                {learn_abort, Ballot, TxId, Reason, CommitVC},
                                ?master).
 
--spec deliver(partition_id(), ballot(), grb_time:ts(), [ {term(), term(), #{}, vclock()} | {term(), term()} ]) -> ok.
-deliver(Partition, Ballot, Timestamp, Transactions) ->
+-spec deliver(partition_id(), ballot(), grb_time:ts(), [ {term(), tx_label(), vclock()} | {term(), grb_time:ts()} ]) -> ok.
+deliver(Partition, Ballot, Timestamp, TransactionIds) ->
     grb_dc_utils:vnode_command(Partition,
-                               {deliver_transactions, Ballot, Timestamp, Transactions},
+                               {deliver_transactions, Ballot, Timestamp, TransactionIds},
                                ?master).
 
 %%%===================================================================
@@ -536,9 +536,9 @@ handle_command({learn_abort, Ballot, TxId, Reason, CommitVC}, _Sender, S0=#state
     {ok, S} = decide_internal(Ballot, TxId, {abort, Reason}, CommitVC, S0),
     {noreply, ?REPORT_ABORT_TS(TxId, S)};
 
-handle_command({deliver_transactions, Ballot, Timestamp, Transactions}, _Sender, S0=#state{synod_role=?follower,
-                                                                                           partition=Partition,
-                                                                                           last_delivered=LastDelivered}) ->
+handle_command({deliver_transactions, Ballot, Timestamp, TransactionIds}, _Sender,
+                S0=#state{synod_role=?follower, partition=Partition, last_delivered=LastDelivered}) ->
+
     Now = grb_time:timestamp(),
     ValidBallot = grb_paxos_state:deliver_is_valid_ballot(Ballot, S0#state.synod_state),
     S = if
@@ -555,7 +555,7 @@ handle_command({deliver_transactions, Ballot, Timestamp, Transactions}, _Sender,
                         {ok, SAcc} = decide_hb_internal(Ballot, Id, Timestamp, Acc),
                         SAcc;
 
-                    ({TxId, Label, WS, CommitVC}, Acc) ->
+                    ({TxId, Label, CommitVC}, Acc) ->
                         ?REPORT_FOLLOWER_TS(TxId, Now, Partition),
 
                         %% We only receive committed transactions. Aborted transactions were received during decision.
@@ -563,13 +563,15 @@ handle_command({deliver_transactions, Ballot, Timestamp, Transactions}, _Sender,
                         {ok, SAcc} = decide_internal(Ballot, TxId, ok, CommitVC, Acc),
 
                         %% Since it's committed, we can deliver it immediately
+                        WS = grb_paxos_state:get_decided_data(TxId, SAcc#state.synod_state),
                         ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, Timestamp, Label, WS]),
                         ok = grb_oplog_vnode:handle_red_transaction(Partition, TxId, Label, WS, CommitVC),
                         SAcc
                 end,
                 S0,
-                Transactions
+                TransactionIds
             ),
+
             %% We won't receive more transactions with this (or less) timestamp, so we can perform a heartbeat
             ok = grb_propagation_vnode:handle_red_heartbeat(Partition, Timestamp),
             S1#state{last_delivered=Timestamp};
@@ -828,25 +830,36 @@ deliver_updates(Partition, Ballot, From, SynodState) ->
 
         {NextFrom, Entries} ->
 
-            %% Let followers know that these transactions are ready to be delivered.
-            lists:foreach(fun(ReplicaId) ->
-                grb_dc_connection_manager:send_red_deliver(ReplicaId, Partition, Ballot, NextFrom, Entries)
-            end, grb_dc_connection_manager:connected_replicas()),
-
-            lists:foreach(
+            %% Collect only the identifiers for the transactions, we don't care
+            %% about the writeset, followers already have it.
+            %%
+            %% No need to reverse the accumulator, since they all have the same
+            %% commit timestamp, they can be delivered in any order.
+            Identifiers = lists:foldl(
                 fun
-                    ({TxId, Label, WriteSet, CommitVC})
-                        when is_map(WriteSet) andalso map_size(WriteSet) =/= 0 ->
-                            ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, NextFrom, Label, WriteSet]),
-                            ?REPORT_LEADER_TS(TxId, Now, Partition),
-                            ok = grb_oplog_vnode:handle_red_transaction(Partition, TxId, Label, WriteSet, CommitVC),
-                            true;
+                    ({HeartbeatId, CommitTs}, Acc) ->
+                        [{HeartbeatId, CommitTs} | Acc];
 
-                    (_) ->
-                        ok
+                    ({TxId, Label, WriteSet, CommitVC}, Acc) ->
+                        if
+                            is_map(WriteSet) andalso map_size(WriteSet) > 0 ->
+                                ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, NextFrom, Label, WriteSet]),
+                                ?REPORT_LEADER_TS(TxId, Now, Partition),
+                                ok = grb_oplog_vnode:handle_red_transaction(Partition, TxId, Label, WriteSet, CommitVC);
+                            true ->
+                                ok
+                        end,
+                        [ {TxId, Label, CommitVC} | Acc]
                 end,
+                [],
                 Entries
             ),
+
+            %% Let followers know that these transactions are ready to be delivered.
+            %% todo(borja): Wait until we are done with deliver_updates, and send everything at once?
+            lists:foreach(fun(ReplicaId) ->
+                grb_dc_connection_manager:send_red_deliver(ReplicaId, Partition, Ballot, NextFrom, Identifiers)
+            end, grb_dc_connection_manager:connected_replicas()),
 
             deliver_updates(Partition, Ballot, NextFrom, SynodState)
     end.

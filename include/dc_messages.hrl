@@ -168,7 +168,8 @@
 -record(red_deliver, {
     ballot :: ballot(),
     timestamp :: grb_time:ts(),
-    transactions :: [ {term(), term(), #{}, vclock()} | {term(), term()} ]
+    transactions :: [ { TxId :: term(), Label :: term(), CommitVC :: vclock() }
+                    | { HeartbeatId :: term(), CommitTs :: term() } ]
 }).
 
 -type replica_message() :: #blue_heartbeat{}

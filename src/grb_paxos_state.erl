@@ -76,6 +76,7 @@
 
 %% util
 -export([current_ballot/1,
+         get_decided_data/2,
          deliver_is_valid_ballot/2]).
 
 %%%===================================================================
@@ -116,6 +117,10 @@ delete(#state{index=Index, pending_reads=PendingReads, writes_cache=Writes}) ->
 -spec current_ballot(t()) -> ballot().
 current_ballot(#state{ballot=B}) ->
     B.
+
+-spec get_decided_data(record_id(), t()) -> writeset().
+get_decided_data(Id, #state{entries=EntryMap}) ->
+    (maps:get(Id, EntryMap))#tx_data.writeset.
 
 %%%===================================================================
 %%% ready / prune
