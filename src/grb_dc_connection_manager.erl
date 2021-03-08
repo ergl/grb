@@ -259,7 +259,7 @@ send_red_abort(ToId, Partition, Ballot, TxId, Reason, CommitVC) ->
 
 send_red_deliver(ToId, Partition, Ballot, Timestamp, Transactions) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition,
-             grb_dc_messages:red_deliver(Ballot, Timestamp, Transactions)).
+             grb_dc_messages:red_deliver(Partition, Ballot, Timestamp, Transactions)).
 
 -spec send_red_heartbeat(ToId :: replica_id(),
                          Partition :: partition_id(),

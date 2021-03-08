@@ -92,6 +92,7 @@ start_red_coordinators() ->
         fun(P) ->
             grb_measurements:create_stat({grb_red_coordinator, P, sent_to_first_ack}),
             grb_measurements:create_stat({grb_red_coordinator, P, sent_to_decision}),
+            grb_measurements:create_stat({grb_dc_messages, P, red_deliver_bin_size}),
             lists:foreach(
                 fun(R) ->
                     grb_measurements:create_stat({grb_red_coordinator, P, R, sent_to_ack}),
@@ -100,9 +101,7 @@ start_red_coordinators() ->
                     grb_measurements:create_stat({grb_dc_messages, P, R, red_accept}),
                     grb_measurements:create_stat({grb_dc_messages, P, R, red_accept_ack}),
                     grb_measurements:create_stat({grb_dc_messages, P, R, red_decide}),
-                    grb_measurements:create_stat({grb_dc_messages, P, R, red_deliver}),
-
-                    grb_measurements:create_stat({grb_dc_messages, red_deliver_bin_size})
+                    grb_measurements:create_stat({grb_dc_messages, P, R, red_deliver})
                 end,
                 AllReplicas
             )

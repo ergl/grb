@@ -37,7 +37,7 @@
          red_decision/4,
          red_already_decided/4,
          red_learn_abort/4,
-         red_deliver/3]).
+         red_deliver/4]).
 
 -export([decode_payload/1]).
 
@@ -130,18 +130,18 @@ red_heartbeat_ack(Ballot, Id, Time) ->
 red_learn_abort(Ballot, TxId, Reason, CommitVC) ->
     encode_msg(#red_learn_abort{ballot=Ballot, tx_id=TxId, reason=Reason, commit_vc=CommitVC}).
 
--spec red_deliver(Ballot :: ballot(),
+-spec red_deliver(_, Ballot :: ballot(),
                   Timestamp :: grb_time:ts(),
                   Transactions :: [ {term(), tx_label(), vclock()} | {term(), term()}]) -> binary().
 
 -ifndef(ENABLE_METRICS).
-red_deliver(Ballot, Timestamp, TransactionIds) ->
+red_deliver(_, Ballot, Timestamp, TransactionIds) ->
     encode_msg(#red_deliver{ballot=Ballot, timestamp=Timestamp, transactions=TransactionIds}).
 -else.
-red_deliver(Ballot, Timestamp, TransactionIds) ->
+red_deliver(Partition, Ballot, Timestamp, TransactionIds) ->
     Bytes = encode_msg(#red_deliver{ballot=Ballot, timestamp=Timestamp, transactions=TransactionIds}),
     N = erlang:byte_size(Bytes),
-    grb_measurements:log_stat({?MODULE, red_deliver_bin_size}, N),
+    grb_measurements:log_stat({?MODULE, Partition, red_deliver_bin_size}, N),
     Bytes.
 -endif.
 
