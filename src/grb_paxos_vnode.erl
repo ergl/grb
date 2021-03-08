@@ -132,13 +132,6 @@
 
 -export([deliver_updates/4]).
 
--define(GET_NEXT_READY(__P, __From, __State),
-    begin
-        {__Took, __Res} = timer:tc(grb_paxos_state, get_next_ready, [__From, __State]),
-        grb_measurements:log_stat(?NEXT_READY_DURATION(__P), __Took),
-        __Res
-    end).
-
 -define(DELIVER_UPDATES(__P, __B, __F, __S),
     begin
         {__Took, __Res} = timer:tc(?MODULE, deliver_updates, [__P, __B, __F, __S]),
@@ -156,7 +149,6 @@
 -define(REPORT_LEADER_TS(__Id, __Now, __S), begin _ = __Id, _ = __Now, _= __S, ok end).
 -define(REPORT_FOLLOWER_TS(__Id, __Now, __S), begin _ = __Id, _ = __Now, _ = __S, ok end).
 
--define(GET_NEXT_READY(__P, __From, __State), begin _ = __P, grb_paxos_state:get_next_ready(__From, __State) end).
 -define(DELIVER_UPDATES(__P, __B, __F, __S), deliver_updates(__P, __B, __F, __S)).
 -endif.
 
