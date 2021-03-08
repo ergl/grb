@@ -134,8 +134,16 @@ red_learn_abort(Ballot, TxId, Reason, CommitVC) ->
                   Timestamp :: grb_time:ts(),
                   Transactions :: [ {term(), tx_label(), vclock()} | {term(), term()}]) -> binary().
 
+-ifndef(ENABLE_METRICS).
 red_deliver(Ballot, Timestamp, TransactionIds) ->
     encode_msg(#red_deliver{ballot=Ballot, timestamp=Timestamp, transactions=TransactionIds}).
+-else.
+red_deliver(Ballot, Timestamp, TransactionIds) ->
+    Bytes = encode_msg(#red_deliver{ballot=Ballot, timestamp=Timestamp, transactions=TransactionIds}),
+    N = erlang:byte_size(Bytes),
+    grb_measurements:log_stat({?MODULE, red_deliver_bin_size}, N),
+    Bytes.
+-endif.
 
 -spec red_prepare(red_coord_location(), term(), tx_label(), readset(), writeset(), vclock()) -> binary().
 red_prepare(Coordinator, TxId, Label, RS, WS, SnapshotVC) ->
@@ -337,6 +345,7 @@ decode_payload(<<?UPDATE_CLOCK_CURE_HEARTBEAT_KIND:?MSG_KIND_BITS, Payload/binar
 kind_to_type(?RED_ACCEPT_KIND) -> red_accept;
 kind_to_type(?RED_ACCEPT_ACK_KIND) -> red_accept_ack;
 kind_to_type(?RED_DECIDE_KIND) -> red_decide;
+kind_to_type(?RED_DELIVER_KIND) -> red_deliver;
 kind_to_type(_) -> ignore.
 -endif.
 

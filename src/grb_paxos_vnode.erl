@@ -61,6 +61,8 @@
 
 -define(ACCEPT_FLIGHT_TS(__P), {?MODULE, __P, accept_in_flight}).
 
+-define(DELIVER_CALLED_N(__P), {?MODULE, __P, deliver_updates_called}).
+
 -define(leader, leader).
 -define(follower, follower).
 -type role() :: ?leader | ?follower.
@@ -406,6 +408,8 @@ handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_role=un
 
     ok = grb_measurements:create_stat(?NEXT_READY_DURATION(Partition)),
     ok = grb_measurements:create_stat(?DELIVER_DURATION(Partition)),
+
+    ok = grb_measurements:create_stat(?DELIVER_CALLED_N(Partition)),
 
     ReplicaId = grb_dc_manager:replica_id(),
     {ok, Pid} = grb_red_heartbeat:new(ReplicaId, Partition),
@@ -822,14 +826,13 @@ send_abort_buffer(Partition, IOAborts) ->
 %%      Returns the commit timestamp of the last transaction or heartbeat to be delivered.
 %%
 -spec deliver_updates(partition_id(), ballot(), grb_time:ts(), grb_paxos_state:t()) -> grb_time:ts().
+-ifndef(ENABLE_METRICS).
 deliver_updates(Partition, Ballot, From, SynodState) ->
-    Now = grb_time:timestamp(),
-    case ?GET_NEXT_READY(Partition, From, SynodState) of
+    case grb_paxos_state:get_next_ready(From, SynodState) of
         false ->
             From;
 
         {NextFrom, Entries} ->
-
             %% Collect only the identifiers for the transactions, we don't care
             %% about the writeset, followers already have it.
             %%
@@ -844,7 +847,6 @@ deliver_updates(Partition, Ballot, From, SynodState) ->
                         if
                             is_map(WriteSet) andalso map_size(WriteSet) > 0 ->
                                 ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, NextFrom, Label, WriteSet]),
-                                ?REPORT_LEADER_TS(TxId, Now, Partition),
                                 ok = grb_oplog_vnode:handle_red_transaction(Partition, TxId, Label, WriteSet, CommitVC);
                             true ->
                                 ok
@@ -863,6 +865,48 @@ deliver_updates(Partition, Ballot, From, SynodState) ->
 
             deliver_updates(Partition, Ballot, NextFrom, SynodState)
     end.
+-else.
+deliver_updates(Partition, Ballot, From, SynodState) ->
+    {NewFrom, N} = deliver_updates(Partition, Ballot, From, SynodState, 1),
+    grb_measurements:log_stat(?DELIVER_CALLED_N(Partition), N),
+    NewFrom.
+
+deliver_updates(Partition, Ballot, From, SynodState, CalledN) ->
+    Now = grb_time:timestamp(),
+    {Took, Res} = timer:tc(grb_paxos_state, get_next_ready, [From, SynodState]),
+    grb_measurements:log_stat(?NEXT_READY_DURATION(Partition), Took),
+
+    case Res of
+        false ->
+            {From, CalledN};
+
+        {NextFrom, Entries} ->
+            Identifiers = lists:foldl(
+                fun
+                    ({HeartbeatId, CommitTs}, Acc) ->
+                        [{HeartbeatId, CommitTs} | Acc];
+
+                    ({TxId, Label, WriteSet, CommitVC}, Acc) ->
+                        if
+                            is_map(WriteSet) andalso map_size(WriteSet) > 0 ->
+                                ?REPORT_LEADER_TS(TxId, Now, Partition),
+                                ok = grb_oplog_vnode:handle_red_transaction(Partition, TxId, Label, WriteSet, CommitVC);
+                            true ->
+                                ok
+                        end,
+                        [ {TxId, Label, CommitVC} | Acc]
+                end,
+                [],
+                Entries
+            ),
+
+            lists:foreach(fun(ReplicaId) ->
+                grb_dc_connection_manager:send_red_deliver(ReplicaId, Partition, Ballot, NextFrom, Identifiers)
+            end, grb_dc_connection_manager:connected_replicas()),
+
+            deliver_updates(Partition, Ballot, NextFrom, SynodState, CalledN + 1)
+    end.
+-endif.
 
 %% Strong heartbeats are expensive, since they are equivalent
 %% to a read-only strong transaction that always commits. If

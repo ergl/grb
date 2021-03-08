@@ -99,7 +99,10 @@ start_red_coordinators() ->
 
                     grb_measurements:create_stat({grb_dc_messages, P, R, red_accept}),
                     grb_measurements:create_stat({grb_dc_messages, P, R, red_accept_ack}),
-                    grb_measurements:create_stat({grb_dc_messages, P, R, red_decide})
+                    grb_measurements:create_stat({grb_dc_messages, P, R, red_decide}),
+                    grb_measurements:create_stat({grb_dc_messages, P, R, red_deliver}),
+
+                    grb_measurements:create_stat({grb_dc_messages, red_deliver_bin_size})
                 end,
                 AllReplicas
             )
