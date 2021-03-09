@@ -126,13 +126,13 @@ red_heartbeat(Ballot, Id, Time) ->
 red_heartbeat_ack(Ballot, Id, Time) ->
     encode_msg(#red_heartbeat_ack{ballot=Ballot, heartbeat_id=Id, timestamp=Time}).
 
--spec red_learn_abort(ballot(), term(), term(), vclock()) -> binary().
-red_learn_abort(Ballot, TxId, Reason, CommitVC) ->
-    encode_msg(#red_learn_abort{ballot=Ballot, tx_id=TxId, reason=Reason, commit_vc=CommitVC}).
+-spec red_learn_abort(ballot(), term(), term(), grb_vclock:ts()) -> binary().
+red_learn_abort(Ballot, TxId, Reason, CommitTs) ->
+    encode_msg(#red_learn_abort{ballot=Ballot, tx_id=TxId, reason=Reason, commit_ts=CommitTs}).
 
 -spec red_deliver(_, Ballot :: ballot(),
                   Timestamp :: grb_time:ts(),
-                  TransactionIds :: [ {term(), tx_label(), vclock()} | red_heartbeat_id()]) -> binary().
+                  TransactionIds :: [ { term(), tx_label() } | red_heartbeat_id()]) -> binary().
 
 -ifndef(ENABLE_METRICS).
 red_deliver(_, Ballot, Timestamp, TransactionIds) ->
@@ -163,9 +163,9 @@ red_accept(Coordinator, Ballot, Vote, TxId, Label, RS, WS, PrepareVC) ->
 red_accept_ack(DstNode, Ballot, Vote, TxId, PrepareTS) ->
     encode_msg(#red_accept_ack{target_node=DstNode, ballot=Ballot, decision=Vote, tx_id=TxId, prepare_ts=PrepareTS}).
 
--spec red_decision(ballot(), red_vote(), term(), vclock()) -> binary().
-red_decision(Ballot, Decision, TxId, CommitVC) ->
-    encode_msg(#red_decision{ballot=Ballot, decision=Decision, tx_id=TxId, commit_vc=CommitVC}).
+-spec red_decision(ballot(), red_vote(), term(), grb_time:ts()) -> binary().
+red_decision(Ballot, Decision, TxId, CommiTs) ->
+    encode_msg(#red_decision{ballot=Ballot, decision=Decision, tx_id=TxId, commit_ts=CommiTs}).
 
 -spec red_already_decided(node(), red_vote(), term(), vclock()) -> binary().
 red_already_decided(DstNode, Decision, TxId, CommitVC) ->
@@ -216,14 +216,14 @@ encode_payload(#red_accept_ack{target_node=TargetNode, ballot=Ballot,
                                tx_id=TxId, decision=Vote, prepare_ts=PrepareTS}) ->
     {?RED_ACCEPT_ACK_KIND, term_to_binary({TargetNode, Ballot, TxId, Vote, PrepareTS})};
 
-encode_payload(#red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->
-    {?RED_DECIDE_KIND, term_to_binary({Ballot, TxId, Decision, CommitVC})};
+encode_payload(#red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_ts=CommitTs}) ->
+    {?RED_DECIDE_KIND, term_to_binary({Ballot, TxId, Decision, CommitTs})};
 
 encode_payload(#red_already_decided{target_node=TargetNode, tx_id=TxId, decision=Vote, commit_vc=CommitVC}) ->
     {?RED_ALREADY_DECIDED_KIND, term_to_binary({TargetNode, TxId, Vote, CommitVC})};
 
-encode_payload(#red_learn_abort{ballot=B, tx_id=TxId, reason=Reason, commit_vc=CommitVC}) ->
-    {?RED_LEARN_ABORT_KIND, term_to_binary({B, TxId, Reason, CommitVC})};
+encode_payload(#red_learn_abort{ballot=B, tx_id=TxId, reason=Reason, commit_ts=CommitTs}) ->
+    {?RED_LEARN_ABORT_KIND, term_to_binary({B, TxId, Reason, CommitTs})};
 
 encode_payload(#red_deliver{ballot=Ballot, timestamp=Timestamp, transactions=TransactionIds}) ->
     {?RED_DELIVER_KIND, term_to_binary({Ballot, Timestamp, TransactionIds})};
@@ -311,16 +311,16 @@ decode_payload(<<?RED_ACCEPT_ACK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     #red_accept_ack{target_node=TargetNode, ballot=Ballot, tx_id=TxId, decision=Vote, prepare_ts=PrepareTS};
 
 decode_payload(<<?RED_DECIDE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {Ballot, TxId, Decision, CommitVC} = binary_to_term(Payload),
-    #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC};
+    {Ballot, TxId, Decision, CommitTs} = binary_to_term(Payload),
+    #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_ts=CommitTs};
 
 decode_payload(<<?RED_ALREADY_DECIDED_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {TargetNode, TxId, Vote, CommitVC} = binary_to_term(Payload),
     #red_already_decided{target_node=TargetNode, tx_id=TxId, decision=Vote, commit_vc=CommitVC};
 
 decode_payload(<<?RED_LEARN_ABORT_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {B, TxId, Reason, CommitVC} = binary_to_term(Payload),
-    #red_learn_abort{ballot=B, tx_id=TxId, reason=Reason, commit_vc=CommitVC};
+    {B, TxId, Reason, CommitTs} = binary_to_term(Payload),
+    #red_learn_abort{ballot=B, tx_id=TxId, reason=Reason, commit_ts=CommitTs};
 
 decode_payload(<<?RED_DELIVER_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {Ballot, Timestamp, TransactionIds} = binary_to_term(Payload),
@@ -412,10 +412,10 @@ grb_dc_message_utils_test() ->
             prepare_vc = VC
         },
         #red_accept_ack{target_node=TargetNode, ballot=0, tx_id=ignore, decision=ok, prepare_ts=0},
-        #red_decision{ballot=10, tx_id=ignore, decision=ok, commit_vc=VC},
+        #red_decision{ballot=10, tx_id=ignore, decision=ok, commit_ts=grb_vclock:get_time(?RED_REPLICA, VC)},
         #red_already_decided{target_node=TargetNode, tx_id=ignore, decision=ok, commit_vc=VC},
-        #red_learn_abort{ballot=10, tx_id=ignore, commit_vc=VC},
-        #red_deliver{ballot=10, timestamp=10, transactions=[ {?red_heartbeat_marker, 0}, {tx_0, <<"foo">>, #{}}]},
+        #red_learn_abort{ballot=10, tx_id=ignore, commit_ts=grb_vclock:get_time(?RED_REPLICA, VC)},
+        #red_deliver{ballot=10, timestamp=10, transactions=[ {?red_heartbeat_marker, 0}, {tx_0, <<"foo">>}]},
 
         #red_heartbeat{ballot=4, heartbeat_id={?red_heartbeat_marker, 0}, timestamp=10},
         #red_heartbeat_ack{ballot=4, heartbeat_id={?red_heartbeat_marker, 0}, timestamp=10}

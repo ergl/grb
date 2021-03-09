@@ -241,21 +241,21 @@ send_red_already_decided(ToId, ToNode, Partition, TxId, Decision, CommitVC) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition,
              grb_dc_messages:red_already_decided(ToNode, Decision, TxId, CommitVC)).
 
--spec send_red_decision(replica_id(), partition_id(), ballot(), term(), red_vote(), vclock()) -> ok.
-send_red_decision(ToId, Partition, Ballot, TxId, Decision, CommitVC) ->
+-spec send_red_decision(replica_id(), partition_id(), ballot(), term(), red_vote(), grb_vclock:ts()) -> ok.
+send_red_decision(ToId, Partition, Ballot, TxId, Decision, CommitTs) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition,
-             grb_dc_messages:red_decision(Ballot, Decision, TxId, CommitVC)).
+             grb_dc_messages:red_decision(Ballot, Decision, TxId, CommitTs)).
 
--spec send_red_abort(replica_id(), partition_id(), ballot(), term(), term(), vclock()) -> ok.
-send_red_abort(ToId, Partition, Ballot, TxId, Reason, CommitVC) ->
+-spec send_red_abort(replica_id(), partition_id(), ballot(), term(), term(), grb_vclock:ts()) -> ok.
+send_red_abort(ToId, Partition, Ballot, TxId, Reason, CommitTs) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition,
-             grb_dc_messages:red_learn_abort(Ballot, TxId, Reason, CommitVC)).
+             grb_dc_messages:red_learn_abort(Ballot, TxId, Reason, CommitTs)).
 
 -spec send_red_deliver(ToId :: replica_id(),
                        Partition :: partition_id(),
                        Ballot :: ballot(),
                        Timestamp :: grb_time:ts(),
-                       TransactionIds :: [{term(), tx_label(), vclock()} | red_heartbeat_id() ]) -> ok.
+                       TransactionIds :: [ {term(), tx_label()} | red_heartbeat_id() ]) -> ok.
 
 send_red_deliver(ToId, Partition, Ballot, Timestamp, TransactionIds) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition,

@@ -398,44 +398,47 @@ handle_ack(SelfPid, FromPartition, Ballot, TxId, Vote, AcceptTs, TxAcc0, TxState
             TxAcc0#{TxId => TxState#tx_acc{quorums_to_ack=Quorums, accumulator=Acc, ballots=Ballots}};
         0 ->
             ?ADD_DECISION_TS(TxId),
-            Outcome={Decision, CommitVC} = decide_transaction(TxState#tx_acc.snapshot_vc, Acc),
-            reply_to_client(Outcome, TxState#tx_acc.promise),
+            {Decision, CommitTs} = decide_transaction(Acc),
+            reply_to_client(
+                {Decision, grb_vclock:set_time(?RED_REPLICA, CommitTs, TxState#tx_acc.snapshot_vc)},
+                TxState#tx_acc.promise
+            ),
 
             lists:foreach(fun({Partition, Location}) ->
                 Ballot = maps:get(Partition, Ballots),
-                send_decision(Partition, Location, Ballot, TxId, Decision, CommitVC)
+                send_decision(Partition, Location, Ballot, TxId, Decision, CommitTs)
             end, TxState#tx_acc.locations),
 
             ok = grb_red_manager:unregister_coordinator(TxId, SelfPid),
             maps:remove(TxId, TxAcc0)
     end.
 
--spec decide_transaction(vclock(), #{partition_id() => {red_vote(), grb_time:ts()}}) -> {red_vote(), vclock()}.
-decide_transaction(SnapshotVC, VoteMap) ->
-    {Decision, Ts} = maps:fold(fun
-        (_, {Vote, Ts}, undefined) -> {Vote, Ts};
-        (_, {Vote, Ts}, TsAcc) -> reduce_vote(Vote, Ts, TsAcc)
-    end, undefined, VoteMap),
-    {
-        Decision,
-        grb_vclock:set_max_time(?RED_REPLICA, Ts, SnapshotVC)
-    }.
+-spec decide_transaction(#{partition_id() => {red_vote(), grb_time:ts()}}) -> {red_vote(), grb_time:ts()}.
+decide_transaction(VoteMap) ->
+    maps:fold(
+        fun
+            (_, {Vote, Ts}, undefined) -> {Vote, Ts};
+            (_, {Vote, Ts}, TsAcc) -> reduce_vote(Vote, Ts, TsAcc)
+        end,
+        undefined,
+        VoteMap
+    ).
 
--spec send_decision(partition_id(), leader_location(), ballot(), term(), red_vote(), vclock()) -> ok.
-send_decision(Partition, LeaderLoc, Ballot, TxId, Decision, CommitVC) ->
+-spec send_decision(partition_id(), leader_location(), ballot(), term(), red_vote(), grb_vclock:ts()) -> ok.
+send_decision(Partition, LeaderLoc, Ballot, TxId, Decision, CommitTs) ->
     case LeaderLoc of
         {local, IndexNode} ->
             %% leader is in the local cluster, go through vnode directly
-            ok = grb_paxos_vnode:decide(IndexNode, Ballot, TxId, Decision, CommitVC);
+            ok = grb_paxos_vnode:decide(IndexNode, Ballot, TxId, Decision, CommitTs);
         {remote, RemoteReplica} ->
             %% leader is in another replica, and we have a direct inter_dc connection to it
             ok = grb_dc_connection_manager:send_red_decision(RemoteReplica, Partition, Ballot,
-                                                             TxId, Decision, CommitVC);
+                                                             TxId, Decision, CommitTs);
         {proxy, LocalNode, RemoteReplica} ->
             ok = grb_measurements:log_counter({?MODULE, Partition, RemoteReplica, fwd_send_decision}),
             %% leader is in another replica, but we don't have a direct inter_dc connection, have
             %% to go through a cluster-local proxy at `LocalNode`
-            Msg = grb_dc_messages:red_decision(Ballot, Decision, TxId, CommitVC),
+            Msg = grb_dc_messages:red_decision(Ballot, Decision, TxId, CommitTs),
             grb_dc_utils:send_cast(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
     end.
 

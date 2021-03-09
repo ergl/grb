@@ -117,9 +117,10 @@ delete(#state{index=Index, pending_reads=PendingReads, writes_cache=Writes}) ->
 current_ballot(#state{ballot=B}) ->
     B.
 
--spec get_decided_data(record_id(), t()) -> writeset().
+-spec get_decided_data(record_id(), t()) -> {writeset(), vclock()}.
 get_decided_data(Id, #state{entries=EntryMap}) ->
-    (maps:get(Id, EntryMap))#tx_data.writeset.
+    #tx_data{writeset=WS, clock=VC} = maps:get(Id, EntryMap),
+    {WS, VC}.
 
 %%%===================================================================
 %%% ready / prune
@@ -305,6 +306,10 @@ assign_timestamp(VC) ->
     Red = grb_time:timestamp(),
     {Red, grb_vclock:set_time(?RED_REPLICA, Red, VC)}.
 
+-dialyzer({no_opaque, assign_commit_timestamp/3}).
+assign_commit_timestamp({?red_heartbeat_marker, _}, _, Ts) -> Ts;
+assign_commit_timestamp(_, VC, Ts) -> grb_vclock:set_time(?RED_REPLICA, Ts, VC).
+
 get_timestamp({?red_heartbeat_marker, _}, RedTs) -> RedTs;
 get_timestamp(_, PrepareVC) -> grb_vclock:get_time(?RED_REPLICA, PrepareVC).
 
@@ -362,17 +367,19 @@ decision_pre(_, Id, #state{entries=EntryMap}) ->
             {ok, Data}
     end.
 
--spec decision(ballot(), record_id(), red_vote(), vclock(), t()) -> {ok, t()} | decision_error().
-decision(Ballot, Id, Vote, CommitVC, S=#state{entries=EntryMap, index=Idx,
-                                              pending_reads=PrepReads, writes_cache=WriteCache}) ->
+-spec decision(ballot(), record_id(), red_vote(), grb_time:ts(), t()) -> {ok, t()} | decision_error().
+decision(Ballot, Id, Vote, RedTs, S=#state{entries=EntryMap, index=Idx,
+                                           pending_reads=PrepReads, writes_cache=WriteCache}) ->
 
-    RedTs = get_timestamp(Id, CommitVC),
     case decision_pre(Ballot, Id, S) of
         already_decided ->
             {ok, S};
 
-        {ok, Data=#tx_data{red_ts=OldTs, label=Label, vote=OldVote, read_keys=ReadKeys, write_keys=WriteKeys}} ->
+        {ok, Data=#tx_data{red_ts=OldTs, label=Label, vote=OldVote,
+                           read_keys=ReadKeys, write_keys=WriteKeys, clock=PrepareClock}} ->
+
             true = ets:delete(Idx, {OldTs, Id}),
+            CommitVC = assign_commit_timestamp(Id, PrepareClock, RedTs),
             %% if we voted commit during prepare, we need to clean up / move pending data
             %% if we voted abort, we didn't store anything
             case OldVote of
@@ -544,7 +551,10 @@ grb_paxos_state_transaction_test() ->
         RS = [], WS = #{},
         PVC = #{}, Conflicts = #{},
 
-        {Res={ok, Ballot, CVC}, L1} = grb_paxos_state:prepare(TxId, Label, RS, WS, PVC, LastVC, Conflicts, L0),
+        {
+            Res={ok, Ballot, CVC},
+            L1
+        } = grb_paxos_state:prepare(TxId, Label, RS, WS, PVC, LastVC, Conflicts, L0),
 
         %% preparing again should result in the same result
         {OtherRes, L2} = grb_paxos_state:prepare(TxId, Label, RS, WS, PVC, LastVC, Conflicts, L1),
@@ -553,8 +563,8 @@ grb_paxos_state_transaction_test() ->
 
         {ok, F1} = grb_paxos_state:accept(Ballot, TxId, Label, RS, WS, ok, CVC, F0),
 
-        {ok, L3} = grb_paxos_state:decision(Ballot, TxId, ok, CVC, L2),
-        {ok, F2} = grb_paxos_state:decision(Ballot, TxId, ok, CVC, F1),
+        {ok, L3} = grb_paxos_state:decision(Ballot, TxId, ok, grb_vclock:get_time(?RED_REPLICA, CVC), L2),
+        {ok, F2} = grb_paxos_state:decision(Ballot, TxId, ok, grb_vclock:get_time(?RED_REPLICA, CVC), F1),
 
         %% preparing after decision should return early
         {PrepRes, L4} = grb_paxos_state:prepare(TxId, Label, RS, WS, PVC, LastVC, Conflicts, L3),
@@ -584,13 +594,13 @@ grb_paxos_state_get_next_ready_test() ->
         {ok, F2} = grb_paxos_state:accept(0, tx_1, <<>>, [], #{}, ok, V1, F1),
         {ok, F3} = grb_paxos_state:accept(0, tx_2, <<>>, [], #{}, ok, V2, F2),
 
-        {ok, F4} = grb_paxos_state:decision(0, tx_1, ok, V1, F3),
-        {ok, F5} = grb_paxos_state:decision(0, tx_2, ok, V2, F4),
+        {ok, F4} = grb_paxos_state:decision(0, tx_1, ok, grb_vclock:get_time(?RED_REPLICA, V1), F3),
+        {ok, F5} = grb_paxos_state:decision(0, tx_2, ok, grb_vclock:get_time(?RED_REPLICA, V2), F4),
 
         %% false, still have to decide tx_0, and it was prepared with a lower time
         ?assertEqual(false, grb_paxos_state:get_next_ready(0, F5)),
         %% now decide tx_0, marking tx_1 ready for delivery
-        {ok, F6} = grb_paxos_state:decision(0, tx_0, ok, V0, F5),
+        {ok, F6} = grb_paxos_state:decision(0, tx_0, ok, grb_vclock:get_time(?RED_REPLICA, V0), F5),
 
         ?assertEqual({T(V0), [{tx_0, <<>>, #{}, V0}]}, grb_paxos_state:get_next_ready(0, F6)),
         ?assertEqual({T(V1), [{tx_1, <<>>, #{}, V1}]}, grb_paxos_state:get_next_ready(T(V0), F6)),
@@ -604,7 +614,7 @@ grb_paxos_state_get_next_ready_test() ->
         {ok, F1} = grb_paxos_state:accept_hb(0, {?red_heartbeat_marker, 0}, T0, F0),
         {ok, F2} = grb_paxos_state:accept(0, tx_1, <<>>, [], #{}, ok, V1, F1),
 
-        {ok, F3} = grb_paxos_state:decision(0, tx_1, ok, V1, F2),
+        {ok, F3} = grb_paxos_state:decision(0, tx_1, ok, grb_vclock:get_time(?RED_REPLICA, V1), F2),
 
         %% false, still have to decide the heartbeat
         ?assertEqual(false, grb_paxos_state:get_next_ready(0, F3)),
@@ -625,16 +635,16 @@ grb_paxos_state_get_next_ready_test() ->
         {ok, F3} = grb_paxos_state:accept(0, tx_2, <<>>, [], #{}, ok, V2, F2),
         {ok, F4} = grb_paxos_state:accept(0, tx_3, <<>>, [], #{}, ok, V3, F3),
 
-        {ok, F5} = grb_paxos_state:decision(0, tx_1, ok, V1, F4),
+        {ok, F5} = grb_paxos_state:decision(0, tx_1, ok, grb_vclock:get_time(?RED_REPLICA, V1), F4),
 
         %% we can skip tx_0, since it was aborted, no need to wait for decision (because decision will be abort)
         ?assertEqual({T(V1), [{tx_1, <<>>, #{}, V1}]}, grb_paxos_state:get_next_ready(0, F5)),
 
         %% now we decide tx_2 with a higher time, placing it the last on the queue
-        {ok, F6} = grb_paxos_state:decision(0, tx_2, ok, V4, F5),
+        {ok, F6} = grb_paxos_state:decision(0, tx_2, ok, grb_vclock:get_time(?RED_REPLICA, V4), F5),
 
         %% and decide tx_3, making it ready for delivery
-        {ok, F7} = grb_paxos_state:decision(0, tx_3, ok, V3, F6),
+        {ok, F7} = grb_paxos_state:decision(0, tx_3, ok, grb_vclock:get_time(?RED_REPLICA, V3), F6),
 
         ?assertEqual({T(V3), [{tx_3, <<>>, #{}, V3}]}, grb_paxos_state:get_next_ready(T(V1), F7)),
         ?assertEqual({T(V4), [{tx_2, <<>>, #{}, V4}]}, grb_paxos_state:get_next_ready(T(V3), F7))
@@ -660,12 +670,12 @@ grb_paxos_state_tx_clash_test() ->
         {ok, F1} = grb_paxos_state:accept(0, tx_1, <<>>, [], #{a => 0}, ok, VC(0), F0),
         {ok, F2} = grb_paxos_state:accept(0, tx_2, <<>>, [], #{a => 1}, ok, VC(5), F1),
 
-        {ok, F3} = grb_paxos_state:decision(0, tx_1, ok, VC(5), F2),
+        {ok, F3} = grb_paxos_state:decision(0, tx_1, ok, 5, F2),
 
         %% If we allow to deliver tx_1, we would overtake tx_2 and prevent it from ever being delivered
         ?assertEqual(false, grb_paxos_state:get_next_ready(0, F3) ),
 
-        {ok, F4} = grb_paxos_state:decision(0, tx_2, ok, VC(5), F3),
+        {ok, F4} = grb_paxos_state:decision(0, tx_2, ok, 5, F3),
 
         %% Now we can deliver, since tx_2 moved out of the prepare queue
         %% Order is not guaranteed, so sort both.
@@ -808,7 +818,7 @@ grb_paxos_state_prune_decided_before_test() ->
         PVC1 = #{?RED_REPLICA => 5}, Conflicts = #{},
 
         {{ok, Ballot, CVC1}, L1} = grb_paxos_state:prepare(TxId1, Label1, RS1, WS1, PVC1, LastVC, Conflicts, L0),
-        {ok, L2} = grb_paxos_state:decision(Ballot, TxId1, ok, CVC1, L1),
+        {ok, L2} = grb_paxos_state:decision(Ballot, TxId1, ok, grb_vclock:get_time(?RED_REPLICA, CVC1), L1),
 
         %% preparing after decision should return early
         {PrepRes0, L3} = grb_paxos_state:prepare(TxId1, Label1, RS1, WS1, PVC1, LastVC, Conflicts, L2),

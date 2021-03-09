@@ -136,14 +136,14 @@
     ballot :: ballot(),
     tx_id :: term(),
     decision :: term(),
-    commit_vc :: vclock()
+    commit_ts :: non_neg_integer()
 }).
 
 -record(red_learn_abort, {
     ballot :: ballot(),
     tx_id :: term(),
     reason :: term(),
-    commit_vc :: vclock()
+    commit_ts :: non_neg_integer()
 }).
 
 -record(red_already_decided, {
@@ -168,8 +168,8 @@
 -record(red_deliver, {
     ballot :: ballot(),
     timestamp :: grb_time:ts(),
-    transactions :: [ { TxId :: term(), Label :: term(), CommitVC :: vclock() }
-                    | { HeartbeatId :: term(), CommitTs :: term() } ]
+    transactions :: [ { TxId :: term(), Label :: term() }
+                    | { HB :: term(), HBId :: non_neg_integer() } ]
 }).
 
 -type replica_message() :: #blue_heartbeat{}

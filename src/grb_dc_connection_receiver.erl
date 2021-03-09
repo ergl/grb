@@ -225,14 +225,14 @@ handle_request(ConnReplica, Partition, #red_accept_ack{target_node=Node, ballot=
 
     grb_red_coordinator:accept_ack(Node, ConnReplica, Partition, Ballot, TxId, Vote, PrepareTs);
 
-handle_request(_, Partition, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->
-    grb_paxos_vnode:decide_local(Partition, Ballot, TxId, Decision, CommitVC);
+handle_request(_, Partition, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_ts=CommitTs}) ->
+    grb_paxos_vnode:decide_local(Partition, Ballot, TxId, Decision, CommitTs);
 
 handle_request(_, _, #red_already_decided{target_node=Node, tx_id=TxId, decision=Vote, commit_vc=CommitVC}) ->
     grb_red_coordinator:already_decided(Node, TxId, Vote, CommitVC);
 
-handle_request(_, Partition, #red_learn_abort{ballot=Ballot, tx_id=TxId, reason=Reason, commit_vc=CommitVC}) ->
-    grb_paxos_vnode:learn_abort(Partition, Ballot, TxId, Reason, CommitVC);
+handle_request(_, Partition, #red_learn_abort{ballot=Ballot, tx_id=TxId, reason=Reason, commit_ts=CommitTs}) ->
+    grb_paxos_vnode:learn_abort(Partition, Ballot, TxId, Reason, CommitTs);
 
 handle_request(_, Partition, #red_deliver{ballot=Ballot, timestamp=Ts, transactions=TransactionIds}) ->
     grb_paxos_vnode:deliver(Partition, Ballot, Ts, TransactionIds);

@@ -327,29 +327,29 @@ accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, {SentTs, Coord})
                                ?master).
 -endif.
 
--spec decide(index_node(), ballot(), term(), red_vote(), vclock()) -> ok.
-decide(Idx={Partition, Node}, Ballot, TxId, Decision, CommitVC) ->
+-spec decide(index_node(), ballot(), term(), red_vote(), grb_vclock:ts()) -> ok.
+decide(Idx={Partition, Node}, Ballot, TxId, Decision, CommitTs) ->
     if
         Node =:= node() ->
-            decide_local(Partition, Ballot, TxId, Decision, CommitVC);
+            decide_local(Partition, Ballot, TxId, Decision, CommitTs);
         true ->
             riak_core_vnode_master:command(Idx,
-                                           {decision, Ballot, TxId, Decision, CommitVC},
+                                           {decision, Ballot, TxId, Decision, CommitTs},
                                            ?master)
     end.
 
-decide_local(Partition, Ballot, TxId, Decision, CommitVC) ->
+decide_local(Partition, Ballot, TxId, Decision, CommitTs) ->
     grb_dc_utils:vnode_command(Partition,
-                                   {decision, Ballot, TxId, Decision, CommitVC},
-                                   ?master).
-
--spec learn_abort(partition_id(), ballot(), term(), term(), vclock()) -> ok.
-learn_abort(Partition, Ballot, TxId, Reason, CommitVC) ->
-    grb_dc_utils:vnode_command(Partition,
-                               {learn_abort, Ballot, TxId, Reason, CommitVC},
+                               {decision, Ballot, TxId, Decision, CommitTs},
                                ?master).
 
--spec deliver(partition_id(), ballot(), grb_time:ts(), [ { term(), tx_label(), vclock() } | red_heartbeat_id() ]) -> ok.
+-spec learn_abort(partition_id(), ballot(), term(), term(), grb_vclock:ts()) -> ok.
+learn_abort(Partition, Ballot, TxId, Reason, CommitTs) ->
+    grb_dc_utils:vnode_command(Partition,
+                               {learn_abort, Ballot, TxId, Reason, CommitTs},
+                               ?master).
+
+-spec deliver(partition_id(), ballot(), grb_time:ts(), [ { term(), tx_label() } | red_heartbeat_id() ]) -> ok.
 deliver(Partition, Ballot, Timestamp, TransactionIds) ->
     grb_dc_utils:vnode_command(Partition,
                                {deliver_transactions, Ballot, Timestamp, TransactionIds},
@@ -512,15 +512,15 @@ handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S0=#state{synod_role=?leade
     end,
     {noreply, S};
 
-handle_command({decision, Ballot, TxId, Decision, CommitVC}, _Sender, S0=#state{synod_role=?leader,
+handle_command({decision, Ballot, TxId, Decision, CommitTs}, _Sender, S0=#state{synod_role=?leader,
                                                                                 partition=Partition}) ->
     ?LOG_DEBUG("~p DECIDE(~b, ~p, ~p)", [Partition, Ballot, TxId, Decision]),
-    S = case decide_internal(Ballot, TxId, Decision, CommitVC, S0) of
+    S = case decide_internal(Ballot, TxId, Decision, CommitTs, S0) of
         {not_ready, Ms} ->
-            erlang:send_after(Ms, self(), {retry_decision, Ballot, TxId, Decision, CommitVC}),
+            erlang:send_after(Ms, self(), {retry_decision, Ballot, TxId, Decision, CommitTs}),
             S0;
         {ok, S1} ->
-            maybe_buffer_abort(Ballot, TxId, Decision, CommitVC, S1)
+            maybe_buffer_abort(Ballot, TxId, Decision, CommitTs, S1)
     end,
     {noreply, S};
 
@@ -548,10 +548,10 @@ handle_command({accept_hb, SourceReplica, Ballot, Id, Ts}, _Sender, S0=#state{pa
     ok = grb_dc_connection_manager:send_red_heartbeat_ack(SourceReplica, Partition, Ballot, Id, Ts),
     {noreply, S0#state{synod_state=FollowerState}};
 
-handle_command({learn_abort, Ballot, TxId, Reason, CommitVC}, _Sender, S0=#state{partition=Partition}) ->
+handle_command({learn_abort, Ballot, TxId, Reason, CommitTs}, _Sender, S0=#state{partition=Partition}) ->
     ?LOG_DEBUG("~p LEARN_ABORT(~b, ~p, ~p)", [Partition, Ballot, TxId]),
     ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
-    {ok, S} = decide_internal(Ballot, TxId, {abort, Reason}, CommitVC, S0),
+    {ok, S} = decide_internal(Ballot, TxId, {abort, Reason}, CommitTs, S0),
     {noreply, ?REPORT_ABORT_TS(TxId, S)};
 
 handle_command({deliver_transactions, Ballot, Timestamp, TransactionIds}, _Sender,
@@ -573,15 +573,15 @@ handle_command({deliver_transactions, Ballot, Timestamp, TransactionIds}, _Sende
                         {ok, SAcc} = decide_hb_internal(Ballot, Id, Timestamp, Acc),
                         SAcc;
 
-                    ({TxId, Label, CommitVC}, Acc) ->
+                    ({TxId, Label}, Acc) ->
                         ?REPORT_FOLLOWER_TS(TxId, Now, Partition),
 
                         %% We only receive committed transactions. Aborted transactions were received during decision.
                         ?LOG_DEBUG("~p DECIDE(~b, ~p, ~p)", [Partition, Ballot, TxId, ok]),
-                        {ok, SAcc} = decide_internal(Ballot, TxId, ok, CommitVC, Acc),
+                        {ok, SAcc} = decide_internal(Ballot, TxId, ok, Timestamp, Acc),
 
                         %% Since it's committed, we can deliver it immediately
-                        WS = grb_paxos_state:get_decided_data(TxId, SAcc#state.synod_state),
+                        {WS, CommitVC} = grb_paxos_state:get_decided_data(TxId, SAcc#state.synod_state),
                         ?LOG_DEBUG("~p DELIVER(~p, ~p, ~p)", [Partition, Timestamp, Label, WS]),
                         ok = grb_oplog_vnode:handle_red_transaction(Partition, TxId, Label, WS, CommitVC),
                         SAcc
@@ -779,18 +779,17 @@ decide_hb_internal(Ballot, Id, Ts, S=#state{synod_role=Role,
             end
     end.
 
--spec decide_internal(ballot(), term(), red_vote(), vclock(), #state{}) -> {ok, #state{}} | {not_ready, non_neg_integer()}.
-decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
+-spec decide_internal(ballot(), term(), red_vote(), grb_time:ts(), #state{}) -> {ok, #state{}} | {not_ready, non_neg_integer()}.
+decide_internal(Ballot, TxId, Decision, CommitTs, S=#state{synod_role=Role,
                                                            synod_state=SynodState0}) ->
     Now = grb_time:timestamp(),
-    CommitTs = grb_vclock:get_time(?RED_REPLICA, CommitVC),
     if
         (Role =:= ?leader) and (Now < CommitTs) ->
             ok = grb_measurements:log_counter({?MODULE, S#state.partition, decision_not_ready}),
             {not_ready, grb_time:diff_ms(Now, CommitTs)};
 
         true ->
-            case grb_paxos_state:decision(Ballot, TxId, Decision, CommitVC, SynodState0) of
+            case grb_paxos_state:decision(Ballot, TxId, Decision, CommitTs, SynodState0) of
                 {ok, SynodState} ->
                     {ok, S#state{synod_state=SynodState}};
 
@@ -809,14 +808,14 @@ decide_internal(Ballot, TxId, Decision, CommitVC, S=#state{synod_role=Role,
     end.
 
 -spec maybe_buffer_abort(ballot(), term(), red_vote(), vclock(), #state{}) -> #state{}.
-maybe_buffer_abort(_Ballot, TxId, ok, _CommitVC, State) ->
+maybe_buffer_abort(_Ballot, TxId, ok, _CommitTs, State) ->
     %% If this is a commit, we can wait until delivery
     ?ADD_COMMIT_TS(TxId, State);
-maybe_buffer_abort(Ballot, TxId, {abort, Reason}, CommitVC, State=#state{partition=Partition,
+maybe_buffer_abort(Ballot, TxId, {abort, Reason}, CommitTs, State=#state{partition=Partition,
                                                                          abort_buffer_io=AbortBuffer,
                                                                          send_aborts_interval_ms=Ms}) ->
     ok = grb_oplog_vnode:clean_transaction_ops(Partition, TxId),
-    FramedAbortMsg = grb_dc_messages:frame(grb_dc_messages:red_learn_abort(Ballot, TxId, Reason, CommitVC)),
+    FramedAbortMsg = grb_dc_messages:frame(grb_dc_messages:red_learn_abort(Ballot, TxId, Reason, CommitTs)),
     ?REPORT_ABORT_TS(TxId, if
         Ms > 0 ->
             %% Abort delay is active.
@@ -865,7 +864,7 @@ deliver_updates(Partition, Ballot, From, SynodState) ->
                             true ->
                                 ok
                         end,
-                        [ {TxId, Label, CommitVC} | Acc]
+                        [ { TxId, Label } | Acc ]
                 end,
                 [],
                 Entries
@@ -897,8 +896,8 @@ deliver_updates(Partition, Ballot, From, SynodState, CalledN) ->
         {NextFrom, Entries} ->
             Identifiers = lists:foldl(
                 fun
-                    ({HeartbeatId, CommitTs}, Acc) ->
-                        [{HeartbeatId, CommitTs} | Acc];
+                    ( {?red_heartbeat_marker, _}=Heartbeat, Acc) ->
+                        [ Heartbeat | Acc ];
 
                     ({TxId, Label, WriteSet, CommitVC}, Acc) ->
                         if
@@ -908,7 +907,7 @@ deliver_updates(Partition, Ballot, From, SynodState, CalledN) ->
                             true ->
                                 ok
                         end,
-                        [ {TxId, Label, CommitVC} | Acc]
+                        [ { TxId, Label } | Acc ]
                 end,
                 [],
                 Entries
