@@ -343,14 +343,14 @@ make_commit_record(TxId, Label, RS, WS, RedTs, VC, Decision, Reads, Writes) ->
 deliver_is_valid_ballot(InBallot, #state{ballot=Ballot}) ->
     InBallot =< Ballot.
 
--spec decision_pre(ballot(), record_id(), grb_time:ts(), t()) -> {ok, tx_data()}
-                                                                              | already_decided
-                                                                              | decision_error().
+-spec decision_pre(ballot(), record_id(), t()) -> {ok, tx_data()}
+                                                | already_decided
+                                                | decision_error().
 
-decision_pre(InBallot, _, _, #state{ballot=Ballot}) when InBallot > Ballot ->
+decision_pre(InBallot, _, #state{ballot=Ballot}) when InBallot > Ballot ->
     bad_ballot;
 
-decision_pre(_, Id, _, #state{entries=EntryMap}) ->
+decision_pre(_, Id, #state{entries=EntryMap}) ->
     case maps:get(Id, EntryMap, not_prepared) of
         not_prepared ->
             not_prepared;
@@ -368,7 +368,7 @@ decision(Ballot, Id, Vote, CommitVC, S=#state{entries=EntryMap, index=Idx,
                                               pending_reads=PrepReads, writes_cache=WriteCache}) ->
 
     RedTs = get_timestamp(Id, CommitVC),
-    case decision_pre(Ballot, Id, RedTs, S) of
+    case decision_pre(Ballot, Id, S) of
         already_decided ->
             {ok, S};
 
