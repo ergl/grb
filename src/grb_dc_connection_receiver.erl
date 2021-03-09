@@ -226,7 +226,7 @@ handle_request(ConnReplica, Partition, #red_accept_ack{target_node=Node, ballot=
     grb_red_coordinator:accept_ack(Node, ConnReplica, Partition, Ballot, TxId, Vote, PrepareTs);
 
 handle_request(_, Partition, #red_decision{ballot=Ballot, tx_id=TxId, decision=Decision, commit_vc=CommitVC}) ->
-    grb_paxos_vnode:decide({Partition, node()}, Ballot, TxId, Decision, CommitVC);
+    grb_paxos_vnode:decide_local(Partition, Ballot, TxId, Decision, CommitVC);
 
 handle_request(_, _, #red_already_decided{target_node=Node, tx_id=TxId, decision=Vote, commit_vc=CommitVC}) ->
     grb_red_coordinator:already_decided(Node, TxId, Vote, CommitVC);

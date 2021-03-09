@@ -19,6 +19,7 @@
          prepare_local/7,
          accept/9,
          decide/5,
+         decide_local/5,
          learn_abort/5,
          deliver/4]).
 
@@ -327,8 +328,18 @@ accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, {SentTs, Coord})
 -endif.
 
 -spec decide(index_node(), ballot(), term(), red_vote(), vclock()) -> ok.
-decide(IndexNode, Ballot, TxId, Decision, CommitVC) ->
-    riak_core_vnode_master:command(IndexNode,
+decide(Idx={Partition, Node}, Ballot, TxId, Decision, CommitVC) ->
+    if
+        Node =:= node() ->
+            decide_local(Partition, Ballot, TxId, Decision, CommitVC);
+        true ->
+            riak_core_vnode_master:command(Idx,
+                                           {decision, Ballot, TxId, Decision, CommitVC},
+                                           ?master)
+    end.
+
+decide_local(Partition, Ballot, TxId, Decision, CommitVC) ->
+    grb_dc_utils:vnode_command(Partition,
                                    {decision, Ballot, TxId, Decision, CommitVC},
                                    ?master).
 
