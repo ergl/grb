@@ -7,7 +7,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--define(heartbeat, heartbeat).
 -define(abort_conflict, {abort, conflict}).
 -define(abort_stale_dec, {abort, stale_decided}).
 -define(abort_stale_comm, {abort, stale_committed}).
@@ -15,7 +14,7 @@
 %% We don't care about the structure too much, as long as the client ensures identifiers
 %% are unique (or at least, unique to the point of not reusing them before they call
 %% `prune_decided_before/2`
--type record_id() :: {?heartbeat, term()} | term().
+-type record_id() :: red_heartbeat_id() | term().
 -record(tx_data, {
     label = undefined :: tx_label() | undefined,
     read_keys = [] :: readset() | undefined,
@@ -52,7 +51,7 @@
 -type decision_error() :: bad_ballot | not_prepared.
 -type t() :: #state{}.
 
--type ready_tx() :: [ {?heartbeat, term()} | {term(), tx_label(), writeset(), vclock()}, ... ].
+-type ready_tx() :: [ red_heartbeat_id() | {term(), tx_label(), writeset(), vclock()}, ... ].
 
 -export_type([t/0, prepare_result/0, prepare_hb_result/0, decision_error/0, ready_tx/0]).
 
@@ -184,8 +183,8 @@ get_next_ready_continue(_, CommitTime, _, _, Acc) ->
     %% As soon as we go out of range, return the accumulator.
     {CommitTime, Acc}.
 
--spec data_for_id(record_id(), #{record_id() => tx_data()}) -> {?heartbeat, term()} | {term(), tx_label(), writeset(), vclock()}.
-data_for_id({?heartbeat, Id}, _) -> {?heartbeat, Id};
+-spec data_for_id(record_id(), #{record_id() => tx_data()}) -> red_heartbeat_id() | {term(), tx_label(), writeset(), vclock()}.
+data_for_id({?red_heartbeat_marker, Id}, _) -> {?red_heartbeat_marker, Id};
 data_for_id(Id, EntryMap) ->
     #tx_data{label=Label, writeset=WS, clock=CommitVC} = maps:get(Id, EntryMap),
     {Id, Label, WS, CommitVC}.
@@ -230,7 +229,7 @@ prune_decided_transaction(Id, Time, Decision, S=#state{index=Idx, entries=EntryM
 
 -spec clear_pending(record_id(), tx_label(), red_vote(), [key()] | undefined, cache_id()) -> ok.
 clear_pending(_Id, _, {abort, _}, _WrittenKeys, _Writes) -> ok;
-clear_pending({?heartbeat, _}, _, ok, _WrittenKeys, _Writes) -> ok;
+clear_pending({?red_heartbeat_marker, _}, _, ok, _WrittenKeys, _Writes) -> ok;
 clear_pending(Id, Label, ok, Keys, Writes) ->
     lists:foreach(fun(K) -> ets:delete(Writes, {K, Label, Id}) end, Keys).
 
@@ -238,7 +237,7 @@ clear_pending(Id, Label, ok, Keys, Writes) ->
 %%% heartbeat api
 %%%===================================================================
 
--spec prepare_hb({?heartbeat, _}, t()) -> {prepare_hb_result(), t()}.
+-spec prepare_hb({?red_heartbeat_marker, _}, t()) -> {prepare_hb_result(), t()}.
 -dialyzer({nowarn_function, prepare_hb/2}).
 prepare_hb(Id, State) ->
     prepare(Id, ignore, ignore, ignore, ignore, ignore, ignore, State).
@@ -306,7 +305,7 @@ assign_timestamp(VC) ->
     Red = grb_time:timestamp(),
     {Red, grb_vclock:set_time(?RED_REPLICA, Red, VC)}.
 
-get_timestamp({?heartbeat, _}, RedTs) -> RedTs;
+get_timestamp({?red_heartbeat_marker, _}, RedTs) -> RedTs;
 get_timestamp(_, PrepareVC) -> grb_vclock:get_time(?RED_REPLICA, PrepareVC).
 
 
@@ -325,7 +324,7 @@ make_prepared(Id, Label, RS, WS, RedTs, VC, Decision, #state{index=Idx,
     end.
 
 -spec make_commit_record(record_id(), tx_label(), readset(), writeset(), grb_time:ts(), _, red_vote(), cache_id(), cache_id()) -> tx_data().
-make_commit_record({?heartbeat, _}, _, _, _, RedTs, _, Decision, _, _) ->
+make_commit_record({?red_heartbeat_marker, _}, _, _, _, RedTs, _, Decision, _, _) ->
     #tx_data{label=undefined, read_keys=undefined, write_keys=undefined, writeset=undefined,
              red_ts=RedTs, clock=RedTs, state=prepared, vote=Decision};
 
@@ -397,7 +396,7 @@ decision(Ballot, Id, Vote, CommitVC, S=#state{entries=EntryMap, index=Idx,
                         WriteCache :: cache_id()) -> ok.
 
 %% for a heartbeat, we never stored anything, so there's no need to move any data
-move_pending_data({?heartbeat, _}, _, _, _, _, _, _, _) -> ok;
+move_pending_data({?red_heartbeat_marker, _}, _, _, _, _, _, _, _) -> ok;
 move_pending_data(Id, Label, CommitVC, Vote, RKeys, WKeys, PendingReads, WriteCache) ->
     %% Remove reads, since we only care about them while the transaction is prepared
     %% If the vote is abort, we still might have stored these reads if we voted commit
@@ -521,7 +520,7 @@ grb_paxos_state_heartbeat_test() ->
     with_states([grb_paxos_state:new(),
                  grb_paxos_state:new()], fun([L0, F0]) ->
 
-        Id = {?heartbeat, 0},
+        Id = {?red_heartbeat_marker, 0},
         {{ok, Ballot, Ts}, L1} = grb_paxos_state:prepare_hb(Id, L0),
         {ok, F1} = grb_paxos_state:accept_hb(Ballot, Id, Ts, F0),
 
@@ -602,7 +601,7 @@ grb_paxos_state_get_next_ready_test() ->
     with_states(grb_paxos_state:new(), fun(F0) ->
         [T0, V1] = [ 1, VC(5)],
 
-        {ok, F1} = grb_paxos_state:accept_hb(0, {?heartbeat, 0}, T0, F0),
+        {ok, F1} = grb_paxos_state:accept_hb(0, {?red_heartbeat_marker, 0}, T0, F0),
         {ok, F2} = grb_paxos_state:accept(0, tx_1, <<>>, [], #{}, ok, V1, F1),
 
         {ok, F3} = grb_paxos_state:decision(0, tx_1, ok, V1, F2),
@@ -611,9 +610,9 @@ grb_paxos_state_get_next_ready_test() ->
         ?assertEqual(false, grb_paxos_state:get_next_ready(0, F3)),
 
         %% now decide the heartbeat, marking tx_1 ready for delivery
-        {ok, F4} = grb_paxos_state:decision_hb(0, {?heartbeat, 0}, T0, F3),
+        {ok, F4} = grb_paxos_state:decision_hb(0, {?red_heartbeat_marker, 0}, T0, F3),
 
-        ?assertEqual({T0, [{?heartbeat, 0}]}, grb_paxos_state:get_next_ready(0, F4)),
+        ?assertEqual({T0, [{?red_heartbeat_marker, 0}]}, grb_paxos_state:get_next_ready(0, F4)),
         ?assertEqual({T(V1), [{tx_1, <<>>, #{}, V1}]}, grb_paxos_state:get_next_ready(T0, F4))
     end),
 
@@ -643,14 +642,14 @@ grb_paxos_state_get_next_ready_test() ->
 
 grb_paxos_state_hb_clash_test() ->
     with_states(grb_paxos_state:new(), fun(L0) ->
-        {{ok, B, Ts0}, L1} = grb_paxos_state:prepare_hb({?heartbeat, 0}, L0),
-        {ok, L2} = grb_paxos_state:decision_hb(B, {?heartbeat, 0}, Ts0, L1),
+        {{ok, B, Ts0}, L1} = grb_paxos_state:prepare_hb({?red_heartbeat_marker, 0}, L0),
+        {ok, L2} = grb_paxos_state:decision_hb(B, {?red_heartbeat_marker, 0}, Ts0, L1),
 
-        ?assertEqual({Ts0, [{?heartbeat, 0}]}, grb_paxos_state:get_next_ready(0, L2)),
-        {PrepRes, L3} = grb_paxos_state:prepare_hb({?heartbeat, 0}, L2),
+        ?assertEqual({Ts0, [{?red_heartbeat_marker, 0}]}, grb_paxos_state:get_next_ready(0, L2)),
+        {PrepRes, L3} = grb_paxos_state:prepare_hb({?red_heartbeat_marker, 0}, L2),
         ?assertMatch({already_decided, ok, Ts0}, PrepRes),
 
-        ?assertEqual({Ts0, [{?heartbeat, 0}]}, grb_paxos_state:get_next_ready(0, L3)),
+        ?assertEqual({Ts0, [{?red_heartbeat_marker, 0}]}, grb_paxos_state:get_next_ready(0, L3)),
         ?assertEqual(false, grb_paxos_state:get_next_ready(Ts0, L3))
     end).
 
@@ -826,15 +825,15 @@ grb_paxos_state_prune_decided_before_test() ->
         ?assertEqual(L3, L4),
 
         %% let's do a heartbeat now
-        {{ok, Ballot, Ts}, L5} = grb_paxos_state:prepare_hb({?heartbeat, 0}, L4),
-        {ok, L6} = grb_paxos_state:decision_hb(Ballot, {?heartbeat, 0}, Ts, L5),
+        {{ok, Ballot, Ts}, L5} = grb_paxos_state:prepare_hb({?red_heartbeat_marker, 0}, L4),
+        {ok, L6} = grb_paxos_state:decision_hb(Ballot, {?red_heartbeat_marker, 0}, Ts, L5),
 
-        ?assertEqual({Ts, [{?heartbeat, 0}]}, grb_paxos_state:get_next_ready(Expected, L5)),
+        ?assertEqual({Ts, [{?red_heartbeat_marker, 0}]}, grb_paxos_state:get_next_ready(Expected, L5)),
         ?assertEqual(false, grb_paxos_state:get_next_ready(Ts, L5)),
 
         %% prune, now we should only have the heartbeat
         L7 = grb_paxos_state:prune_decided_before(Expected + 1, L6),
-        ?assertMatch({Ts, [{?heartbeat, 0}]}, grb_paxos_state:get_next_ready(0, L7)),
+        ?assertMatch({Ts, [{?red_heartbeat_marker, 0}]}, grb_paxos_state:get_next_ready(0, L7)),
 
         %% but if we prune past that, then the heartbeat should be gone
         L8 = grb_paxos_state:prune_decided_before(Ts + 1, L7),

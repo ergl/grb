@@ -132,7 +132,7 @@ red_learn_abort(Ballot, TxId, Reason, CommitVC) ->
 
 -spec red_deliver(_, Ballot :: ballot(),
                   Timestamp :: grb_time:ts(),
-                  Transactions :: [ {term(), tx_label(), vclock()} | {term(), term()}]) -> binary().
+                  TransactionIds :: [ {term(), tx_label(), vclock()} | red_heartbeat_id()]) -> binary().
 
 -ifndef(ENABLE_METRICS).
 red_deliver(_, Ballot, Timestamp, TransactionIds) ->
@@ -415,10 +415,10 @@ grb_dc_message_utils_test() ->
         #red_decision{ballot=10, tx_id=ignore, decision=ok, commit_vc=VC},
         #red_already_decided{target_node=TargetNode, tx_id=ignore, decision=ok, commit_vc=VC},
         #red_learn_abort{ballot=10, tx_id=ignore, commit_vc=VC},
-        #red_deliver{ballot=10, timestamp=10, transactions=[ {heartbeat, 0}, {tx_0, <<"foo">>, #{}}]},
+        #red_deliver{ballot=10, timestamp=10, transactions=[ {?red_heartbeat_marker, 0}, {tx_0, <<"foo">>, #{}}]},
 
-        #red_heartbeat{ballot=4, heartbeat_id={heartbeat, 0}, timestamp=10},
-        #red_heartbeat_ack{ballot=4, heartbeat_id={heartbeat, 0}, timestamp=10}
+        #red_heartbeat{ballot=4, heartbeat_id={?red_heartbeat_marker, 0}, timestamp=10},
+        #red_heartbeat_ack{ballot=4, heartbeat_id={?red_heartbeat_marker, 0}, timestamp=10}
     ],
 
     lists:foreach(fun(Msg) ->

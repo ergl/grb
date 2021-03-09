@@ -63,6 +63,9 @@
                          | {remote, replica_id()}
                          | {proxy, node(), replica_id()}.
 
+-define(red_heartbeat_marker, heartbeat).
+-type red_heartbeat_id() :: {?red_heartbeat_marker, non_neg_integer()}.
+
 -export_type([partition_id/0,
               index_node/0,
               cache_id/0,
@@ -86,4 +89,5 @@
               red_vote/0,
               ballot/0,
               leader_location/0,
-              red_coord_location/0]).
+              red_coord_location/0,
+              red_heartbeat_id/0]).

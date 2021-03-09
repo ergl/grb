@@ -16,19 +16,18 @@
 
 -define(red_hb, red_heartbeat).
 
--type heartbeat_id() :: {heartbeat, non_neg_integer()}.
 -record(active_hb, {
     timestamp = undefined :: grb_time:ts() | undefined,
     ballot = undefined :: ballot() | undefined,
     to_ack :: pos_integer()
 }).
--type active_heartbeats() :: #{heartbeat_id() := #active_hb{}}.
+-type active_heartbeats() :: #{red_heartbeat_id() := #active_hb{}}.
 
 -record(state, {
     replica :: replica_id(),
     partition :: partition_id(),
     quorum_size :: non_neg_integer(),
-    next_hb_id = {heartbeat, 0} :: heartbeat_id(),
+    next_hb_id = {?red_heartbeat_marker, 0} :: red_heartbeat_id(),
 
     %% Active heartbeats accumulator
     active_heartbeats = #{} :: active_heartbeats()
@@ -103,11 +102,11 @@ handle_info(E, S) ->
     ?LOG_WARNING("~p unexpected info: ~p~n", [?MODULE, E]),
     {noreply, S}.
 
--spec next_heartbeat_id(heartbeat_id()) -> heartbeat_id().
-next_heartbeat_id({heartbeat, N}) -> {heartbeat, N + 1}.
+-spec next_heartbeat_id(red_heartbeat_id()) -> red_heartbeat_id().
+next_heartbeat_id({?red_heartbeat_marker, N}) -> {?red_heartbeat_marker, N + 1}.
 
 -spec handle_ack(Partition :: partition_id(),
-                 HeartbeatId :: heartbeat_id(),
+                 HeartbeatId :: red_heartbeat_id(),
                  InBallot :: ballot(),
                  InTimestamp :: grb_time:ts(),
                  HeartbeatState :: #active_hb{},

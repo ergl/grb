@@ -255,11 +255,11 @@ send_red_abort(ToId, Partition, Ballot, TxId, Reason, CommitVC) ->
                        Partition :: partition_id(),
                        Ballot :: ballot(),
                        Timestamp :: grb_time:ts(),
-                       Transactions :: [{tx_label(), writeset(), vclock()} | {term(), term()}]) -> ok.
+                       TransactionIds :: [{term(), tx_label(), vclock()} | red_heartbeat_id() ]) -> ok.
 
-send_red_deliver(ToId, Partition, Ballot, Timestamp, Transactions) ->
+send_red_deliver(ToId, Partition, Ballot, Timestamp, TransactionIds) ->
     send_raw(?CONN_POOL_TABLE, ToId, Partition,
-             grb_dc_messages:red_deliver(Partition, Ballot, Timestamp, Transactions)).
+             grb_dc_messages:red_deliver(Partition, Ballot, Timestamp, TransactionIds)).
 
 -spec send_red_heartbeat(ToId :: replica_id(),
                          Partition :: partition_id(),

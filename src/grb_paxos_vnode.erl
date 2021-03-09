@@ -349,7 +349,7 @@ learn_abort(Partition, Ballot, TxId, Reason, CommitVC) ->
                                {learn_abort, Ballot, TxId, Reason, CommitVC},
                                ?master).
 
--spec deliver(partition_id(), ballot(), grb_time:ts(), [ {term(), tx_label(), vclock()} | {term(), grb_time:ts()} ]) -> ok.
+-spec deliver(partition_id(), ballot(), grb_time:ts(), [ { term(), tx_label(), vclock() } | red_heartbeat_id() ]) -> ok.
 deliver(Partition, Ballot, Timestamp, TransactionIds) ->
     grb_dc_utils:vnode_command(Partition,
                                {deliver_transactions, Ballot, Timestamp, TransactionIds},
@@ -567,7 +567,7 @@ handle_command({deliver_transactions, Ballot, Timestamp, TransactionIds}, _Sende
             %% so we don't have to worry about that either.
             S1 = lists:foldl(
                 fun
-                    ({heartbeat, _}=Id, Acc) ->
+                    ({?red_heartbeat_marker, _}=Id, Acc) ->
                         %% heartbeats always commit
                         ?LOG_DEBUG("~p: HEARTBEAT_DECIDE(~b, ~p, ~b)", [Partition, Ballot, Id, Timestamp]),
                         {ok, SAcc} = decide_hb_internal(Ballot, Id, Timestamp, Acc),
@@ -617,16 +617,16 @@ handle_info({retry_decide_hb, Ballot, Id, Ts}, S0) ->
     end,
     {ok, S};
 
-handle_info({retry_decision, Ballot, TxId, Decision, CommitVC}, S0=#state{synod_role=?leader,
+handle_info({retry_decision, Ballot, TxId, Decision, CommitTs}, S0=#state{synod_role=?leader,
                                                                           partition=Partition}) ->
-    S = case decide_internal(Ballot, TxId, Decision, CommitVC, S0) of
+    S = case decide_internal(Ballot, TxId, Decision, CommitTs, S0) of
         {not_ready, Ms} ->
             %% This shouldn't happen, we already made sure that we'd be ready when we received this message
             ?LOG_ERROR("DECIDE(~p, ~p, ~p) retry", [Partition, Ballot, TxId]),
-            erlang:send_after(Ms, self(), {retry_decision, Ballot, TxId, Decision, CommitVC}),
+            erlang:send_after(Ms, self(), {retry_decision, Ballot, TxId, Decision, CommitTs}),
             S0;
         {ok, S1} ->
-            maybe_buffer_abort(Ballot, TxId, Decision, CommitVC, S1)
+            maybe_buffer_abort(Ballot, TxId, Decision, CommitTs, S1)
     end,
     {ok, S};
 
@@ -854,8 +854,8 @@ deliver_updates(Partition, Ballot, From, SynodState) ->
             %% commit timestamp, they can be delivered in any order.
             Identifiers = lists:foldl(
                 fun
-                    ({HeartbeatId, CommitTs}, Acc) ->
-                        [{HeartbeatId, CommitTs} | Acc];
+                    ( {?red_heartbeat_marker, _}=Heartbeat, Acc) ->
+                        [ Heartbeat | Acc ];
 
                     ({TxId, Label, WriteSet, CommitVC}, Acc) ->
                         if
