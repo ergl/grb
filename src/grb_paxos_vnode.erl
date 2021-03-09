@@ -16,6 +16,7 @@
 
 %% tx API
 -export([prepare/7,
+         prepare_local/7,
          accept/9,
          decide/5,
          learn_abort/5,
@@ -283,11 +284,21 @@ decide_heartbeat(Partition, Ballot, Id, Ts) ->
               SnapshotVC :: vclock(),
               Coord :: red_coord_location()) -> ok.
 
-prepare(IndexNode, TxId, Label, ReadSet, Writeset, SnapshotVC, Coord) ->
-    riak_core_vnode_master:command(IndexNode,
-                                   {prepare, TxId, Label, ReadSet, Writeset, SnapshotVC},
-                                   Coord,
-                                   ?master).
+prepare(Idx={Partition, Node}, TxId, Label, ReadSet, Writeset, SnapshotVC, Coord) ->
+    if
+        Node =:= node() ->
+            prepare_local(Partition, TxId, Label, ReadSet, Writeset, SnapshotVC, Coord);
+        true ->
+            riak_core_vnode_master:command(Idx,
+                                           {prepare, TxId, Label, ReadSet, Writeset, SnapshotVC},
+                                           Coord,
+                                           ?master)
+    end.
+
+%% Same as above, for cases where we're sure we're in the same physical machine.
+prepare_local(Partition, TxId, Label, RS, WS, VC, Coord) ->
+    grb_dc_utils:vnode_command(Partition, {prepare, TxId, Label, RS, WS, VC},
+                               Coord, ?master).
 
 -spec accept(Partition :: partition_id(),
              Ballot :: ballot(),
