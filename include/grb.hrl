@@ -66,6 +66,12 @@
 -define(red_heartbeat_marker, heartbeat).
 -type red_heartbeat_id() :: {?red_heartbeat_marker, non_neg_integer()}.
 
+-ifdef(SENDER_SOCKET_BACKEND).
+-define(SENDER_MODULE, grb_dc_connection_sender_socket).
+-else.
+-define(SENDER_MODULE, grb_dc_connection_sender_driver).
+-endif.
+
 -export_type([partition_id/0,
               index_node/0,
               cache_id/0,

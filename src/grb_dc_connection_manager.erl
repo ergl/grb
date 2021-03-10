@@ -80,7 +80,7 @@ connect_to(#replica_descriptor{replica_id=ReplicaID, remote_addresses=RemoteNode
     try
         Connections = lists:map(fun(LocalPartition) ->
             {RemoteIP, Port} = maps:get(LocalPartition, RemoteNodes),
-            {ok, Conn} = grb_dc_connection_sender:start_connection(
+            {ok, Conn} = ?SENDER_MODULE:start_connection(
                 ReplicaID, LocalPartition, RemoteIP, Port
             ),
             {LocalPartition, Conn}
@@ -282,7 +282,7 @@ send_raw(ToId, Partition, Msg) ->
 send_raw_framed(ToId, Partition, IOList) ->
     try
         Connection = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
-        grb_dc_connection_sender:send_process_framed(Connection, IOList)
+        ?SENDER_MODULE:send_process_framed(Connection, IOList)
     catch _:_  ->
         {error, gone}
     end.
@@ -291,7 +291,7 @@ send_raw_framed(ToId, Partition, IOList) ->
 send_raw(Table, ToId, Partition, Msg) ->
     try
         Connection = ets:lookup_element(Table, {Partition, ToId}, 2),
-        grb_dc_connection_sender:send_process(Connection, Msg)
+        ?SENDER_MODULE:send_process(Connection, Msg)
     catch _:_  ->
         {error, gone}
     end.
@@ -357,7 +357,7 @@ close_replica_connections(ReplicaId, #state{connections=BlueConnTable}) ->
     DeleteMatchSpec = [{{{'_', ReplicaId}, '$1'}, [], [true]}],
     BlueConns = ets:select(BlueConnTable, MatchSpec),
     _ = ets:select_delete(BlueConnTable, DeleteMatchSpec),
-    [ grb_dc_connection_sender:close(C) || C <- BlueConns],
+    [ ?SENDER_MODULE:close(C) || C <- BlueConns],
     ok.
 
 -spec close_replica_connections(replica_id(), partition_id(), #state{}) -> ok.
