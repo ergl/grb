@@ -1,4 +1,4 @@
--module(grb_dc_connection_sender).
+-module(grb_dc_connection_sender_socket).
 -behavior(gen_server).
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
