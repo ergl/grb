@@ -15,6 +15,9 @@
          multikey_snapshot_bypass/5,
          async_key_operation/7]).
 
+%% inter-dc receiver dispatch
+-export([async_blue_heartbeat/3]).
+
 %% replica management API
 -export([start_readers/2,
          stop_readers/1,
@@ -136,6 +139,14 @@ multikey_snapshot_bypass(Promise, Partition, TxId, VC, KeyPayload) ->
     gen_server:cast(random_reader(Partition), {multikey_snapshot_bypass, Promise, TxId, VC, KeyPayload}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Inter-DC Protocol
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+-spec async_blue_heartbeat(partition_id(), replica_id(), grb_time:ts()) -> ok.
+async_blue_heartbeat(Partition, SourceReplica, Ts) ->
+    gen_server:cast(random_reader(Partition), {blue_heartbeat, SourceReplica, Ts}).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -155,6 +166,10 @@ handle_call(shutdown, _From, State) ->
 handle_call(Request, _From, State) ->
     ?LOG_WARNING("Unhandled call ~p", [Request]),
     {noreply, State}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Protocol API
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 handle_cast({partition_wait, Promise, TxId, VC}, State) ->
     {noreply, register_known_barrier_op(Promise, TxId, {value, <<>>}, VC, State)};
@@ -196,6 +211,14 @@ handle_cast({multikey_snapshot, Promise, TxId, VC, KeyPayload}, S0=#state{partit
 
 handle_cast({multikey_snapshot_bypass, Promise, TxId, VC, KeyPayload}, State) ->
     {noreply, send_multi_read(Promise, TxId, VC, KeyPayload, State)};
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Inter-DC Protocol
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+handle_cast({blue_heartbeat, Replica, Ts}, State=#state{partition=Partition}) ->
+    grb_propagation_vnode:handle_blue_heartbeat(Partition, Replica, Ts),
+    {noreply, State};
 
 handle_cast(Request, State) ->
     ?LOG_WARNING("Unhandled cast ~p", [Request]),

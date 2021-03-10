@@ -189,7 +189,7 @@ expand_drv_buffer(Transport, Socket) ->
 
 -spec handle_request(replica_id(), partition_id(), replica_message()) -> ok.
 handle_request(ConnReplica, Partition, #blue_heartbeat{timestamp=Ts}) ->
-    grb_propagation_vnode:handle_blue_heartbeat(Partition, ConnReplica, Ts);
+    grb_vnode_proxy:async_blue_heartbeat(Partition, ConnReplica, Ts);
 
 handle_request(ConnReplica, Partition, #replicate_tx{writeset=WS, commit_vc=VC}) ->
     grb_oplog_vnode:handle_replicate(Partition, ConnReplica, WS, VC);
@@ -208,7 +208,7 @@ handle_request(ConnReplica, Partition, #update_clocks_heartbeat{known_vc=KnownVC
     grb_propagation_vnode:handle_clock_heartbeat_update(Partition, ConnReplica, KnownVC, StableVC);
 
 handle_request(_, Partition, #forward_heartbeat{replica=SourceReplica, timestamp=Ts}) ->
-    grb_propagation_vnode:handle_blue_heartbeat(Partition, SourceReplica, Ts);
+    grb_vnode_proxy:async_blue_heartbeat(Partition, SourceReplica, Ts);
 
 handle_request(_, Partition, #forward_transaction{replica=SourceReplica, writeset=WS, commit_vc=VC}) ->
     grb_oplog_vnode:handle_replicate(Partition, SourceReplica, WS, VC);
