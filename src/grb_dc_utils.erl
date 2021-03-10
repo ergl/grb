@@ -175,7 +175,7 @@ vnode_command(Partition, Request, VMaster) ->
 %%
 %% We looked at the internals of riak_core_vnode_master for this.
 %%
--spec vnode_command(partition_id(), term(), _, atom()) -> ok.
+-spec vnode_command(partition_id(), term(), term(), atom()) -> ok.
 vnode_command(Partition, Request, Sender, VMaster) ->
     gen_fsm_compat:send_event(get_vnode_pid(VMaster, Partition),
                               riak_core_vnode_master:make_request(Request, Sender, Partition)).

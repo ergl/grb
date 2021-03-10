@@ -65,7 +65,7 @@
     connected_partition :: partition_id(),
     socket :: socket:socket(),
     gen_tcp_socket :: gen_tcp:socket(),
-    busy = false :: false | {true, reference()},
+    busy = false :: false | {true, socket:select_ref()},
     busy_ts = undefined :: non_neg_integer() | undefined,
     pending_to_send = [] :: iodata(),
     expand_buffer_timer :: reference()
@@ -76,7 +76,7 @@
     connected_partition :: partition_id(),
     socket :: socket:socket(),
     gen_tcp_socket :: gen_tcp:socket(),
-    busy = false :: false | {true, reference()},
+    busy = false :: false | {true, socket:select_ref()},
     pending_to_send = [] :: iodata(),
     expand_buffer_timer :: reference()
 }).

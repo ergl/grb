@@ -301,6 +301,7 @@ prepare_local(Partition, TxId, Label, RS, WS, VC, Coord) ->
     grb_dc_utils:vnode_command(Partition, {prepare, TxId, Label, RS, WS, VC},
                                Coord, ?master).
 
+-ifndef(ENABLE_METRICS).
 -spec accept(Partition :: partition_id(),
              Ballot :: ballot(),
              TxId :: term(),
@@ -310,14 +311,22 @@ prepare_local(Partition, TxId, Label, RS, WS, VC, Coord) ->
              Vote :: red_vote(),
              PrepareVC :: vclock(),
              Coord :: red_coord_location()) -> ok.
-
--ifndef(ENABLE_METRICS).
 accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, Coord) ->
     grb_dc_utils:vnode_command(Partition,
                                {accept, Ballot, TxId, Label, RS, WS, Vote, PrepareVC},
                                Coord,
                                ?master).
 -else.
+-spec accept(Partition :: partition_id(),
+             Ballot :: ballot(),
+             TxId :: term(),
+             Label :: tx_label(),
+             RS :: readset(),
+             WS :: writeset(),
+             Vote :: red_vote(),
+             PrepareVC :: vclock(),
+             Coord :: {grb_time:ts(), red_coord_location()}) -> ok.
+
 accept(Partition, Ballot, TxId, Label, RS, WS, Vote, PrepareVC, {SentTs, Coord}) ->
     Elapsed = grb_time:diff_native(grb_time:timestamp(), SentTs),
     grb_measurements:log_stat(?ACCEPT_FLIGHT_TS(Partition), Elapsed),
@@ -807,7 +816,7 @@ decide_internal(Ballot, TxId, Decision, CommitTs, S=#state{synod_role=Role,
             end
     end.
 
--spec maybe_buffer_abort(ballot(), term(), red_vote(), vclock(), #state{}) -> #state{}.
+-spec maybe_buffer_abort(ballot(), term(), red_vote(), grb_time:ts(), #state{}) -> #state{}.
 maybe_buffer_abort(_Ballot, TxId, ok, _CommitTs, State) ->
     %% If this is a commit, we can wait until delivery
     ?ADD_COMMIT_TS(TxId, State);
