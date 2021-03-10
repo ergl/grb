@@ -187,7 +187,7 @@ update(Partition, TxId, Key, Operation) ->
 
 -spec partition_wait(grb_promise:t(), partition_id(), term(), vclock()) -> ok.
 partition_wait(Promise, Partition, TxId, SnapshotVC) ->
-    grb_vnode_proxy:empty_wait(Promise, Partition, TxId, SnapshotVC).
+    grb_vnode_proxy:partition_wait(Promise, Partition, TxId, SnapshotVC).
 
 -spec prepare_blue(partition_id(), term(), vclock()) -> non_neg_integer().
 prepare_blue(Partition, TxId, VC) ->

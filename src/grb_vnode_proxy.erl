@@ -1,6 +1,3 @@
-%% -------------------------------------------------------------------
-%% This module allows multiple readers on the ETS tables of a grb_oplog_vnode
-%% -------------------------------------------------------------------
 -module(grb_vnode_proxy).
 -behavior(gen_server).
 -include("grb.hrl").
@@ -12,7 +9,7 @@
 -export([start_link/2]).
 
 %% protocol api
--export([empty_wait/4,
+-export([partition_wait/4,
          async_key_snapshot/6,
          multikey_snapshot/5,
          multikey_snapshot_bypass/5,
@@ -45,6 +42,10 @@
 }).
 -type waiting_reads() :: #waiting_reads{}.
 
+-type barrier_op() :: {value, term()}
+                    | {value, key(), crdt()}
+                    | {operation, key(), crdt(), operation()}.
+
 -record(state, {
     %% Partition that this server is replicating
     partition :: partition_id(),
@@ -56,10 +57,9 @@
     %% However, this shouldn't be a problem, because issuing two concurrent multi-key
     %% requests on the same partition should be extremely rare.
     pending_reads = #{} :: #{term() => pending_reads() | waiting_reads()},
-    simple_waiting_reads = #{} ::
-        #{ {grb_promise:t(), term()} => { vclock(), key(), crdt(), operation() }
-                                      | { vclock(), key(), crdt() }
-                                      | { vclock() } }
+
+    known_barrier_pending_operations = #{} ::
+        #{ {grb_promise:t(), term()} => { barrier_op(), vclock() }}
 }).
 
 -type state() :: #state{}.
@@ -105,9 +105,9 @@ stop_readers(Partition) ->
 %% Protocol API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
--spec empty_wait(grb_promise:t(), partition_id(), term(), vclock()) -> ok.
-empty_wait(Promise, Partition, TxId, VC) ->
-    gen_server:cast(random_reader(Partition), {empty_wait, Promise, TxId, VC}).
+-spec partition_wait(grb_promise:t(), partition_id(), term(), vclock()) -> ok.
+partition_wait(Promise, Partition, TxId, VC) ->
+    gen_server:cast(random_reader(Partition), {partition_wait, Promise, TxId, VC}).
 
 -spec async_key_snapshot(grb_promise:t(), partition_id(), term(), key(), crdt(), vclock()) -> ok.
 async_key_snapshot(Promise, Partition, TxId, Key, Type, VC) ->
@@ -156,57 +156,14 @@ handle_call(Request, _From, State) ->
     ?LOG_WARNING("Unhandled call ~p", [Request]),
     {noreply, State}.
 
-handle_cast({empty_wait, Promise, TxId, VC}, S0=#state{partition=Partition,
-                                                       replica_id=ReplicaId,
-                                                       known_barrier_wait_ms=WaitMs,
-                                                       simple_waiting_reads=WaitingReads}) ->
+handle_cast({partition_wait, Promise, TxId, VC}, State) ->
+    {noreply, register_known_barrier_op(Promise, TxId, {value, <<>>}, VC, State)};
 
-    S = case grb_propagation_vnode:partition_ready(Partition, ReplicaId, VC) of
-        not_ready ->
-            erlang:send_after(WaitMs, self(), {retry_partition_wait, Promise, TxId}),
-            S0#state{simple_waiting_reads=WaitingReads#{{Promise, TxId} => { VC }}};
+handle_cast({key_snapshot, Promise, TxId, Key, Type, VC}, State) ->
+    {noreply, register_known_barrier_op(Promise, TxId, {value, Key, Type}, VC, State)};
 
-        ready ->
-            grb_promise:resolve({ok, <<>>}, Promise),
-            S0
-    end,
-    {noreply, S};
-
-handle_cast({key_snapshot, Promise, TxId, Key, Type, VC}, S0=#state{partition=Partition,
-                                                                    replica_id=ReplicaId,
-                                                                    known_barrier_wait_ms=WaitMs,
-                                                                    simple_waiting_reads=WaitingReads}) ->
-
-    S = case grb_propagation_vnode:partition_ready(Partition, ReplicaId, VC) of
-        not_ready ->
-            erlang:send_after(WaitMs, self(), {retry_partition_wait, Promise, TxId}),
-            false = maps:is_key({Promise, TxId}, WaitingReads),
-            S0#state{simple_waiting_reads=WaitingReads#{{Promise, TxId} => { VC, Key, Type }}};
-
-        ready ->
-            grb_promise:resolve(grb_oplog_vnode:get_key_snapshot(Partition, TxId, Key, Type, VC),
-                                Promise),
-            S0
-    end,
-    {noreply, S};
-
-handle_cast({key_version, Promise, TxId, Key, Type, ReadOp, VC}, S0=#state{partition=Partition,
-                                                                           replica_id=ReplicaId,
-                                                                           known_barrier_wait_ms=WaitMs,
-                                                                           simple_waiting_reads=WaitingReads}) ->
-
-    S = case grb_propagation_vnode:partition_ready(Partition, ReplicaId, VC) of
-        not_ready ->
-            erlang:send_after(WaitMs, self(), {retry_partition_wait, Promise, TxId}),
-            false = maps:is_key({Promise, TxId}, WaitingReads),
-            S0#state{simple_waiting_reads=WaitingReads#{{Promise, TxId} => { VC, Key, Type, ReadOp }}};
-
-        ready ->
-            Version = grb_oplog_vnode:get_key_version(Partition, TxId, Key, Type, VC),
-            grb_promise:resolve({ok, grb_crdt:apply_read_op(ReadOp, Version)}, Promise),
-            S0
-    end,
-    {noreply, S};
+handle_cast({key_version, Promise, TxId, Key, Type, ReadOp, VC}, State) ->
+    {noreply, register_known_barrier_op(Promise, TxId, {operation, Key, Type, ReadOp}, VC, State)};
 
 handle_cast({key_snapshot_bypass, Promise, TxId, Key, Type, VC}, State=#state{partition=Partition}) ->
     {ok, Snapshot} = grb_oplog_vnode:get_key_snapshot(Partition, TxId, Key, Type, VC),
@@ -244,35 +201,8 @@ handle_cast(Request, State) ->
     ?LOG_WARNING("Unhandled cast ~p", [Request]),
     {noreply, State}.
 
-handle_info({retry_partition_wait, Promise, TxId}, S0=#state{partition=Partition,
-                                                             replica_id=ReplicaId,
-                                                             known_barrier_wait_ms=WaitMs,
-                                                             simple_waiting_reads=WaitingReads}) ->
-
-    Payload = maps:get({Promise, TxId}, WaitingReads),
-    VC = element(1, Payload),
-
-    S = case grb_propagation_vnode:partition_ready(Partition, ReplicaId, VC) of
-            not_ready ->
-                erlang:send_after(WaitMs, self(), {retry_partition_wait, Promise, TxId}),
-                S0;
-
-            ready ->
-                Result = case Payload of
-                    {VC, Key, Type, ReadOp} ->
-                        Version = grb_oplog_vnode:get_key_version(Partition, TxId, Key, Type, VC),
-                        grb_crdt:apply_read_op(ReadOp, Version);
-                    {VC, Key, Type} ->
-                        Version = grb_oplog_vnode:get_key_version(Partition, TxId, Key, Type, VC),
-                        grb_crdt:value(Version);
-                    _ ->
-                        %% nothing to do on empty waits
-                        <<>>
-                end,
-                grb_promise:resolve({ok, Result}, Promise),
-                S0#state{simple_waiting_reads=maps:remove({Promise, TxId}, WaitingReads)}
-        end,
-    {noreply, S};
+handle_info({retry_partition_wait, Promise, TxId}, State) ->
+    {noreply, try_known_barrier_callback(Promise, TxId, State)};
 
 handle_info({retry_multikey_snapshot, TxId}, S0=#state{partition=Partition,
                                                        replica_id=ReplicaId,
@@ -350,6 +280,44 @@ key_snapshot_bypass(Promise, Partition, TxId, Key, Type, VC) ->
 -spec key_snapshot_bypass(grb_promise:t(), partition_id(), term(), key(), crdt(), operation(), vclock()) -> ok.
 key_snapshot_bypass(Promise, Partition, TxId, Key, Type, Operation, VC) ->
     gen_server:cast(hashed_reader(Partition, Key), {key_snapshot_bypass, Promise, TxId, Key, Type, Operation, VC}).
+
+-spec register_known_barrier_op(grb_promise:t(), term(), barrier_op(), vclock(), #state{}) -> #state{}.
+register_known_barrier_op(Promise, TxId, Operation, VC, State=#state{partition=Partition,
+                                                                     replica_id=ReplicaId,
+                                                                     known_barrier_wait_ms=WaitMs,
+                                                                     known_barrier_pending_operations=PendingOps}) ->
+    case grb_propagation_vnode:partition_ready(Partition, ReplicaId, VC) of
+        not_ready ->
+            erlang:send_after(WaitMs, self(), {retry_partition_wait, Promise, TxId}),
+            State#state{known_barrier_pending_operations=PendingOps#{{Promise, TxId} => {Operation, VC}}};
+        ready ->
+            grb_promise:resolve({ok, dispatch_known_barrier_op(Partition, TxId, VC, Operation)}, Promise),
+            State
+    end.
+
+-spec try_known_barrier_callback(grb_promise:t(), term(), #state{}) -> #state{}.
+try_known_barrier_callback(Promise, TxId, State=#state{partition=Partition,
+                                                       replica_id=ReplicaId,
+                                                       known_barrier_wait_ms=WaitMs,
+                                                       known_barrier_pending_operations=PendingOps}) ->
+
+    {Op, VC} = maps:get({Promise, TxId}, PendingOps),
+    case grb_propagation_vnode:partition_ready(Partition, ReplicaId, VC) of
+        not_ready ->
+            erlang:send_after(WaitMs, self(), {retry_partition_wait, Promise, TxId}),
+            State;
+        ready ->
+            grb_promise:resolve({ok, dispatch_known_barrier_op(Partition, TxId, VC, Op)}, Promise),
+            State#state{known_barrier_pending_operations=maps:remove({Promise, TxId}, PendingOps)}
+    end.
+
+-spec dispatch_known_barrier_op(partition_id(), term(), vclock(), barrier_op()) -> term().
+dispatch_known_barrier_op(_Partition, _TxId, _VC, {value, Value}) ->
+    Value;
+dispatch_known_barrier_op(Partition, TxId, VC, {value, Key, Type}) ->
+    grb_crdt:value(grb_oplog_vnode:get_key_version(Partition, TxId, Key, Type, VC));
+dispatch_known_barrier_op(Partition, TxId, VC, {operation, Key, Type, Op}) ->
+    grb_crdt:apply_read_op(Op, grb_oplog_vnode:get_key_version(Partition, TxId, Key, Type, VC)).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Start / Ready / Stop
