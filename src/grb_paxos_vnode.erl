@@ -850,9 +850,16 @@ send_abort_buffer(Partition, IOAborts) ->
 -spec deliver_updates(partition_id(), ballot(), grb_time:ts(), grb_paxos_state:t()) -> grb_time:ts().
 -ifndef(ENABLE_METRICS).
 deliver_updates(Partition, Ballot, From, SynodState) ->
+    {NewFrom, IOList} = deliver_updates_1(Partition, Ballot, From, SynodState, []),
+    lists:foreach(fun(ReplicaId) ->
+        grb_dc_connection_manager:send_raw_framed(ReplicaId, Partition, IOList)
+    end, grb_dc_connection_manager:connected_replicas()),
+    NewFrom.
+
+deliver_updates_1(Partition, Ballot, From, SynodState, IOAcc) ->
     case grb_paxos_state:get_next_ready(From, SynodState) of
         false ->
-            From;
+            {From, IOAcc};
 
         {NextFrom, Entries} ->
             %% Collect only the identifiers for the transactions, we don't care
@@ -879,28 +886,25 @@ deliver_updates(Partition, Ballot, From, SynodState) ->
                 Entries
             ),
 
-            %% Let followers know that these transactions are ready to be delivered.
-            %% todo(borja): Wait until we are done with deliver_updates, and send everything at once?
-            lists:foreach(fun(ReplicaId) ->
-                grb_dc_connection_manager:send_red_deliver(ReplicaId, Partition, Ballot, NextFrom, Identifiers)
-            end, grb_dc_connection_manager:connected_replicas()),
-
-            deliver_updates(Partition, Ballot, NextFrom, SynodState)
+            Msg = grb_dc_messages:frame(grb_dc_messages:red_deliver(Partition, Ballot, NextFrom, Identifiers)),
+            deliver_updates_1(Partition, Ballot, NextFrom, SynodState, [IOAcc, Msg])
     end.
 -else.
 deliver_updates(Partition, Ballot, From, SynodState) ->
-    {NewFrom, N} = deliver_updates(Partition, Ballot, From, SynodState, 1),
+    {NewFrom, IOList, N} = deliver_updates(Partition, Ballot, From, SynodState, [], 1),
     grb_measurements:log_stat(?DELIVER_CALLED_N(Partition), N),
+    lists:foreach(fun(ReplicaId) ->
+        grb_dc_connection_manager:send_raw_framed(ReplicaId, Partition, IOList)
+    end, grb_dc_connection_manager:connected_replicas()),
     NewFrom.
 
-deliver_updates(Partition, Ballot, From, SynodState, CalledN) ->
+deliver_updates(Partition, Ballot, From, SynodState, IOAcc, CalledN) ->
     Now = grb_time:timestamp(),
     {Took, Res} = timer:tc(grb_paxos_state, get_next_ready, [From, SynodState]),
     grb_measurements:log_stat(?NEXT_READY_DURATION(Partition), Took),
-
     case Res of
         false ->
-            {From, CalledN};
+            {From, IOAcc, CalledN};
 
         {NextFrom, Entries} ->
             Identifiers = lists:foldl(
@@ -922,11 +926,8 @@ deliver_updates(Partition, Ballot, From, SynodState, CalledN) ->
                 Entries
             ),
 
-            lists:foreach(fun(ReplicaId) ->
-                grb_dc_connection_manager:send_red_deliver(ReplicaId, Partition, Ballot, NextFrom, Identifiers)
-            end, grb_dc_connection_manager:connected_replicas()),
-
-            deliver_updates(Partition, Ballot, NextFrom, SynodState, CalledN + 1)
+            Msg = grb_dc_messages:frame(grb_dc_messages:red_deliver(Partition, Ballot, NextFrom, Identifiers)),
+            deliver_updates(Partition, Ballot, NextFrom, SynodState, [IOAcc, Msg], CalledN + 1)
     end.
 -endif.
 
