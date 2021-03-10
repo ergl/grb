@@ -1,7 +1,7 @@
 %% -------------------------------------------------------------------
 %% This module allows multiple readers on the ETS tables of a grb_oplog_vnode
 %% -------------------------------------------------------------------
--module(grb_oplog_reader).
+-module(grb_vnode_proxy).
 -behavior(gen_server).
 -include("grb.hrl").
 -include_lib("kernel/include/logger.hrl").
@@ -360,7 +360,7 @@ start_readers_internal(_Partition, 0) ->
     ok;
 
 start_readers_internal(Partition, N) ->
-    case grb_oplog_reader_sup:start_reader(Partition, N) of
+    case grb_vnode_proxy_sup:start_reader(Partition, N) of
         {ok, _} ->
             start_readers_internal(Partition, N - 1);
         {error, {already_started, _}} ->

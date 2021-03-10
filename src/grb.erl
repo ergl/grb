@@ -129,7 +129,7 @@ partition_ready(Partition, SnapshotVC) ->
 
 -spec key_snapshot(grb_promise:t(), partition_id(), term(), key(), crdt(), vclock()) -> ok.
 key_snapshot(Promise, Partition, TxId, Key, Type, SnapshotVC) ->
-    grb_oplog_reader:async_key_snapshot(Promise, Partition, TxId, Key, Type, SnapshotVC).
+    grb_vnode_proxy:async_key_snapshot(Promise, Partition, TxId, Key, Type, SnapshotVC).
 
 -spec key_snapshot_bypass(partition_id(), term(), key(), crdt(), vclock()) -> {ok, snapshot()}.
 key_snapshot_bypass(Partition, TxId, Key, Type, SnapshotVC) ->
@@ -137,7 +137,7 @@ key_snapshot_bypass(Partition, TxId, Key, Type, SnapshotVC) ->
 
 -spec read_operation(grb_promise:t(), partition_id(), term(), key(), crdt(), operation(), vclock()) -> ok.
 read_operation(Promise, Partition, TxId, Key, Type, ReadOp, SnapshotVC) ->
-    grb_oplog_reader:async_key_operation(Promise, Partition, TxId, Key, Type, ReadOp, SnapshotVC).
+    grb_vnode_proxy:async_key_operation(Promise, Partition, TxId, Key, Type, ReadOp, SnapshotVC).
 
 -spec read_operation_bypass(partition_id(), term(), key(), crdt(), operation(), vclock()) -> {ok, term()}.
 read_operation_bypass(Partition, TxId, Key, Type, ReadOp, SnapshotVC) ->
@@ -151,7 +151,7 @@ read_operation_bypass(Partition, TxId, Key, Type, ReadOp, SnapshotVC) ->
                         KeyTypes :: [{key(), crdt()}]) -> ok.
 
 multikey_snapshot(Promise, Partition, TxId, SnapshotVC, KeyTypes) ->
-    grb_oplog_reader:multikey_snapshot(Promise, Partition, TxId, SnapshotVC, {reads, KeyTypes}).
+    grb_vnode_proxy:multikey_snapshot(Promise, Partition, TxId, SnapshotVC, {reads, KeyTypes}).
 
 -spec multikey_snapshot_bypass(Promise :: grb_promise:t(),
                                Partition :: partition_id(),
@@ -160,7 +160,7 @@ multikey_snapshot(Promise, Partition, TxId, SnapshotVC, KeyTypes) ->
                                KeyTypes :: [{key(), crdt()}]) -> ok.
 
 multikey_snapshot_bypass(Promise, Partition, TxId, SnapshotVC, KeyTypes) ->
-    grb_oplog_reader:multikey_snapshot_bypass(Promise, Partition, TxId, SnapshotVC, {reads, KeyTypes}).
+    grb_vnode_proxy:multikey_snapshot_bypass(Promise, Partition, TxId, SnapshotVC, {reads, KeyTypes}).
 
 -spec multikey_update(Promise :: grb_promise:t(),
                       Partition :: partition_id(),
@@ -169,7 +169,7 @@ multikey_snapshot_bypass(Promise, Partition, TxId, SnapshotVC, KeyTypes) ->
                       KeyOps :: [{key(), operation()}]) -> ok.
 
 multikey_update(Promise, Partition, TxId, SnapshotVC, KeyOps) ->
-    grb_oplog_reader:multikey_snapshot(Promise, Partition, TxId, SnapshotVC, {updates, KeyOps}).
+    grb_vnode_proxy:multikey_snapshot(Promise, Partition, TxId, SnapshotVC, {updates, KeyOps}).
 
 -spec multikey_update_bypass(Promise :: grb_promise:t(),
                                Partition :: partition_id(),
@@ -178,7 +178,7 @@ multikey_update(Promise, Partition, TxId, SnapshotVC, KeyOps) ->
                                KeyOps :: [{key(), crdt()}]) -> ok.
 
 multikey_update_bypass(Promise, Partition, TxId, SnapshotVC, KeyOps) ->
-    grb_oplog_reader:multikey_snapshot_bypass(Promise, Partition, TxId, SnapshotVC, {updates, KeyOps}).
+    grb_vnode_proxy:multikey_snapshot_bypass(Promise, Partition, TxId, SnapshotVC, {updates, KeyOps}).
 
 
 -spec update(partition_id(), term(), key(), operation()) -> ok.
@@ -187,7 +187,7 @@ update(Partition, TxId, Key, Operation) ->
 
 -spec partition_wait(grb_promise:t(), partition_id(), term(), vclock()) -> ok.
 partition_wait(Promise, Partition, TxId, SnapshotVC) ->
-    grb_oplog_reader:empty_wait(Promise, Partition, TxId, SnapshotVC).
+    grb_vnode_proxy:empty_wait(Promise, Partition, TxId, SnapshotVC).
 
 -spec prepare_blue(partition_id(), term(), vclock()) -> non_neg_integer().
 prepare_blue(Partition, TxId, VC) ->

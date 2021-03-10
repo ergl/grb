@@ -536,13 +536,13 @@ handle_command(start_blue_hb_timer, _From, S = #state{blue_tick_pid=Pid}) when i
     {reply, ok, S};
 
 handle_command(start_readers, _From, S = #state{partition=P,
-                                                 replicas_n=N}) ->
+                                                replicas_n=N}) ->
 
-    Result = case grb_oplog_reader:readers_ready(P, N) of
+    Result = case grb_vnode_proxy:readers_ready(P, N) of
         true -> true;
         false ->
-            ok = grb_oplog_reader:start_readers(P, N),
-            grb_oplog_reader:readers_ready(P, N)
+            ok = grb_vnode_proxy:start_readers(P, N),
+            grb_vnode_proxy:readers_ready(P, N)
     end,
     {reply, Result, S};
 
@@ -561,11 +561,11 @@ handle_command(stop_blue_hb_timer, _From, S = #state{blue_tick_pid=Pid,
     {noreply, S#state{blue_tick_pid=undefined, stalled_blue_check_timer=undefined}};
 
 handle_command(stop_readers, _From, S = #state{partition=P}) ->
-    ok = grb_oplog_reader:stop_readers(P),
+    ok = grb_vnode_proxy:stop_readers(P),
     {noreply, S};
 
 handle_command(readers_ready, _From, S = #state{partition=P, replicas_n=N}) ->
-    Result = grb_oplog_reader:readers_ready(P, N),
+    Result = grb_vnode_proxy:readers_ready(P, N),
     {reply, Result, S};
 
 handle_command({learn_all_replicas, Replicas}, _From, S) ->

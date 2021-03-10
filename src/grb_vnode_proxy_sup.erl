@@ -1,4 +1,4 @@
--module(grb_oplog_reader_sup).
+-module(grb_vnode_proxy_sup).
 -behavior(supervisor).
 -include("grb.hrl").
 
@@ -18,7 +18,7 @@ start_reader(Partition, Id) ->
 
 init([]) ->
     {ok, {{simple_one_for_one, 5, 10},
-        [{grb_oplog_reader,
-            {grb_oplog_reader, start_link, []},
-            transient, 5000, worker, [grb_oplog_reader]}]
+        [{grb_vnode_proxy,
+            {grb_vnode_proxy, start_link, []},
+            transient, 5000, worker, [grb_vnode_proxy]}]
     }}.
