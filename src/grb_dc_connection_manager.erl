@@ -37,7 +37,8 @@
          send_raw_framed/3]).
 
 %% Managemenet API
--export([connection_closed/2,
+-export([sender_pool_size/0,
+         connection_closed/2,
          close/1]).
 
 %% Used through erpc or supervisor machinery
@@ -61,7 +62,7 @@
 
 -record(state, {
     replicas :: cache(replicas, ordsets:ordset(replica_id())),
-    connections :: cache({partition_id(), replica_id()}, inter_dc_conn())
+    connections :: cache({partition_id(), replica_id(), non_neg_integer()}, grb_dc_connection_sender_sup:handle())
 }).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -80,10 +81,10 @@ connect_to(#replica_descriptor{replica_id=ReplicaID, remote_addresses=RemoteNode
     try
         Connections = lists:map(fun(LocalPartition) ->
             {RemoteIP, Port} = maps:get(LocalPartition, RemoteNodes),
-            {ok, Conn} = ?SENDER_MODULE:start_connection(
+            {ok, Conns} = grb_dc_connection_sender_sup:start_connection(
                 ReplicaID, LocalPartition, RemoteIP, Port
             ),
-            {LocalPartition, Conn}
+            {LocalPartition, Conns}
         end, grb_dc_utils:my_partitions()),
         ?LOG_DEBUG("DC connections: ~p", [Connections]),
         ok = add_replica_connections(ReplicaID, Connections),
@@ -105,6 +106,17 @@ connection_closed(ReplicaId, Partition) ->
 close(ReplicaId) ->
     gen_server:call(?MODULE, {close, ReplicaId}).
 
+-spec sender_pool_size() -> non_neg_integer().
+sender_pool_size() ->
+    case persistent_term:get({?MODULE, sender_pool_size}, undefined) of
+        undefined ->
+            {ok, ConnNum} = application:get_env(grb, inter_dc_pool_size),
+            persistent_term:put({?MODULE, sender_pool_size}, ConnNum),
+            ConnNum;
+        Other ->
+            Other
+    end.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Node API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -114,7 +126,7 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 -spec add_replica_connections(Id :: replica_id(),
-                              PartitionConnections :: [{partition_id(), inter_dc_conn()}]) -> ok.
+                              PartitionConnections :: [{partition_id(), [grb_dc_connection_sender_sup:handle()]}]) -> ok.
 add_replica_connections(Id, PartitionConnections) ->
     gen_server:call(?MODULE, {add_replica_connections, Id, PartitionConnections}).
 
@@ -281,7 +293,7 @@ send_raw(ToId, Partition, Msg) ->
 -spec send_raw_framed(replica_id(), partition_id(), iolist()) -> ok | {error, term()}.
 send_raw_framed(ToId, Partition, IOList) ->
     try
-        Connection = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
+        Connection = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId, rand:uniform(sender_pool_size())}, 2),
         ?SENDER_MODULE:send_process_framed(Connection, IOList)
     catch _:_  ->
         {error, gone}
@@ -290,7 +302,7 @@ send_raw_framed(ToId, Partition, IOList) ->
 -spec send_raw(ets:tab(), replica_id(), partition_id(), binary()) -> ok | {error, term()}.
 send_raw(Table, ToId, Partition, Msg) ->
     try
-        Connection = ets:lookup_element(Table, {Partition, ToId}, 2),
+        Connection = ets:lookup_element(Table, {Partition, ToId, rand:uniform(sender_pool_size())}, 2),
         ?SENDER_MODULE:send_process(Connection, Msg)
     catch _:_  ->
         {error, gone}
@@ -325,7 +337,6 @@ handle_call(E, _From, S) ->
     {reply, ok, S}.
 
 handle_cast({closed, ReplicaId, Partition}, State) ->
-    ?LOG_INFO("Connection lost to ~p (~p), removing reference", [ReplicaId, Partition]),
     Replicas = connected_replicas(),
     true = ets:insert(?REPLICAS_TABLE, {?REPLICAS_TABLE_KEY, ordsets:del_element(ReplicaId, Replicas)}),
     ok = close_replica_connections(ReplicaId, Partition, State),
@@ -344,23 +355,43 @@ handle_info(E, S) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -spec add_replica_connections_internal(ReplicaId :: replica_id(),
-                                       PartitionConnections :: [{partition_id(), inter_dc_conn()}]) -> ok.
+                                       PartitionConnections :: [{partition_id(), [grb_dc_connection_sender_sup:handle()]}]) -> ok.
 
 add_replica_connections_internal(ReplicaId, PartitionConnections) ->
-    Objects = [ {{P, ReplicaId}, C} || {P, C} <- PartitionConnections],
+    PoolSize = sender_pool_size(),
+    PoolSizeIdxs = lists:seq(1, PoolSize),
+    Objects = lists:foldl(
+        fun({P, Conns}, Acc) ->
+            lists:zipwith(
+                fun(Idx, C) -> {{P, ReplicaId, Idx}, C} end,
+                PoolSizeIdxs,
+                Conns
+            ) ++ Acc
+        end,
+        [],
+        PartitionConnections
+    ),
     true = ets:insert(?CONN_POOL_TABLE, Objects),
     ok.
 
 -spec close_replica_connections(replica_id(), #state{}) -> ok.
-close_replica_connections(ReplicaId, #state{connections=BlueConnTable}) ->
-    MatchSpec = [{{{'_', ReplicaId}, '$1'}, [], ['$1']}],
-    DeleteMatchSpec = [{{{'_', ReplicaId}, '$1'}, [], [true]}],
-    BlueConns = ets:select(BlueConnTable, MatchSpec),
-    _ = ets:select_delete(BlueConnTable, DeleteMatchSpec),
-    [ ?SENDER_MODULE:close(C) || C <- BlueConns],
-    ok.
+close_replica_connections(ReplicaId, #state{connections=Connections}) ->
+    Handles = ets:select(Connections, [{ {{'$1', ReplicaId, '$2'}, '$3'}, [], [{{'$1', '$2', '$3'}}] }]),
+    lists:foreach(
+        fun({Partition, Idx, Handle}) ->
+            true = ets:delete(Connections, {Partition, ReplicaId, Idx}),
+            ok = ?SENDER_MODULE:close(Handle)
+        end,
+        Handles
+    ).
 
 -spec close_replica_connections(replica_id(), partition_id(), #state{}) -> ok.
-close_replica_connections(ReplicaId, Partition, #state{connections=BlueConns}) ->
-    true = ets:delete(BlueConns, {Partition, ReplicaId}),
-    ok.
+close_replica_connections(ReplicaId, Partition, #state{connections=Connections}) ->
+    Handles = ets:select(Connections, [{ {{Partition, ReplicaId, '$1'}, '$2'}, [], [{{'$1', '$2'}}] }]),
+    lists:foreach(
+        fun({Idx, Handle}) ->
+            true = ets:delete(Connections, {Partition, ReplicaId, Idx}),
+            ok = ?SENDER_MODULE:close(Handle)
+        end,
+        Handles
+    ).

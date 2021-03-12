@@ -91,7 +91,7 @@ start_link(TargetReplica, Partition, Ip, Port) ->
 
 -spec start_connection(replica_id(), partition_id(), inet:ip_address(), inet:port_number()) -> {ok, t()}.
 start_connection(TargetReplica, Partition, Ip, Port) ->
-    {ok, Pid} = grb_dc_connection_sender_sup:start_connection(TargetReplica, Partition, Ip, Port),
+    {ok, Pid} = grb_dc_connection_sender_sup:start_connection_child(TargetReplica, Partition, Ip, Port),
     establish_connection(Pid, Partition).
 
 -spec send_process(t(), iodata()) -> ok.
@@ -104,7 +104,7 @@ send_process_framed(#handle{pid=Pid}, Msg) ->
 
 -spec close(t()) -> ok.
 close(#handle{pid=Pid}) ->
-    gen_server:cast(Pid, close).
+    gen_server:cast(Pid, stop).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% gen_server callbacks
@@ -174,7 +174,8 @@ handle_info({tcp, GenSocket, Data}, State=#state{gen_tcp_socket=GenSocket, conne
     ok = inet:setopts(GenSocket, [{active, once}]),
     {noreply, State};
 
-handle_info({tcp_closed, _Socket}, S) ->
+handle_info({tcp_closed, _Socket}, S=#state{connected_partition=P, connected_dc=R}) ->
+    ?LOG_INFO("Connection lost to ~p (~p), removing reference", [R, P]),
     {stop, normal, S};
 
 handle_info({tcp_error, _Socket, Reason}, S=#state{connected_partition=P, connected_dc=R}) ->

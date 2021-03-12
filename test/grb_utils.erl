@@ -128,23 +128,29 @@ start_node(Name, Config) ->
             ok = erpc:call(Node, application, set_env, [grb, inter_dc_ip, inet:ntoa(IP)]),
             ok = erpc:call(Node, application, set_env, [grb, tcp_port, Port + 1]),
             ok = erpc:call(Node, application, set_env, [grb, tcp_id_len_bits, 16]),
-            ok = erpc:call(Node, application, set_env, [grb, inter_dc_port, Port + 2]),
-            ok = erpc:call(Node, application, set_env, [grb, version_log_size, 10]),
-            ok = erpc:call(Node, application, set_env, [grb, self_blue_heartbeat_interval, 1]),
-            ok = erpc:call(Node, application, set_env, [grb, basic_replication_interval, 1]),
-            ok = erpc:call(Node, application, set_env, [grb, prepared_blue_stale_check_ms, 0]),
-            ok = erpc:call(Node, application, set_env, [grb, uniform_replication_interval, 5000]),
-            ok = erpc:call(Node, application, set_env, [grb, fault_tolerance_factor, 1]),
-            ok = erpc:call(Node, application, set_env, [grb, remote_clock_broadcast_interval, 10000]),
-            ok = erpc:call(Node, application, set_env, [grb, local_broadcast_interval, 1]),
-            ok = erpc:call(Node, application, set_env, [grb, partition_ready_wait_ms, 1]),
-            ok = erpc:call(Node, application, set_env, [grb, prune_committed_blue_interval, 50]),
 
+            ok = erpc:call(Node, application, set_env, [grb, inter_dc_port, Port + 2]),
+            ok = erpc:call(Node, application, set_env, [grb, inter_dc_pool_size, 16]),
+
+            ok = erpc:call(Node, application, set_env, [grb, version_log_size, 10]),
+
+            ok = erpc:call(Node, application, set_env, [grb, partition_ready_wait_ms, 1]),
+            ok = erpc:call(Node, application, set_env, [grb, local_broadcast_interval, 1]),
+            ok = erpc:call(Node, application, set_env, [grb, self_blue_heartbeat_interval, 1]),
+
+            ok = erpc:call(Node, application, set_env, [grb, basic_replication_interval, 1]),
+            ok = erpc:call(Node, application, set_env, [grb, uniform_replication_interval, 5000]),
+            ok = erpc:call(Node, application, set_env, [grb, remote_clock_broadcast_interval, 10000]),
+
+            ok = erpc:call(Node, application, set_env, [grb, prune_committed_blue_interval, 50]),
+            ok = erpc:call(Node, application, set_env, [grb, prepared_blue_stale_check_ms, 0]),
+
+            ok = erpc:call(Node, application, set_env, [grb, fault_tolerance_factor, 1]),
+            ok = erpc:call(Node, application, set_env, [grb, red_coord_pool_size, 16]),
             ok = erpc:call(Node, application, set_env, [grb, red_heartbeat_schedule_ms, 5]),
             ok = erpc:call(Node, application, set_env, [grb, red_delivery_interval, 1]),
             ok = erpc:call(Node, application, set_env, [grb, red_prune_interval, 20]),
             ok = erpc:call(Node, application, set_env, [grb, red_abort_interval_ms, 100]),
-            ok = erpc:call(Node, application, set_env, [grb, red_coord_pool_size, 500]),
 
             {ok, _} = erpc:call(Node, grb, start, []),
             ct:pal("Node ~p started", [Node]),
