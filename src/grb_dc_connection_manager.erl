@@ -10,15 +10,13 @@
 
 %% External API
 -export([connect_to/1,
-         connected_replicas/0,
-         send_heartbeat/3,
-         forward_heartbeat/4,
-         send_tx/4,
-         send_tx_array/6,
-         send_tx_array/10,
+         connected_replicas/0]).
+
+%% Causal Messages
+-export([send_clocks/4,
+         send_clocks_heartbeat/4,
          forward_tx/5,
-         send_clocks/4,
-         send_clocks_heartbeat/4]).
+         forward_heartbeat/4]).
 
 %% Red transactions
 -export([send_red_prepare/8,
@@ -33,22 +31,19 @@
 -export([send_red_heartbeat/5,
          send_red_heartbeat_ack/5]).
 
--export([send_raw/3,
-         send_raw_framed/3]).
+%% Raw API
+-export([send_raw_framed/3,
+         send_raw_framed_causal/3]).
 
-%% Managemenet API
--export([connection_closed/2,
+%% Management API
+-export([sender_pool_size/0,
+         connection_closed/2,
          close/1]).
 
 %% Used through erpc or supervisor machinery
 -ignore_xref([start_link/0,
-              send_raw/3,
               connect_to/1,
               close/1]).
-
--ifndef(NO_FWD_REPLICATION).
--ignore_xref([send_heartbeat/3]).
--endif.
 
 %% Supervisor
 -export([start_link/0]).
@@ -61,7 +56,7 @@
 
 -record(state, {
     replicas :: cache(replicas, ordsets:ordset(replica_id())),
-    connections :: cache({partition_id(), replica_id()}, inter_dc_conn())
+    connections :: cache({partition_id(), replica_id(), non_neg_integer()}, grb_dc_connection_sender_sup:handle())
 }).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -80,10 +75,10 @@ connect_to(#replica_descriptor{replica_id=ReplicaID, remote_addresses=RemoteNode
     try
         Connections = lists:map(fun(LocalPartition) ->
             {RemoteIP, Port} = maps:get(LocalPartition, RemoteNodes),
-            {ok, Conn} = ?SENDER_MODULE:start_connection(
+            {ok, Conns} = grb_dc_connection_sender_sup:start_connection(
                 ReplicaID, LocalPartition, RemoteIP, Port
             ),
-            {LocalPartition, Conn}
+            {LocalPartition, Conns}
         end, grb_dc_utils:my_partitions()),
         ?LOG_DEBUG("DC connections: ~p", [Connections]),
         ok = add_replica_connections(ReplicaID, Connections),
@@ -105,6 +100,17 @@ connection_closed(ReplicaId, Partition) ->
 close(ReplicaId) ->
     gen_server:call(?MODULE, {close, ReplicaId}).
 
+-spec sender_pool_size() -> non_neg_integer().
+sender_pool_size() ->
+    case persistent_term:get({?MODULE, sender_pool_size}, undefined) of
+        undefined ->
+            {ok, ConnNum} = application:get_env(grb, inter_dc_pool_size),
+            persistent_term:put({?MODULE, sender_pool_size}, ConnNum),
+            ConnNum;
+        Other ->
+            Other
+    end.
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Node API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -114,7 +120,7 @@ start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 -spec add_replica_connections(Id :: replica_id(),
-                              PartitionConnections :: [{partition_id(), inter_dc_conn()}]) -> ok.
+                              PartitionConnections :: [{partition_id(), [grb_dc_connection_sender_sup:handle()]}]) -> ok.
 add_replica_connections(Id, PartitionConnections) ->
     gen_server:call(?MODULE, {add_replica_connections, Id, PartitionConnections}).
 
@@ -122,52 +128,14 @@ add_replica_connections(Id, PartitionConnections) ->
 connected_replicas() ->
     ets:lookup_element(?REPLICAS_TABLE, ?REPLICAS_TABLE_KEY, 2).
 
--spec send_heartbeat(ToId :: replica_id(),
-                     Partition :: partition_id(),
-                     Time :: grb_time:ts()) -> ok | {error, term()}.
-
-send_heartbeat(ToId, Partition, Time) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:blue_heartbeat(Time)).
-
 -spec forward_heartbeat(ToId :: replica_id(),
                         FromId :: replica_id(),
                         Partition :: partition_id(),
                         Time :: grb_time:ts()) -> ok | {error, term()}.
 
 forward_heartbeat(ToId, FromId, Partition, Time) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:forward_heartbeat(FromId, Time)).
-
--spec send_tx(ToId :: replica_id(),
-              Partition :: partition_id(),
-              WS :: writeset(),
-              VC :: vclock()) -> ok | {error, term()}.
-
-send_tx(ToId, Partition, WS, VC) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:transaction(WS, VC)).
-
--spec send_tx_array(ToId :: replica_id(),
-                    Partition :: partition_id(),
-                    Tx1 :: tx_entry(),
-                    Tx2 :: tx_entry(),
-                    Tx3 :: tx_entry(),
-                    Tx4 :: tx_entry()) -> ok | {error, term()}.
-
-send_tx_array(ToId, Partition, Tx1, Tx2, Tx3, Tx4) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:transaction_array(Tx1, Tx2, Tx3, Tx4)).
-
--spec send_tx_array(ToId :: replica_id(),
-                    Partition :: partition_id(),
-                    Tx1 :: tx_entry(),
-                    Tx2 :: tx_entry(),
-                    Tx3 :: tx_entry(),
-                    Tx4 :: tx_entry(),
-                    Tx5 :: tx_entry(),
-                    Tx6 :: tx_entry(),
-                    Tx7 :: tx_entry(),
-                    Tx8 :: tx_entry()) -> ok | {error, term()}.
-
-send_tx_array(ToId, Partition, Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:transaction_array(Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8)).
+    send_raw_framed_causal(ToId, Partition,
+                           grb_dc_messages:frame(grb_dc_messages:forward_heartbeat(FromId, Time))).
 
 -spec forward_tx(ToId :: replica_id(),
                  FromId :: replica_id(),
@@ -176,7 +144,8 @@ send_tx_array(ToId, Partition, Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8) ->
                  VC :: vclock()) -> ok | {error, term()}.
 
 forward_tx(ToId, FromId, Partition, WS, VC) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:forward_transaction(FromId, WS, VC)).
+    send_raw_framed_causal(ToId, Partition,
+                           grb_dc_messages:frame(grb_dc_messages:forward_transaction(FromId, WS, VC))).
 
 -spec send_clocks(ToId :: replica_id(),
                   Partition :: partition_id(),
@@ -185,10 +154,12 @@ forward_tx(ToId, FromId, Partition, WS, VC) ->
 
 -ifdef(STABLE_SNAPSHOT).
 send_clocks(ToId, Partition, KnownVC, _StableVC) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:clocks(KnownVC)).
+    send_raw_framed_causal(ToId, Partition,
+                           grb_dc_messages:frame(grb_dc_messages:clocks(KnownVC))).
 -else.
 send_clocks(ToId, Partition, KnownVC, StableVC) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:clocks(KnownVC, StableVC)).
+    send_raw_framed_causal(ToId, Partition,
+                           grb_dc_messages:frame(grb_dc_messages:clocks(KnownVC, StableVC))).
 -endif.
 
 %% @doc Same as send_clocks/5, but let the remote node to use knownVC as a heartbeat
@@ -198,10 +169,12 @@ send_clocks(ToId, Partition, KnownVC, StableVC) ->
                             StableVC :: vclock()) -> ok | {error, term()}.
 -ifdef(STABLE_SNAPSHOT).
 send_clocks_heartbeat(ToId, Partition, KnownVC, _StableVC) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:clocks_heartbeat(KnownVC)).
+    send_raw_framed_causal(ToId, Partition,
+                           grb_dc_messages:frame(grb_dc_messages:clocks_heartbeat(KnownVC))).
 -else.
 send_clocks_heartbeat(ToId, Partition, KnownVC, StableVC) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:clocks_heartbeat(KnownVC, StableVC)).
+    send_raw_framed_causal(ToId, Partition,
+                           grb_dc_messages:frame(grb_dc_messages:clocks_heartbeat(KnownVC, StableVC))).
 -endif.
 
 -spec send_red_prepare(ToId :: replica_id(),
@@ -214,7 +187,8 @@ send_clocks_heartbeat(ToId, Partition, KnownVC, StableVC) ->
                        VC :: vclock()) -> ok | {error, term()}.
 
 send_red_prepare(ToId, Coordinator, Partition, TxId, Label, RS, WS, VC) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:red_prepare(Coordinator, TxId, Label, RS, WS, VC)).
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:red_prepare(Coordinator, TxId, Label, RS, WS, VC))).
 
 -spec send_red_accept(ToId :: replica_id(),
                       Coordinator :: red_coord_location(),
@@ -228,28 +202,28 @@ send_red_prepare(ToId, Coordinator, Partition, TxId, Label, RS, WS, VC) ->
                       PrepareVC :: vclock()) -> ok | {error, term()}.
 
 send_red_accept(ToId, Coordinator, Partition, Ballot, Vote, TxId, Label, RS, WS, VC) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition,
-             grb_dc_messages:red_accept(Coordinator, Ballot, Vote, TxId, Label, RS, WS, VC)).
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:red_accept(Coordinator, Ballot, Vote, TxId, Label, RS, WS, VC))).
 
 -spec send_red_accept_ack(replica_id(), node(), partition_id(), ballot(), term(), red_vote(), grb_time:ts()) -> ok.
 send_red_accept_ack(ToId, ToNode, Partition, Ballot, TxId, Vote, PrepareTS) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition,
-             grb_dc_messages:red_accept_ack(ToNode, Ballot, Vote, TxId, PrepareTS)).
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:red_accept_ack(ToNode, Ballot, Vote, TxId, PrepareTS))).
 
 -spec send_red_already_decided(replica_id(), node(), partition_id(), term(), red_vote(), vclock()) -> ok.
 send_red_already_decided(ToId, ToNode, Partition, TxId, Decision, CommitVC) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition,
-             grb_dc_messages:red_already_decided(ToNode, Decision, TxId, CommitVC)).
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:red_already_decided(ToNode, Decision, TxId, CommitVC))).
 
 -spec send_red_decision(replica_id(), partition_id(), ballot(), term(), red_vote(), grb_vclock:ts()) -> ok.
 send_red_decision(ToId, Partition, Ballot, TxId, Decision, CommitTs) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition,
-             grb_dc_messages:red_decision(Ballot, Decision, TxId, CommitTs)).
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:red_decision(Ballot, Decision, TxId, CommitTs))).
 
 -spec send_red_abort(replica_id(), partition_id(), ballot(), term(), term(), grb_vclock:ts()) -> ok.
 send_red_abort(ToId, Partition, Ballot, TxId, Reason, CommitTs) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition,
-             grb_dc_messages:red_learn_abort(Ballot, TxId, Reason, CommitTs)).
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:red_learn_abort(Ballot, TxId, Reason, CommitTs))).
 
 -spec send_red_deliver(ToId :: replica_id(),
                        Partition :: partition_id(),
@@ -258,8 +232,8 @@ send_red_abort(ToId, Partition, Ballot, TxId, Reason, CommitTs) ->
                        TransactionIds :: [ {term(), tx_label()} | red_heartbeat_id() ]) -> ok.
 
 send_red_deliver(ToId, Partition, Ballot, Timestamp, TransactionIds) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition,
-             grb_dc_messages:red_deliver(Partition, Ballot, Timestamp, TransactionIds)).
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:red_deliver(Partition, Ballot, Timestamp, TransactionIds))).
 
 -spec send_red_heartbeat(ToId :: replica_id(),
                          Partition :: partition_id(),
@@ -268,30 +242,33 @@ send_red_deliver(ToId, Partition, Ballot, Timestamp, TransactionIds) ->
                          Time :: grb_time:ts()) -> ok | {error, term()}.
 
 send_red_heartbeat(ToId, Partition, Ballot, Id, Time) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:red_heartbeat(Ballot, Id, Time)).
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:red_heartbeat(Ballot, Id, Time))).
 
 -spec send_red_heartbeat_ack(replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok | {error, term()}.
 send_red_heartbeat_ack(ToId, Partition, Ballot, Id, Time) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, grb_dc_messages:red_heartbeat_ack(Ballot, Id, Time)).
-
--spec send_raw(replica_id(), partition_id(), binary()) -> ok | {error, term()}.
-send_raw(ToId, Partition, Msg) ->
-    send_raw(?CONN_POOL_TABLE, ToId, Partition, Msg).
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:red_heartbeat_ack(Ballot, Id, Time))).
 
 -spec send_raw_framed(replica_id(), partition_id(), iolist()) -> ok | {error, term()}.
 send_raw_framed(ToId, Partition, IOList) ->
     try
-        Connection = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId}, 2),
+        Connection = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId, rand:uniform(sender_pool_size() - 1)}, 2),
         ?SENDER_MODULE:send_process_framed(Connection, IOList)
     catch _:_  ->
         {error, gone}
     end.
 
--spec send_raw(ets:tab(), replica_id(), partition_id(), binary()) -> ok | {error, term()}.
-send_raw(Table, ToId, Partition, Msg) ->
+-spec send_raw_framed_causal(ToId :: replica_id(),
+                             Partition :: partition_id(),
+                             IOList :: iolist()) -> ok | {error, term()}.
+
+send_raw_framed_causal(ToId, Partition, IOList) ->
     try
-        Connection = ets:lookup_element(Table, {Partition, ToId}, 2),
-        ?SENDER_MODULE:send_process(Connection, Msg)
+        %% Funnel all causal messages through the same TCP connection
+        %% This is so we don't worry about FIFO order for causal messages.
+        Connection = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId, sender_pool_size()}, 2),
+        ?SENDER_MODULE:send_process_framed(Connection, IOList)
     catch _:_  ->
         {error, gone}
     end.
@@ -325,7 +302,6 @@ handle_call(E, _From, S) ->
     {reply, ok, S}.
 
 handle_cast({closed, ReplicaId, Partition}, State) ->
-    ?LOG_INFO("Connection lost to ~p (~p), removing reference", [ReplicaId, Partition]),
     Replicas = connected_replicas(),
     true = ets:insert(?REPLICAS_TABLE, {?REPLICAS_TABLE_KEY, ordsets:del_element(ReplicaId, Replicas)}),
     ok = close_replica_connections(ReplicaId, Partition, State),
@@ -344,23 +320,43 @@ handle_info(E, S) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -spec add_replica_connections_internal(ReplicaId :: replica_id(),
-                                       PartitionConnections :: [{partition_id(), inter_dc_conn()}]) -> ok.
+                                       PartitionConnections :: [{partition_id(), [grb_dc_connection_sender_sup:handle()]}]) -> ok.
 
 add_replica_connections_internal(ReplicaId, PartitionConnections) ->
-    Objects = [ {{P, ReplicaId}, C} || {P, C} <- PartitionConnections],
+    PoolSize = sender_pool_size(),
+    PoolSizeIdxs = lists:seq(1, PoolSize),
+    Objects = lists:foldl(
+        fun({P, Conns}, Acc) ->
+            lists:zipwith(
+                fun(Idx, C) -> {{P, ReplicaId, Idx}, C} end,
+                PoolSizeIdxs,
+                Conns
+            ) ++ Acc
+        end,
+        [],
+        PartitionConnections
+    ),
     true = ets:insert(?CONN_POOL_TABLE, Objects),
     ok.
 
 -spec close_replica_connections(replica_id(), #state{}) -> ok.
-close_replica_connections(ReplicaId, #state{connections=BlueConnTable}) ->
-    MatchSpec = [{{{'_', ReplicaId}, '$1'}, [], ['$1']}],
-    DeleteMatchSpec = [{{{'_', ReplicaId}, '$1'}, [], [true]}],
-    BlueConns = ets:select(BlueConnTable, MatchSpec),
-    _ = ets:select_delete(BlueConnTable, DeleteMatchSpec),
-    [ ?SENDER_MODULE:close(C) || C <- BlueConns],
-    ok.
+close_replica_connections(ReplicaId, #state{connections=Connections}) ->
+    Handles = ets:select(Connections, [{ {{'$1', ReplicaId, '$2'}, '$3'}, [], [{{'$1', '$2', '$3'}}] }]),
+    lists:foreach(
+        fun({Partition, Idx, Handle}) ->
+            true = ets:delete(Connections, {Partition, ReplicaId, Idx}),
+            ok = ?SENDER_MODULE:close(Handle)
+        end,
+        Handles
+    ).
 
 -spec close_replica_connections(replica_id(), partition_id(), #state{}) -> ok.
-close_replica_connections(ReplicaId, Partition, #state{connections=BlueConns}) ->
-    true = ets:delete(BlueConns, {Partition, ReplicaId}),
-    ok.
+close_replica_connections(ReplicaId, Partition, #state{connections=Connections}) ->
+    Handles = ets:select(Connections, [{ {{Partition, ReplicaId, '$1'}, '$2'}, [], [{{'$1', '$2'}}] }]),
+    lists:foreach(
+        fun({Idx, Handle}) ->
+            true = ets:delete(Connections, {Partition, ReplicaId, Idx}),
+            ok = ?SENDER_MODULE:close(Handle)
+        end,
+        Handles
+    ).

@@ -91,10 +91,6 @@ if [ -z "$INTER_DC_SENDER_POOL_SIZE" ]; then
   export INTER_DC_SENDER_POOL_SIZE=16
 fi
 
-if [ -z "$RED_SENDER_POOL_SIZE" ]; then
-  export RED_SENDER_POOL_SIZE=16
-fi
-
 if [ -z "$RED_COORD_POOL_SIZE" ]; then
   export RED_COORD_POOL_SIZE=50
 fi

@@ -40,6 +40,9 @@
     %% The (public) IP of this node. We could also get this using inet:getif
     {inter_dc_ip, "${INTER_DC_IP}"},
 
+    %% How many connections per replica-partition pair
+    {inter_dc_pool_size, ${INTER_DC_SENDER_POOL_SIZE}},
+
     %% The port to listen for client commands (default is 7878)
     {tcp_port, ${TCP_LIST_PORT}},
     {tcp_id_len_bits, ${TCP_ID_LEN}},

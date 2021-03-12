@@ -840,7 +840,7 @@ replicate_internal(S=#state{self_log=LocalLog0,
     end,
 
     lists:foreach(fun(Target) ->
-        SendRes = grb_dc_connection_manager:send_raw_framed(Target, Partition, Msg),
+        SendRes = grb_dc_connection_manager:send_raw_framed_causal(Target, Partition, Msg),
         ?LOG_DEBUG("send heartbeat / transactions to ~p: ~p~n", [Target, SendRes]),
         ok
     end, grb_dc_connection_manager:connected_replicas()),
@@ -865,12 +865,16 @@ replicate_internal(S=#state{self_log=LocalLog,
         ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
         case ToSend of
             [] ->
-                HBRes = grb_dc_connection_manager:send_raw_framed(Target, Partition, HeartBeatMsgIO),
+                HBRes = grb_dc_connection_manager:send_raw_framed_causal(Target, Partition, HeartBeatMsgIO),
                 ?LOG_DEBUG("send basic heartbeat to ~p: ~p~n", [Target, HBRes]),
                 ok;
             Transactions ->
-                SendRes = grb_dc_connection_manager:send_raw_framed(Target, Partition,
-                                                                    encode_transactions(Transactions)),
+                SendRes =
+                    grb_dc_connection_manager:send_raw_framed_causal(
+                        Target,
+                        Partition,
+                        encode_transactions(Transactions)
+                    ),
                 ?LOG_DEBUG("send transactions ~p: ~p~n", [Target, SendRes]),
                 ok
         end,
@@ -899,13 +903,17 @@ replicate_internal(S=#state{self_log=LocalLog,
         ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
         case ToSend of
             [] ->
-                % piggy back clocks on top of the send_heartbeat message, avoid extra message on the wire
-                HBRes = grb_dc_connection_manager:send_raw_framed(Target, Partition, ClockHeartbeatIO),
+                % piggy back clocks on top of the heartbeat message, avoid extra message on the wire
+                HBRes = grb_dc_connection_manager:send_raw_framed_causal(Target, Partition, ClockHeartbeatIO),
                 ?LOG_DEBUG("send clocks/heartbeat to ~p: ~p~n", [Target, HBRes]),
                 ok;
             Transactions ->
-                SendRes = grb_dc_connection_manager:send_raw_framed(Target, Partition,
-                                                                    [ClockMsgIO, encode_transactions(Transactions)]),
+                SendRes =
+                    grb_dc_connection_manager:send_raw_framed_causal(
+                        Target,
+                        Partition,
+                        [ClockMsgIO, encode_transactions(Transactions)]
+                    ),
                 ?LOG_DEBUG("send clocks / transactions ~p: ~p~n", [Target, SendRes]),
                 ok
         end,

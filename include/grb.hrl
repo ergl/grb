@@ -49,8 +49,6 @@
                              {packet, ?INTER_DC_SOCK_PACKET_OPT},
                              {nodelay, true}]).
 
--type inter_dc_conn() :: atom().
-
 -type red_coordinator() :: pid().
 -type red_vote() :: ok | {abort, atom()}.
 
@@ -90,7 +88,6 @@
               tx_label/0,
               conflict_relations/0,
               replica_descriptor/0,
-              inter_dc_conn/0,
               red_coordinator/0,
               red_vote/0,
               ballot/0,

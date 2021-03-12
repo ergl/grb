@@ -87,7 +87,7 @@
     begin true = ets:insert(__S#state.timing_table, {{__Id, commit}, grb_time:timestamp()}), __S end).
 
 -define(REPORT_ABORT_TS(__Id, __S),
-    begin
+    try
         __Now = grb_time:timestamp(),
         __PrepTime = ets:lookup_element(__S#state.timing_table, {__Id, first_seen}, 2),
 
@@ -98,10 +98,12 @@
                               [{ {{__Id, '_'}, '_'}, [], [true]} ]),
 
         __S
+    catch _:_ ->
+        __S
     end).
 
 -define(REPORT_LEADER_TS(__Id, __Now, __Partition),
-    begin
+    try
         __Table = persistent_term:get({?MODULE, __Partition, timing_data}),
         __PrepTime = ets:lookup_element(__Table, {__Id, first_seen}, 2),
         __DecTime = ets:lookup_element(__Table, {__Id, commit}, 2),
@@ -116,10 +118,12 @@
                               [{ {{__Id, '_'}, '_'}, [], [true]} ]),
 
         ok
+    catch _:_ ->
+        ok
     end).
 
 -define(REPORT_FOLLOWER_TS(__Id, __Now, __Partition),
-    begin
+    try
         __Table = persistent_term:get({?MODULE, __Partition, timing_data}),
         __PrepTime = ets:lookup_element(__Table, {__Id, first_seen}, 2),
 
@@ -129,6 +133,8 @@
         _ = ets:select_delete(persistent_term:get({?MODULE, __Partition, timing_data}),
                               [{ {{__Id, '_'}, '_'}, [], [true]} ]),
 
+        ok
+    catch _:_ ->
         ok
     end).
 
@@ -743,17 +749,17 @@ reply_already_decided({coord, Replica, Node}, MyReplica, Partition, TxId, Decisi
 
 -ifndef(ENABLE_METRICS).
 send_accepts(Partition, Coordinator, Ballot, TxId, Label, Decision, RS, WS, PrepareVC) ->
-    AcceptMsg = grb_dc_messages:red_accept(Coordinator, Ballot, Decision, TxId, Label, RS, WS, PrepareVC),
+    AcceptMsgIO = grb_dc_messages:frame(grb_dc_messages:red_accept(Coordinator, Ballot, Decision, TxId, Label, RS, WS, PrepareVC)),
     lists:foreach(
-        fun(R) -> grb_dc_connection_manager:send_raw(R, Partition, AcceptMsg) end,
+        fun(R) -> grb_dc_connection_manager:send_raw_framed(R, Partition, AcceptMsgIO) end,
         grb_dc_connection_manager:connected_replicas()
     ).
 -else.
 send_accepts(Partition, Coordinator, Ballot, TxId, Label, Decision, RS, WS, PrepareVC) ->
     SendTS = grb_time:timestamp(),
-    AcceptMsg = grb_dc_messages:red_accept({SendTS, Coordinator}, Ballot, Decision, TxId, Label, RS, WS, PrepareVC),
+    AcceptMsgIO = grb_dc_messages:frame(grb_dc_messages:red_accept({SendTS, Coordinator}, Ballot, Decision, TxId, Label, RS, WS, PrepareVC)),
     lists:foreach(
-        fun(R) -> grb_dc_connection_manager:send_raw(R, Partition, AcceptMsg) end,
+        fun(R) -> grb_dc_connection_manager:send_raw_framed(R, Partition, AcceptMsgIO) end,
         grb_dc_connection_manager:connected_replicas()
     ).
 -endif.

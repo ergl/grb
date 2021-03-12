@@ -367,8 +367,8 @@ send_prepare(Coordinator, Partition, TxId, Label, RS, WS, VC) ->
             ok = grb_measurements:log_counter({?MODULE, Partition, RemoteReplica, fwd_send_prepare}),
             %% leader is in another replica, but we don't have a direct inter_dc connection, have
             %% to go through a cluster-local proxy at `LocalNode`
-            Msg = grb_dc_messages:red_prepare(Coordinator, TxId, Label, RS, WS, VC),
-            grb_dc_utils:send_cast(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
+            Msg = grb_dc_messages:frame(grb_dc_messages:red_prepare(Coordinator, TxId, Label, RS, WS, VC)),
+            grb_dc_utils:send_cast(LocalNode, grb_dc_connection_manager, send_raw_framed, [RemoteReplica, Partition, Msg])
     end,
     LeaderLoc.
 
@@ -438,8 +438,8 @@ send_decision(Partition, LeaderLoc, Ballot, TxId, Decision, CommitTs) ->
             ok = grb_measurements:log_counter({?MODULE, Partition, RemoteReplica, fwd_send_decision}),
             %% leader is in another replica, but we don't have a direct inter_dc connection, have
             %% to go through a cluster-local proxy at `LocalNode`
-            Msg = grb_dc_messages:red_decision(Ballot, Decision, TxId, CommitTs),
-            grb_dc_utils:send_cast(LocalNode, grb_dc_connection_manager, send_raw, [RemoteReplica, Partition, Msg])
+            Msg = grb_dc_messages:frame(grb_dc_messages:red_decision(Ballot, Decision, TxId, CommitTs)),
+            grb_dc_utils:send_cast(LocalNode, grb_dc_connection_manager, send_raw_framed, [RemoteReplica, Partition, Msg])
     end.
 
 -spec reduce_vote(red_vote(), grb_time:ts(), {red_vote(), grb_time:ts()}) -> {red_vote(), grb_time:ts()}.
