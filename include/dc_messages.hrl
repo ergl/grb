@@ -121,7 +121,8 @@
     readset :: [term()],
     writeset :: #{},
     decision :: term(),
-    prepare_vc :: vclock()
+    prepare_vc :: vclock(),
+    sequence_number :: non_neg_integer()
 }).
 
 -record(red_accept_ack, {
@@ -156,7 +157,8 @@
 -record(red_heartbeat, {
     ballot :: ballot(),
     heartbeat_id :: term(),
-    timestamp :: grb_time:ts()
+    timestamp :: grb_time:ts(),
+    sequence_number :: non_neg_integer()
 }).
 
 -record(red_heartbeat_ack, {
@@ -167,6 +169,7 @@
 
 -record(red_deliver, {
     ballot :: ballot(),
+    sequence_number :: non_neg_integer(),
     timestamp :: grb_time:ts(),
     transactions :: [ { TxId :: term(), Label :: term() }
                     | { HB :: term(), HBId :: non_neg_integer() } ]

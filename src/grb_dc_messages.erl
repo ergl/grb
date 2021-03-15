@@ -28,16 +28,16 @@
 -export([forward_heartbeat/2,
          forward_transaction/3]).
 
--export([red_heartbeat/3,
+-export([red_heartbeat/4,
          red_heartbeat_ack/3]).
 
 -export([red_prepare/6,
-         red_accept/8,
+         red_accept/9,
          red_accept_ack/5,
          red_decision/4,
          red_already_decided/4,
          red_learn_abort/4,
-         red_deliver/4]).
+         red_deliver/5]).
 
 -export([decode_payload/1]).
 
@@ -118,9 +118,9 @@ forward_heartbeat(ReplicaId, Time) ->
 forward_transaction(ReplicaId, Writeset, CommitVC) ->
     encode_msg(#forward_transaction{replica=ReplicaId, writeset=Writeset, commit_vc=CommitVC}).
 
--spec red_heartbeat(ballot(), term(), grb_time:ts()) -> binary().
-red_heartbeat(Ballot, Id, Time) ->
-    encode_msg(#red_heartbeat{ballot=Ballot, heartbeat_id=Id, timestamp=Time}).
+-spec red_heartbeat(non_neg_integer(), ballot(), term(), grb_time:ts()) -> binary().
+red_heartbeat(Sequence, Ballot, Id, Time) ->
+    encode_msg(#red_heartbeat{ballot=Ballot, heartbeat_id=Id, timestamp=Time, sequence_number=Sequence}).
 
 -spec red_heartbeat_ack(ballot(), term(), grb_time:ts()) -> binary().
 red_heartbeat_ack(Ballot, Id, Time) ->
@@ -131,15 +131,16 @@ red_learn_abort(Ballot, TxId, Reason, CommitTs) ->
     encode_msg(#red_learn_abort{ballot=Ballot, tx_id=TxId, reason=Reason, commit_ts=CommitTs}).
 
 -spec red_deliver(_, Ballot :: ballot(),
+                  Sequence :: non_neg_integer(),
                   Timestamp :: grb_time:ts(),
                   TransactionIds :: [ { term(), tx_label() } | red_heartbeat_id()]) -> binary().
 
 -ifndef(ENABLE_METRICS).
-red_deliver(_, Ballot, Timestamp, TransactionIds) ->
-    encode_msg(#red_deliver{ballot=Ballot, timestamp=Timestamp, transactions=TransactionIds}).
+red_deliver(_, Sequence, Ballot, Timestamp, TransactionIds) ->
+    encode_msg(#red_deliver{ballot=Ballot, timestamp=Timestamp, sequence_number=Sequence, transactions=TransactionIds}).
 -else.
-red_deliver(Partition, Ballot, Timestamp, TransactionIds) ->
-    Bytes = encode_msg(#red_deliver{ballot=Ballot, timestamp=Timestamp, transactions=TransactionIds}),
+red_deliver(Partition, Sequence, Ballot, Timestamp, TransactionIds) ->
+    Bytes = encode_msg(#red_deliver{ballot=Ballot, timestamp=Timestamp, sequence_number=Sequence, transactions=TransactionIds}),
     N = erlang:byte_size(Bytes),
     grb_measurements:log_stat({?MODULE, Partition, red_deliver_bin_size}, N),
     Bytes.
@@ -154,9 +155,9 @@ red_prepare(Coordinator, TxId, Label, RS, WS, SnapshotVC) ->
                             writeset=WS,
                             snapshot_vc=SnapshotVC}).
 
--spec red_accept(red_coord_location(), ballot(), red_vote(), term(), tx_label(), readset(), writeset(), vclock()) -> binary().
-red_accept(Coordinator, Ballot, Vote, TxId, Label, RS, WS, PrepareVC) ->
-    encode_msg(#red_accept{coord_location=Coordinator, ballot=Ballot, decision=Vote,
+-spec red_accept(non_neg_integer(), red_coord_location(), ballot(), red_vote(), term(), tx_label(), readset(), writeset(), vclock()) -> binary().
+red_accept(Sequence, Coordinator, Ballot, Vote, TxId, Label, RS, WS, PrepareVC) ->
+    encode_msg(#red_accept{coord_location=Coordinator, ballot=Ballot, decision=Vote, sequence_number=Sequence,
                            tx_id=TxId, tx_label=Label, readset=RS, writeset=WS, prepare_vc=PrepareVC}).
 
 -spec red_accept_ack(node(), ballot(), red_vote(), term(), grb_time:ts()) -> binary().
@@ -208,9 +209,9 @@ encode_payload(#forward_transaction{replica=ReplicaId, writeset=WS, commit_vc=Co
 encode_payload(#red_prepare{coord_location=Coordinator, tx_id=TxId, tx_label=Label, readset=RS, writeset=WS, snapshot_vc=VC}) ->
     {?RED_PREPARE_KIND, term_to_binary({Coordinator, TxId, Label, RS, WS, VC})};
 
-encode_payload(#red_accept{coord_location=Coordinator, ballot=Ballot, tx_id=TxId,
+encode_payload(#red_accept{coord_location=Coordinator, ballot=Ballot, tx_id=TxId, sequence_number=Seq,
                            tx_label=Label, readset=RS, writeset=WS, decision=Vote, prepare_vc=VC}) ->
-    {?RED_ACCEPT_KIND, term_to_binary({Coordinator, Ballot, TxId, Label, RS, WS, Vote, VC})};
+    {?RED_ACCEPT_KIND, term_to_binary({Coordinator, Ballot, TxId, Label, RS, WS, Vote, VC, Seq})};
 
 encode_payload(#red_accept_ack{target_node=TargetNode, ballot=Ballot,
                                tx_id=TxId, decision=Vote, prepare_ts=PrepareTS}) ->
@@ -225,13 +226,13 @@ encode_payload(#red_already_decided{target_node=TargetNode, tx_id=TxId, decision
 encode_payload(#red_learn_abort{ballot=B, tx_id=TxId, reason=Reason, commit_ts=CommitTs}) ->
     {?RED_LEARN_ABORT_KIND, term_to_binary({B, TxId, Reason, CommitTs})};
 
-encode_payload(#red_deliver{ballot=Ballot, timestamp=Timestamp, transactions=TransactionIds}) ->
-    {?RED_DELIVER_KIND, term_to_binary({Ballot, Timestamp, TransactionIds})};
+encode_payload(#red_deliver{ballot=Ballot, timestamp=Timestamp, sequence_number=Seq, transactions=TransactionIds}) ->
+    {?RED_DELIVER_KIND, term_to_binary({Ballot, Timestamp, Seq, TransactionIds})};
 
 %% red heartbeat payloads
 
-encode_payload(#red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
-    {?RED_HB_KIND, term_to_binary({B, Id, Ts})};
+encode_payload(#red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts, sequence_number=Seq}) ->
+    {?RED_HB_KIND, term_to_binary({B, Id, Ts, Seq})};
 
 encode_payload(#red_heartbeat_ack{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
     {?RED_HB_ACK_KIND, term_to_binary({B, Id, Ts})};
@@ -302,8 +303,8 @@ decode_payload(<<?RED_PREPARE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     #red_prepare{coord_location=Coordinator, tx_id=Tx, tx_label=Label, readset=RS, writeset=WS, snapshot_vc=VC};
 
 decode_payload(<<?RED_ACCEPT_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {Coordinator, Ballot, TxId, Label, RS, WS, Vote, VC} = binary_to_term(Payload),
-    #red_accept{coord_location=Coordinator, ballot=Ballot, tx_id=TxId,
+    {Coordinator, Ballot, TxId, Label, RS, WS, Vote, VC, Seq} = binary_to_term(Payload),
+    #red_accept{coord_location=Coordinator, ballot=Ballot, tx_id=TxId, sequence_number=Seq,
                 tx_label=Label, readset=RS, writeset=WS, decision=Vote, prepare_vc=VC};
 
 decode_payload(<<?RED_ACCEPT_ACK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
@@ -323,12 +324,12 @@ decode_payload(<<?RED_LEARN_ABORT_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     #red_learn_abort{ballot=B, tx_id=TxId, reason=Reason, commit_ts=CommitTs};
 
 decode_payload(<<?RED_DELIVER_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {Ballot, Timestamp, TransactionIds} = binary_to_term(Payload),
-    #red_deliver{ballot=Ballot, timestamp=Timestamp, transactions=TransactionIds};
+    {Ballot, Timestamp, Seq, TransactionIds} = binary_to_term(Payload),
+    #red_deliver{ballot=Ballot, timestamp=Timestamp, sequence_number=Seq, transactions=TransactionIds};
 
 decode_payload(<<?RED_HB_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {B, Id, Ts} = binary_to_term(Payload),
-    #red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts};
+    {B, Id, Ts, Seq} = binary_to_term(Payload),
+    #red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts, sequence_number=Seq};
 
 decode_payload(<<?RED_HB_ACK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {B, Id, Ts} = binary_to_term(Payload),
@@ -409,15 +410,21 @@ grb_dc_message_utils_test() ->
             readset = [foo],
             writeset = #{foo => bar},
             decision = ok,
-            prepare_vc = VC
+            prepare_vc = VC,
+            sequence_number = 10
         },
         #red_accept_ack{target_node=TargetNode, ballot=0, tx_id=ignore, decision=ok, prepare_ts=0},
         #red_decision{ballot=10, tx_id=ignore, decision=ok, commit_ts=grb_vclock:get_time(?RED_REPLICA, VC)},
         #red_already_decided{target_node=TargetNode, tx_id=ignore, decision=ok, commit_vc=VC},
         #red_learn_abort{ballot=10, tx_id=ignore, commit_ts=grb_vclock:get_time(?RED_REPLICA, VC)},
-        #red_deliver{ballot=10, timestamp=10, transactions=[ {?red_heartbeat_marker, 0}, {tx_0, <<"foo">>}]},
+        #red_deliver{
+            ballot=10,
+            timestamp=10,
+            sequence_number=10,
+            transactions=[ {?red_heartbeat_marker, 0}, {tx_0, <<"foo">>}]
+        },
 
-        #red_heartbeat{ballot=4, heartbeat_id={?red_heartbeat_marker, 0}, timestamp=10},
+        #red_heartbeat{ballot=4, heartbeat_id={?red_heartbeat_marker, 0}, timestamp=10, sequence_number=10},
         #red_heartbeat_ack{ballot=4, heartbeat_id={?red_heartbeat_marker, 0}, timestamp=10}
     ],
 

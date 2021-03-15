@@ -20,15 +20,14 @@
 
 %% Red transactions
 -export([send_red_prepare/8,
-         send_red_accept/10,
          send_red_accept_ack/7,
          send_red_already_decided/6,
          send_red_decision/6,
          send_red_abort/6,
-         send_red_deliver/5]).
+         send_red_deliver/6]).
 
 %% Red heartbeats
--export([send_red_heartbeat/5,
+-export([send_red_heartbeat/6,
          send_red_heartbeat_ack/5]).
 
 %% Raw API
@@ -190,21 +189,6 @@ send_red_prepare(ToId, Coordinator, Partition, TxId, Label, RS, WS, VC) ->
     send_raw_framed(ToId, Partition,
                     grb_dc_messages:frame(grb_dc_messages:red_prepare(Coordinator, TxId, Label, RS, WS, VC))).
 
--spec send_red_accept(ToId :: replica_id(),
-                      Coordinator :: red_coord_location(),
-                      Partition :: partition_id(),
-                      Ballot :: ballot(),
-                      Vote :: red_vote(),
-                      TxId :: term(),
-                      Label :: tx_label(),
-                      RS :: readset(),
-                      WS :: writeset(),
-                      PrepareVC :: vclock()) -> ok | {error, term()}.
-
-send_red_accept(ToId, Coordinator, Partition, Ballot, Vote, TxId, Label, RS, WS, VC) ->
-    send_raw_framed(ToId, Partition,
-                    grb_dc_messages:frame(grb_dc_messages:red_accept(Coordinator, Ballot, Vote, TxId, Label, RS, WS, VC))).
-
 -spec send_red_accept_ack(replica_id(), node(), partition_id(), ballot(), term(), red_vote(), grb_time:ts()) -> ok.
 send_red_accept_ack(ToId, ToNode, Partition, Ballot, TxId, Vote, PrepareTS) ->
     send_raw_framed(ToId, Partition,
@@ -227,23 +211,25 @@ send_red_abort(ToId, Partition, Ballot, TxId, Reason, CommitTs) ->
 
 -spec send_red_deliver(ToId :: replica_id(),
                        Partition :: partition_id(),
+                       Sequence :: non_neg_integer(),
                        Ballot :: ballot(),
                        Timestamp :: grb_time:ts(),
                        TransactionIds :: [ {term(), tx_label()} | red_heartbeat_id() ]) -> ok.
 
-send_red_deliver(ToId, Partition, Ballot, Timestamp, TransactionIds) ->
+send_red_deliver(ToId, Partition, Sequence, Ballot, Timestamp, TransactionIds) ->
     send_raw_framed(ToId, Partition,
-                    grb_dc_messages:frame(grb_dc_messages:red_deliver(Partition, Ballot, Timestamp, TransactionIds))).
+                    grb_dc_messages:frame(grb_dc_messages:red_deliver(Partition, Sequence, Ballot, Timestamp, TransactionIds))).
 
 -spec send_red_heartbeat(ToId :: replica_id(),
                          Partition :: partition_id(),
+                         Sequence :: non_neg_integer(),
                          Ballot :: ballot(),
                          Id :: term(),
                          Time :: grb_time:ts()) -> ok | {error, term()}.
 
-send_red_heartbeat(ToId, Partition, Ballot, Id, Time) ->
+send_red_heartbeat(ToId, Partition, Sequence, Ballot, Id, Time) ->
     send_raw_framed(ToId, Partition,
-                    grb_dc_messages:frame(grb_dc_messages:red_heartbeat(Ballot, Id, Time))).
+                    grb_dc_messages:frame(grb_dc_messages:red_heartbeat(Sequence, Ballot, Id, Time))).
 
 -spec send_red_heartbeat_ack(replica_id(), partition_id(), ballot(), term(), grb_time:ts()) -> ok | {error, term()}.
 send_red_heartbeat_ack(ToId, Partition, Ballot, Id, Time) ->

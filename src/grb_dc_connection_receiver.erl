@@ -216,9 +216,12 @@ handle_request(_, Partition, #forward_transaction{replica=SourceReplica, writese
 handle_request(_, Partition, #red_prepare{coord_location=Coordinator, tx_id=TxId, tx_label=Label, readset=RS, writeset=WS, snapshot_vc=VC}) ->
     grb_paxos_vnode:prepare_local(Partition, TxId, Label, RS, WS, VC, Coordinator);
 
-handle_request(_ConnReplica, Partition, #red_accept{coord_location=Coordinator, ballot=Ballot, tx_id=TxId,
-                                                    tx_label=Label, readset=RS, writeset=WS, decision=Vote, prepare_vc=VC}) ->
-    grb_paxos_vnode:accept(Partition, Ballot, TxId, Label, RS, WS, Vote, VC, Coordinator);
+handle_request(_ConnReplica, Partition, #red_accept{coord_location=Coordinator, sequence_number=Sequence,
+                                                    ballot=Ballot, tx_id=TxId, tx_label=Label,
+                                                    readset=RS, writeset=WS,
+                                                    decision=Vote, prepare_vc=VC}) ->
+
+    grb_paxos_vnode:accept(Partition, Sequence, Ballot, TxId, Label, RS, WS, Vote, VC, Coordinator);
 
 handle_request(ConnReplica, Partition, #red_accept_ack{target_node=Node, ballot=Ballot, tx_id=TxId,
                                                        decision=Vote, prepare_ts=PrepareTs}) ->
@@ -234,11 +237,11 @@ handle_request(_, _, #red_already_decided{target_node=Node, tx_id=TxId, decision
 handle_request(_, Partition, #red_learn_abort{ballot=Ballot, tx_id=TxId, reason=Reason, commit_ts=CommitTs}) ->
     grb_paxos_vnode:learn_abort(Partition, Ballot, TxId, Reason, CommitTs);
 
-handle_request(_, Partition, #red_deliver{ballot=Ballot, timestamp=Ts, transactions=TransactionIds}) ->
-    grb_paxos_vnode:deliver(Partition, Ballot, Ts, TransactionIds);
+handle_request(_, Partition, #red_deliver{ballot=Ballot, timestamp=Ts, sequence_number=Sequence, transactions=TransactionIds}) ->
+    grb_paxos_vnode:deliver(Partition, Sequence, Ballot, Ts, TransactionIds);
 
-handle_request(ConnReplica, Partition, #red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
-    grb_paxos_vnode:accept_heartbeat(Partition, ConnReplica, B, Id, Ts);
+handle_request(ConnReplica, Partition, #red_heartbeat{ballot=B, heartbeat_id=Id, timestamp=Ts, sequence_number=Seq}) ->
+    grb_paxos_vnode:accept_heartbeat(Partition, ConnReplica, Seq, B, Id, Ts);
 
 handle_request(_, Partition, #red_heartbeat_ack{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
     grb_red_heartbeat:handle_accept_ack(Partition, B, Id, Ts);
