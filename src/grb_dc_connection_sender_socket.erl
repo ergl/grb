@@ -7,8 +7,7 @@
 -ignore_xref([start_link/4]).
 
 -export([start_connection/4,
-         send_process/2,
-         send_process_framed/2,
+         send_msg/2,
          close/1]).
 
 %% gen_server callbacks
@@ -94,12 +93,8 @@ start_connection(TargetReplica, Partition, Ip, Port) ->
     {ok, Pid} = grb_dc_connection_sender_sup:start_connection_child(TargetReplica, Partition, Ip, Port),
     establish_connection(Pid, Partition).
 
--spec send_process(t(), iodata()) -> ok.
-send_process(#handle{pid=Pid}, Msg) ->
-    gen_server:cast(Pid, {send_needs_framing, Msg}).
-
--spec send_process_framed(t(), iolist()) -> ok.
-send_process_framed(#handle{pid=Pid}, Msg) ->
+-spec send_msg(t(), iolist()) -> ok.
+send_msg(#handle{pid=Pid}, Msg) ->
     gen_server:cast(Pid, {send, Msg}).
 
 -spec close(t()) -> ok.
@@ -138,14 +133,6 @@ handle_cast({send, Msg}, S=#state{busy={true, _}, pending_to_send=Pending}) ->
 
 handle_cast({send, Msg}, S0=#state{busy=false}) ->
     {ok, S} = socket_send(S0, Msg),
-    {noreply, S};
-
-handle_cast({send_needs_framing, Msg}, S=#state{busy={true, _}, pending_to_send=Pending}) ->
-    ok = grb_measurements:log_counter(?queue_data(S)),
-    {noreply, S#state{pending_to_send=[Pending, grb_dc_messages:frame(Msg)]}};
-
-handle_cast({send_needs_framing, Msg}, S0=#state{busy=false}) ->
-    {ok, S} = socket_send(S0, grb_dc_messages:frame(Msg)),
     {noreply, S};
 
 handle_cast(stop, S) ->
@@ -203,7 +190,7 @@ terminate(_Reason, #state{gen_tcp_socket=GenSocket, connected_dc=Replica, connec
 -spec establish_connection(pid(), partition_id()) -> {ok, t()}.
 establish_connection(Pid, Partition) ->
     Handle = #handle{pid=Pid},
-    ok = send_process(Handle, grb_dc_messages:ping(grb_dc_manager:replica_id(), Partition)),
+    ok = send_msg(Handle, grb_dc_messages:frame(grb_dc_messages:ping(grb_dc_manager:replica_id(), Partition))),
     {ok, Handle}.
 
 

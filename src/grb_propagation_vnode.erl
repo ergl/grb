@@ -137,7 +137,10 @@
     clock_cache :: clock_cache(),
 
     %% List of pending uniform barriers by clients, recompute on uniformVC update
-    pending_barriers = [] :: uniform_barriers()
+    pending_barriers = [] :: uniform_barriers(),
+
+    %% The Pid of the causal sequencer process for this partition
+    sequencer_pid = undefined :: pid() | undefined
 }).
 
 -ifdef(NO_FWD_REPLICATION).
@@ -487,8 +490,9 @@ handle_command({learn_dc_groups, MyGroups}, _From, S) ->
 handle_command(populate_logs, _From, State) ->
     {reply, ok, populate_logs_internal(State)};
 
-handle_command(start_propagate_timer, _From, State) ->
-    {noreply, start_propagation_timers(State)};
+handle_command(start_propagate_timer, _From, S0) ->
+    {ok, S} = start_sequencer_process(S0),
+    {noreply, start_propagation_timers(S)};
 
 handle_command(stop_propagate_timer, _From, State) ->
     {noreply, stop_propagation_timers(State)};
@@ -585,7 +589,8 @@ handle_info(?clock_send_req, State=#state{partition=Partition,
     KnownVC = known_vc_internal(ClockTable),
     StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     lists:foreach(fun(Target) ->
-        ok = grb_dc_connection_manager:send_clocks(Target, Partition, KnownVC, StableVC)
+        ok = grb_dc_connection_manager:send_clocks(Target, Partition,
+                                                   faa_fifo_counter(Target), KnownVC, StableVC)
     end, grb_dc_connection_manager:connected_replicas()),
 
     {ok, State#state{replicate_clocks_timer=erlang:send_after(Interval, self(), ?clock_send_req)}};
@@ -607,6 +612,8 @@ populate_logs_internal(S=#state{remote_logs=Logs0,
 
     RemoteReplicas = grb_dc_manager:remote_replicas(),
     true = ets:insert(ClockTable, [{?known_key(R), 0} || R <- RemoteReplicas]),
+
+    ok = init_fifo_counters(RemoteReplicas),
 
     FillClock = fun(Replica, Acc) -> grb_vclock:set_time(Replica, 0, Acc) end,
 
@@ -639,6 +646,20 @@ start_propagation_timers(State) -> State.
 -spec stop_propagation_timers(state()) -> state().
 stop_propagation_timers(State=?timers_unset) -> State;
 stop_propagation_timers(State) -> stop_propagation_timers_internal(State).
+
+-spec start_sequencer_process(#state{}) -> {ok, #state{}} | {error, term()}.
+start_sequencer_process(S=#state{partition=Partition, sequencer_pid=Proc}) when not is_pid(Proc) ->
+    case grb_causal_sequencer_sup:start_sequencer(Partition, grb_dc_manager:remote_replicas()) of
+        {ok, Pid} ->
+            {ok, S#state{sequencer_pid=Pid}};
+        {error, {already_started, Pid}} ->
+            {ok, S#state{sequencer_pid=Pid}};
+        Other ->
+            {error, Other}
+    end;
+start_sequencer_process(S) ->
+    %% already started
+    {ok, S}.
 
 -spec start_propagation_timers_internal(state()) -> state().
 -spec stop_propagation_timers_internal(state()) -> state().
@@ -832,15 +853,19 @@ replicate_internal(S=#state{self_log=LocalLog0,
     LocalTime = known_time_internal(LocalId, ClockTable),
     {ToSend, LocalLog} = grb_blue_commit_log:remove_bigger(LastSent, LocalLog0),
 
-    Msg = case ToSend of
-      [] ->
-          grb_dc_messages:frame(grb_dc_messages:blue_heartbeat(LocalTime));
-      Transactions ->
-          encode_transactions(Transactions)
+    MsgFun = fun(Sequence) ->
+        case ToSend of
+            [] ->
+                {Sequence + 1, grb_dc_messages:frame(grb_dc_messages:blue_heartbeat(Sequence, LocalTime))};
+            Transactions ->
+                encode_transactions(Sequence, Transactions)
+        end
     end,
 
     lists:foreach(fun(Target) ->
-        SendRes = grb_dc_connection_manager:send_raw_framed_causal(Target, Partition, Msg),
+        {NextSeq, Msg} = MsgFun(next_fifo_counter(Target)),
+        ok = update_fifo_counter(Target, NextSeq),
+        SendRes = grb_dc_connection_manager:send_raw_framed(Target, Partition, Msg),
         ?LOG_DEBUG("send heartbeat / transactions to ~p: ~p~n", [Target, SendRes]),
         ok
     end, grb_dc_connection_manager:connected_replicas()),
@@ -858,24 +883,25 @@ replicate_internal(S=#state{self_log=LocalLog,
                             global_known_matrix=Matrix0}) ->
 
     LocalTime = known_time_internal(LocalId, ClockTable),
-    HeartBeatMsgIO = grb_dc_messages:frame(grb_dc_messages:blue_heartbeat(LocalTime)),
-
     Matrix = lists:foldl(fun(Target, AccMatrix) ->
         ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
         ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
         case ToSend of
             [] ->
-                HBRes = grb_dc_connection_manager:send_raw_framed_causal(Target, Partition, HeartBeatMsgIO),
+                HBRes = grb_dc_connection_manager:send_heartbeat(Target, Partition,
+                                                                 faa_fifo_counter(Target), LocalTime),
                 ?LOG_DEBUG("send basic heartbeat to ~p: ~p~n", [Target, HBRes]),
                 ok;
             Transactions ->
+                {NextSeq, Msg} = encode_transactions(next_fifo_counter(Target), Transactions),
                 SendRes =
-                    grb_dc_connection_manager:send_raw_framed_causal(
+                    grb_dc_connection_manager:send_raw_framed(
                         Target,
                         Partition,
-                        encode_transactions(Transactions)
+                        Msg
                     ),
                 ?LOG_DEBUG("send transactions ~p: ~p~n", [Target, SendRes]),
+                ok = update_fifo_counter(Target, NextSeq),
                 ok
         end,
         AccMatrix#{{Target, LocalId} => LocalTime}
@@ -895,26 +921,28 @@ replicate_internal(S=#state{self_log=LocalLog,
     LocalTime = grb_vclock:get_time(LocalId, KnownVC),
     StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
 
-    ClockMsgIO = grb_dc_messages:frame(grb_dc_messages:clocks(KnownVC, StableVC)),
-    ClockHeartbeatIO = grb_dc_messages:frame(grb_dc_messages:clocks_heartbeat(KnownVC, StableVC)),
-
     Matrix = lists:foldl(fun(Target, AccMatrix) ->
         ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
         ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
         case ToSend of
             [] ->
                 % piggy back clocks on top of the heartbeat message, avoid extra message on the wire
-                HBRes = grb_dc_connection_manager:send_raw_framed_causal(Target, Partition, ClockHeartbeatIO),
+                HBRes = grb_dc_connection_manager:send_clocks_heartbeat(Target, Partition,
+                                                                        faa_fifo_counter(Target), KnownVC, StableVC),
                 ?LOG_DEBUG("send clocks/heartbeat to ~p: ~p~n", [Target, HBRes]),
                 ok;
             Transactions ->
+                InitialSeq = next_fifo_counter(Target),
+                ClockMsgIO = grb_dc_messages:frame(grb_dc_messages:clocks(InitialSeq, KnownVC, StableVC)),
+                {NextSeq, Msg} = encode_transactions(InitialSeq + 1, Transactions),
                 SendRes =
-                    grb_dc_connection_manager:send_raw_framed_causal(
+                    grb_dc_connection_manager:send_raw_framed(
                         Target,
                         Partition,
-                        [ClockMsgIO, encode_transactions(Transactions)]
+                        [ClockMsgIO, Msg]
                     ),
                 ?LOG_DEBUG("send clocks / transactions ~p: ~p~n", [Target, SendRes]),
+                ok = update_fifo_counter(Target, NextSeq),
                 ok
         end,
         AccMatrix#{{Target, LocalId} => LocalTime}
@@ -925,23 +953,25 @@ replicate_internal(S=#state{self_log=LocalLog,
 -endif.
 -endif.
 
--spec encode_transactions([tx_entry()]) -> iodata().
-encode_transactions(Txs) ->
-    encode_transactions(Txs, []).
+-spec encode_transactions(non_neg_integer(), [tx_entry()]) -> {non_neg_integer(), iodata()}.
+encode_transactions(InitalSeq, Txs) ->
+    encode_transactions(InitalSeq, Txs, []).
 
--spec encode_transactions([tx_entry()], iodata()) -> iodata().
-encode_transactions([], Acc) ->
-    Acc;
+-spec encode_transactions(non_neg_integer(), [tx_entry()], iodata()) -> {non_neg_integer(), iodata()}.
+encode_transactions(Seq, [], Acc) ->
+    {Seq, Acc};
 
-encode_transactions([Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8 | Rest], Acc) ->
+encode_transactions(Seq, [Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8 | Rest], Acc) ->
     %% We're building an iolist, so it's no problem to push it to the end like this
-    encode_transactions(Rest, [Acc, grb_dc_messages:frame(grb_dc_messages:transaction_array(Tx1, Tx2, Tx3, Tx4,
-                                                                                            Tx5, Tx6, Tx7, Tx8))]);
-encode_transactions([Tx1, Tx2, Tx3, Tx4 | Rest], Acc) ->
-    encode_transactions(Rest, [Acc, grb_dc_messages:frame(grb_dc_messages:transaction_array(Tx1, Tx2, Tx3, Tx4))]);
+    encode_transactions(Seq + 1, Rest,
+                        [Acc, grb_dc_messages:frame(grb_dc_messages:transaction_array(Seq, Tx1, Tx2, Tx3, Tx4,
+                                                                                           Tx5, Tx6, Tx7, Tx8))]);
+encode_transactions(Seq, [Tx1, Tx2, Tx3, Tx4 | Rest], Acc) ->
+    encode_transactions(Seq + 1, Rest,
+                        [Acc, grb_dc_messages:frame(grb_dc_messages:transaction_array(Seq, Tx1, Tx2, Tx3, Tx4))]);
 
-encode_transactions([{WS, VC} | Rest], Acc) ->
-    encode_transactions(Rest, [Acc, grb_dc_messages:frame(grb_dc_messages:transaction(WS, VC))]).
+encode_transactions(Seq, [{WS, VC} | Rest], Acc) ->
+    encode_transactions(Seq + 1, Rest, [Acc, grb_dc_messages:frame(grb_dc_messages:transaction(Seq, WS, VC))]).
 
 -spec uniform_replicate_internal(state()) -> global_known_matrix().
 uniform_replicate_internal(#state{remote_logs=Logs,
@@ -990,13 +1020,16 @@ ureplicate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, ClockTable,
     ToSend = grb_remote_commit_log:get_bigger(ThresholdTime, maps:get(RelayReplica, Logs)),
     case ToSend of
         [] ->
-            HBRes = grb_dc_connection_manager:forward_heartbeat(TargetReplica, RelayReplica, Partition, HeartBeatTime),
+            HBRes = grb_dc_connection_manager:forward_heartbeat(TargetReplica, RelayReplica, Partition,
+                                                                faa_fifo_counter(TargetReplica), HeartBeatTime),
             ?LOG_DEBUG("relay heartbeat to ~p from ~p: ~p~n", [TargetReplica, RelayReplica, HBRes]),
             ok;
         Txs ->
             %% Entries are already ordered to commit time at the replica of the log
             lists:foreach(fun({WS, VC}) ->
-                TxRes = grb_dc_connection_manager:forward_tx(TargetReplica, RelayReplica, Partition, WS, VC),
+                TxRes = grb_dc_connection_manager:forward_tx(TargetReplica, RelayReplica, Partition,
+                                                             faa_fifo_counter(TargetReplica), WS, VC),
+
                 ?LOG_DEBUG("relay transaction to ~p from ~p: ~p~n", [TargetReplica, RelayReplica, TxRes]),
                 ok
             end, Txs)
@@ -1063,6 +1096,33 @@ min_global_matrix_ts([RemoteReplica | Rest], SourceReplica, GlobalMatrix, Min) -
 -spec min_ts(grb_time:ts(), grb_time:ts() | undefined) -> grb_time:ts().
 min_ts(Left, undefined) -> Left;
 min_ts(Left, Right) -> min(Left, Right).
+
+%%%===================================================================
+%%% Fifo Functions
+%%%===================================================================
+
+-spec init_fifo_counters([replica_id()]) -> ok.
+init_fifo_counters(Replicas) ->
+    [
+        update_fifo_counter(R, 0)
+        || R <- Replicas
+    ],
+    ok.
+
+-spec faa_fifo_counter(replica_id()) -> non_neg_integer().
+faa_fifo_counter(Replica) ->
+    C = next_fifo_counter(Replica),
+    update_fifo_counter(Replica, C + 1),
+    C.
+
+-spec next_fifo_counter(replica_id()) -> non_neg_integer().
+next_fifo_counter(Replica) ->
+    erlang:get({fifo, Replica}).
+
+-spec update_fifo_counter(replica_id(), non_neg_integer()) -> ok.
+update_fifo_counter(Replica, Count) ->
+    erlang:put({fifo, Replica}, Count),
+    ok.
 
 %%%===================================================================
 %%% Util Functions

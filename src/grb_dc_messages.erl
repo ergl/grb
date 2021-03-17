@@ -7,8 +7,8 @@
 -endif.
 
 %% For CURE-FT
--export([clocks/1,
-         clocks_heartbeat/1]).
+-export([clocks/2,
+         clocks_heartbeat/2]).
 
 -ifndef(STABLE_SNAPSHOT).
 -ignore_xref([clocks/1, clocks_heartbeat/1]).
@@ -18,15 +18,15 @@
 
 %% Msg API
 -export([ping/2,
-         blue_heartbeat/1,
-         clocks/2,
-         clocks_heartbeat/2,
-         transaction/2,
-         transaction_array/4,
-         transaction_array/8]).
+         blue_heartbeat/2,
+         clocks/3,
+         clocks_heartbeat/3,
+         transaction/3,
+         transaction_array/5,
+         transaction_array/9]).
 
--export([forward_heartbeat/2,
-         forward_transaction/3]).
+-export([forward_heartbeat/3,
+         forward_transaction/4]).
 
 -export([red_heartbeat/4,
          red_heartbeat_ack/3]).
@@ -75,48 +75,51 @@ ping(ReplicaId, Partition) ->
     Payload = term_to_binary(ReplicaId),
     <<?VERSION:?VERSION_BITS, ?DC_PING:?MSG_KIND_BITS, PBin/binary, Payload/binary>>.
 
--spec blue_heartbeat(grb_time:ts()) -> binary().
-blue_heartbeat(Time) ->
-    encode_msg(#blue_heartbeat{timestamp=Time}).
+-spec blue_heartbeat(non_neg_integer(), grb_time:ts()) -> binary().
+blue_heartbeat(Seq, Time) ->
+    encode_msg(#blue_heartbeat{sequence_number=Seq, timestamp=Time}).
 
--spec transaction(writeset(), vclock()) -> binary().
-transaction(Writeset, CommitVC) ->
-    encode_msg(#replicate_tx{writeset=Writeset, commit_vc=CommitVC}).
+-spec transaction(non_neg_integer(), writeset(), vclock()) -> binary().
+transaction(Seq, Writeset, CommitVC) ->
+    encode_msg(#replicate_tx{sequence_number=Seq, writeset=Writeset, commit_vc=CommitVC}).
 
--spec transaction_array(tx_entry(), tx_entry(),
+-spec transaction_array(non_neg_integer(),
+                        tx_entry(), tx_entry(),
                         tx_entry(), tx_entry()) -> binary().
-transaction_array(Tx1, Tx2, Tx3, Tx4) ->
-    encode_msg(#replicate_tx_4{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4}).
+transaction_array(Seq, Tx1, Tx2, Tx3, Tx4) ->
+    encode_msg(#replicate_tx_4{sequence_number=Seq, tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4}).
 
--spec transaction_array(tx_entry(), tx_entry(), tx_entry(), tx_entry(),
+-spec transaction_array(non_neg_integer(),
+                        tx_entry(), tx_entry(), tx_entry(), tx_entry(),
                         tx_entry(), tx_entry(), tx_entry(), tx_entry())-> binary().
-transaction_array(Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8) ->
-    encode_msg(#replicate_tx_8{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4,
+transaction_array(Seq, Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8) ->
+    encode_msg(#replicate_tx_8{sequence_number=Seq,
+                               tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4,
                                tx_5=Tx5, tx_6=Tx6, tx_7=Tx7, tx_8=Tx8}).
 
--spec clocks(vclock()) -> binary().
-clocks(KnownVC) ->
-    encode_msg(#update_clocks_cure{known_vc=KnownVC}).
+-spec clocks(non_neg_integer(), vclock()) -> binary().
+clocks(Seq, KnownVC) ->
+    encode_msg(#update_clocks_cure{sequence_number=Seq, known_vc=KnownVC}).
 
--spec clocks(vclock(), vclock()) -> binary().
-clocks(KnownVC, StableVC) ->
-    encode_msg(#update_clocks{known_vc=KnownVC, stable_vc=StableVC}).
+-spec clocks(non_neg_integer(), vclock(), vclock()) -> binary().
+clocks(Seq, KnownVC, StableVC) ->
+    encode_msg(#update_clocks{sequence_number=Seq, known_vc=KnownVC, stable_vc=StableVC}).
 
--spec clocks_heartbeat(vclock()) -> binary().
-clocks_heartbeat(KnownVC) ->
-    encode_msg(#update_clocks_cure_heartbeat{known_vc=KnownVC}).
+-spec clocks_heartbeat(non_neg_integer(), vclock()) -> binary().
+clocks_heartbeat(Seq, KnownVC) ->
+    encode_msg(#update_clocks_cure_heartbeat{sequence_number=Seq, known_vc=KnownVC}).
 
--spec clocks_heartbeat(vclock(), vclock()) -> binary().
-clocks_heartbeat(KnownVC, StableVC) ->
-    encode_msg(#update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}).
+-spec clocks_heartbeat(non_neg_integer(), vclock(), vclock()) -> binary().
+clocks_heartbeat(Seq, KnownVC, StableVC) ->
+    encode_msg(#update_clocks_heartbeat{sequence_number=Seq, known_vc=KnownVC, stable_vc=StableVC}).
 
--spec forward_heartbeat(replica_id(), grb_time:ts()) -> binary().
-forward_heartbeat(ReplicaId, Time) ->
-    encode_msg(#forward_heartbeat{replica=ReplicaId, timestamp=Time}).
+-spec forward_heartbeat(replica_id(), non_neg_integer(), grb_time:ts()) -> binary().
+forward_heartbeat(ReplicaId, Seq, Time) ->
+    encode_msg(#forward_heartbeat{sequence_number=Seq, replica=ReplicaId, timestamp=Time}).
 
--spec forward_transaction(replica_id(), writeset(), vclock()) -> binary().
-forward_transaction(ReplicaId, Writeset, CommitVC) ->
-    encode_msg(#forward_transaction{replica=ReplicaId, writeset=Writeset, commit_vc=CommitVC}).
+-spec forward_transaction(replica_id(), non_neg_integer(), writeset(), vclock()) -> binary().
+forward_transaction(ReplicaId, Seq, Writeset, CommitVC) ->
+    encode_msg(#forward_transaction{sequence_number=Seq, replica=ReplicaId, writeset=Writeset, commit_vc=CommitVC}).
 
 -spec red_heartbeat(non_neg_integer(), ballot(), term(), grb_time:ts()) -> binary().
 red_heartbeat(Sequence, Ballot, Id, Time) ->
@@ -178,31 +181,33 @@ encode_msg(Payload) ->
     <<?VERSION:?VERSION_BITS, MsgKind:?MSG_KIND_BITS, Msg/binary>>.
 
 %% blue payloads
-encode_payload(#blue_heartbeat{timestamp=Ts}) ->
-    {?BLUE_HB_KIND, term_to_binary(Ts)};
+encode_payload(#blue_heartbeat{sequence_number=Seq, timestamp=Ts}) ->
+    {?BLUE_HB_KIND, <<Seq:8/unit:8-integer-big-unsigned, Ts:8/unit:8-integer-big-unsigned>>};
 
-encode_payload(#replicate_tx{writeset=WS, commit_vc=CommitVC}) ->
-    {?REPL_TX_KIND, term_to_binary({WS, CommitVC})};
+encode_payload(#replicate_tx{sequence_number=Seq, writeset=WS, commit_vc=CommitVC}) ->
+    {?REPL_TX_KIND, term_to_binary({Seq, WS, CommitVC})};
 
-encode_payload(#replicate_tx_4{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4}) ->
-    {?REPL_TX_4_KIND, term_to_binary({Tx1, Tx2, Tx3, Tx4})};
+encode_payload(#replicate_tx_4{sequence_number=Seq, tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4}) ->
+    {?REPL_TX_4_KIND, term_to_binary({Seq, Tx1, Tx2, Tx3, Tx4})};
 
-encode_payload(#replicate_tx_8{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4,
+encode_payload(#replicate_tx_8{sequence_number=Seq,
+                               tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4,
                                tx_5=Tx5, tx_6=Tx6, tx_7=Tx7, tx_8=Tx8}) ->
-    {?REPL_TX_8_KIND, term_to_binary({Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8})};
+    {?REPL_TX_8_KIND, term_to_binary({Seq, Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8})};
 
-encode_payload(#update_clocks{known_vc=KnownVC, stable_vc=StableVC}) ->
-    {?UPDATE_CLOCK_KIND, term_to_binary({KnownVC, StableVC})};
+encode_payload(#update_clocks{sequence_number=Seq, known_vc=KnownVC, stable_vc=StableVC}) ->
+    {?UPDATE_CLOCK_KIND, term_to_binary({Seq, KnownVC, StableVC})};
 
-encode_payload(#update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC}) ->
-    {?UPDATE_CLOCK_HEARTBEAT_KIND, term_to_binary({KnownVC, StableVC})};
+encode_payload(#update_clocks_heartbeat{sequence_number=Seq, known_vc=KnownVC, stable_vc=StableVC}) ->
+    {?UPDATE_CLOCK_HEARTBEAT_KIND, term_to_binary({Seq, KnownVC, StableVC})};
 
 %% forward payloads
-encode_payload(#forward_heartbeat{replica=ReplicaId, timestamp=Ts}) ->
-    {?FWD_BLUE_HB_KIND, term_to_binary({ReplicaId, Ts})};
+encode_payload(#forward_heartbeat{replica=ReplicaId, sequence_number=Seq, timestamp=Ts}) ->
+    {?FWD_BLUE_HB_KIND, <<Seq:8/unit:8-integer-big-unsigned, Ts:8/unit:8-integer-big-unsigned,
+                          (term_to_binary(ReplicaId))/binary>>};
 
-encode_payload(#forward_transaction{replica=ReplicaId, writeset=WS, commit_vc=CommitVC}) ->
-    {?FWD_BLUE_TX_KIND, term_to_binary({ReplicaId, WS, CommitVC})};
+encode_payload(#forward_transaction{sequence_number=Seq, replica=ReplicaId, writeset=WS, commit_vc=CommitVC}) ->
+    {?FWD_BLUE_TX_KIND, term_to_binary({ReplicaId, Seq, WS, CommitVC})};
 
 %% red payloads
 
@@ -238,11 +243,11 @@ encode_payload(#red_heartbeat_ack{ballot=B, heartbeat_id=Id, timestamp=Ts}) ->
     {?RED_HB_ACK_KIND, term_to_binary({B, Id, Ts})};
 
 %% FT-CURE Payloads
-encode_payload(#update_clocks_cure{known_vc=KnownVC}) ->
-    {?UPDATE_CLOCK_CURE_KIND, term_to_binary(KnownVC)};
+encode_payload(#update_clocks_cure{sequence_number=Seq, known_vc=KnownVC}) ->
+    {?UPDATE_CLOCK_CURE_KIND, <<Seq:8/unit:8-integer-big-unsigned, (term_to_binary(KnownVC))/binary>>};
 
-encode_payload(#update_clocks_cure_heartbeat{known_vc=KnownVC}) ->
-    {?UPDATE_CLOCK_CURE_HEARTBEAT_KIND, term_to_binary(KnownVC)}.
+encode_payload(#update_clocks_cure_heartbeat{sequence_number=Seq, known_vc=KnownVC}) ->
+    {?UPDATE_CLOCK_CURE_HEARTBEAT_KIND, <<Seq:8/unit:8-integer-big-unsigned, (term_to_binary(KnownVC))/binary>>}.
 
 -spec decode_payload(replica_id(), partition_id(), binary()) -> replica_message().
 -ifndef(ENABLE_METRICS).
@@ -266,37 +271,40 @@ decode_payload(_, _, Payload) ->
     decode_payload(Payload).
 -endif.
 
-decode_payload(<<?BLUE_HB_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    #blue_heartbeat{timestamp=binary_to_term(Payload)};
+decode_payload(<<?BLUE_HB_KIND:?MSG_KIND_BITS, Seq:8/unit:8-integer-big-unsigned, Ts:8/unit:8-integer-big-unsigned>>) ->
+    #blue_heartbeat{sequence_number=Seq, timestamp=Ts};
 
 decode_payload(<<?REPL_TX_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {WS, CommitVC} = binary_to_term(Payload),
-    #replicate_tx{writeset=WS, commit_vc=CommitVC};
+    {Seq, WS, CommitVC} = binary_to_term(Payload),
+    #replicate_tx{sequence_number=Seq, writeset=WS, commit_vc=CommitVC};
 
 decode_payload(<<?REPL_TX_4_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {Tx1, Tx2, Tx3, Tx4} = binary_to_term(Payload),
-    #replicate_tx_4{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4};
+    {Seq, Tx1, Tx2, Tx3, Tx4} = binary_to_term(Payload),
+    #replicate_tx_4{sequence_number=Seq, tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4};
 
 decode_payload(<<?REPL_TX_8_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8} = binary_to_term(Payload),
-    #replicate_tx_8{tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4,
+    {Seq, Tx1, Tx2, Tx3, Tx4, Tx5, Tx6, Tx7, Tx8} = binary_to_term(Payload),
+    #replicate_tx_8{sequence_number=Seq,
+                    tx_1=Tx1, tx_2=Tx2, tx_3=Tx3, tx_4=Tx4,
                     tx_5=Tx5, tx_6=Tx6, tx_7=Tx7, tx_8=Tx8};
 
 decode_payload(<<?UPDATE_CLOCK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {KnownVC, StableVC} = binary_to_term(Payload),
-    #update_clocks{known_vc=KnownVC, stable_vc=StableVC};
+    {Seq, KnownVC, StableVC} = binary_to_term(Payload),
+    #update_clocks{sequence_number=Seq, known_vc=KnownVC, stable_vc=StableVC};
 
 decode_payload(<<?UPDATE_CLOCK_HEARTBEAT_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {KnownVC, StableVC} = binary_to_term(Payload),
-    #update_clocks_heartbeat{known_vc=KnownVC, stable_vc=StableVC};
+    {Seq, KnownVC, StableVC} = binary_to_term(Payload),
+    #update_clocks_heartbeat{sequence_number=Seq, known_vc=KnownVC, stable_vc=StableVC};
 
-decode_payload(<<?FWD_BLUE_HB_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {FromReplica, Ts} = binary_to_term(Payload),
-    #forward_heartbeat{replica=FromReplica, timestamp=Ts};
+decode_payload(<<?FWD_BLUE_HB_KIND:?MSG_KIND_BITS, Seq:8/unit:8-integer-big-unsigned,
+                                                   Ts:8/unit:8-integer-big-unsigned,
+                                                   ReplicaBin/binary>>) ->
+
+    #forward_heartbeat{sequence_number=Seq, replica=binary_to_term(ReplicaBin), timestamp=Ts};
 
 decode_payload(<<?FWD_BLUE_TX_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    {FromReplica, WS, CommitVC} = binary_to_term(Payload),
-    #forward_transaction{replica=FromReplica, writeset=WS, commit_vc=CommitVC};
+    {FromReplica, Seq, WS, CommitVC} = binary_to_term(Payload),
+    #forward_transaction{sequence_number=Seq, replica=FromReplica, writeset=WS, commit_vc=CommitVC};
 
 decode_payload(<<?RED_PREPARE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {Coordinator, Tx, Label, RS, WS, VC} = binary_to_term(Payload),
@@ -335,11 +343,13 @@ decode_payload(<<?RED_HB_ACK_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
     {B, Id, Ts} = binary_to_term(Payload),
     #red_heartbeat_ack{ballot=B, heartbeat_id=Id, timestamp=Ts};
 
-decode_payload(<<?UPDATE_CLOCK_CURE_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    #update_clocks_cure{known_vc=binary_to_term(Payload)};
+decode_payload(<<?UPDATE_CLOCK_CURE_KIND:?MSG_KIND_BITS, Seq:8/unit:8-integer-big-unsigned,
+                                                         KnownBin/binary>>) ->
+    #update_clocks_cure{sequence_number=Seq, known_vc=binary_to_term(KnownBin)};
 
-decode_payload(<<?UPDATE_CLOCK_CURE_HEARTBEAT_KIND:?MSG_KIND_BITS, Payload/binary>>) ->
-    #update_clocks_cure_heartbeat{known_vc=binary_to_term(Payload)}.
+decode_payload(<<?UPDATE_CLOCK_CURE_HEARTBEAT_KIND:?MSG_KIND_BITS, Seq:8/unit:8-integer-big-unsigned,
+                                                                   KnownBin/binary>>) ->
+    #update_clocks_cure_heartbeat{sequence_number=Seq, known_vc=binary_to_term(KnownBin)}.
 
 -ifdef(ENABLE_METRICS).
 -spec kind_to_type(non_neg_integer()) -> atom().
@@ -367,15 +377,17 @@ grb_dc_message_utils_test() ->
     VC = #{ReplicaId => 10},
 
     Payloads = [
-        #blue_heartbeat{timestamp=10},
-        #replicate_tx{writeset=#{foo => bar}, commit_vc=VC},
+        #blue_heartbeat{sequence_number=20, timestamp=10},
+        #replicate_tx{sequence_number=30, writeset=#{foo => bar}, commit_vc=VC},
         #replicate_tx_4{
+            sequence_number=50,
             tx_1 = {#{foo => bar}, VC},
             tx_2 = {#{foo => bar}, VC},
             tx_3 = {#{foo => bar}, VC},
             tx_4 = {#{foo => bar}, VC}
         },
         #replicate_tx_8{
+            sequence_number=60,
             tx_1 = {#{foo => bar}, VC},
             tx_2 = {#{foo => bar}, VC},
             tx_3 = {#{foo => bar}, VC},
@@ -386,14 +398,14 @@ grb_dc_message_utils_test() ->
             tx_8 = {#{foo => bar}, VC}
         },
 
-        #update_clocks{known_vc=VC, stable_vc=VC},
-        #update_clocks_heartbeat{known_vc=VC, stable_vc=VC},
+        #update_clocks{sequence_number=70, known_vc=VC, stable_vc=VC},
+        #update_clocks_heartbeat{sequence_number=100, known_vc=VC, stable_vc=VC},
 
-        #update_clocks_cure{known_vc=VC},
-        #update_clocks_cure_heartbeat{known_vc=VC},
+        #update_clocks_cure{sequence_number=2000, known_vc=VC},
+        #update_clocks_cure_heartbeat{sequence_number=909090, known_vc=VC},
 
-        #forward_heartbeat{replica=ReplicaId, timestamp=10},
-        #forward_transaction{replica=ReplicaId, writeset=#{foo => bar}, commit_vc=VC},
+        #forward_heartbeat{sequence_number=200, replica=ReplicaId, timestamp=10},
+        #forward_transaction{sequence_number=20000, replica=ReplicaId, writeset=#{foo => bar}, commit_vc=VC},
 
         #red_prepare{
             coord_location = Coordinator,

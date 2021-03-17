@@ -13,10 +13,11 @@
          connected_replicas/0]).
 
 %% Causal Messages
--export([send_clocks/4,
-         send_clocks_heartbeat/4,
-         forward_tx/5,
-         forward_heartbeat/4]).
+-export([send_heartbeat/4,
+         send_clocks/5,
+         send_clocks_heartbeat/5,
+         forward_tx/6,
+         forward_heartbeat/5]).
 
 %% Red transactions
 -export([send_red_prepare/8,
@@ -31,8 +32,7 @@
          send_red_heartbeat_ack/5]).
 
 %% Raw API
--export([send_raw_framed/3,
-         send_raw_framed_causal/3]).
+-export([send_raw_framed/3]).
 
 %% Management API
 -export([sender_pool_size/0,
@@ -127,53 +127,65 @@ add_replica_connections(Id, PartitionConnections) ->
 connected_replicas() ->
     ets:lookup_element(?REPLICAS_TABLE, ?REPLICAS_TABLE_KEY, 2).
 
+-spec send_heartbeat(ToId :: replica_id(),
+                     Partition :: partition_id(),
+                     Sequence :: non_neg_integer(),
+                     Time :: grb_time:ts()) -> ok | {error, term()}.
+send_heartbeat(ToId, Partition, Sequence, Time) ->
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:blue_heartbeat(Sequence, Time))).
+
 -spec forward_heartbeat(ToId :: replica_id(),
                         FromId :: replica_id(),
                         Partition :: partition_id(),
+                        Sequence :: non_neg_integer(),
                         Time :: grb_time:ts()) -> ok | {error, term()}.
 
-forward_heartbeat(ToId, FromId, Partition, Time) ->
-    send_raw_framed_causal(ToId, Partition,
-                           grb_dc_messages:frame(grb_dc_messages:forward_heartbeat(FromId, Time))).
+forward_heartbeat(ToId, FromId, Partition, Sequence, Time) ->
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:forward_heartbeat(FromId, Sequence, Time))).
 
 -spec forward_tx(ToId :: replica_id(),
                  FromId :: replica_id(),
                  Partition :: partition_id(),
+                 Sequence :: non_neg_integer(),
                  WS :: writeset(),
                  VC :: vclock()) -> ok | {error, term()}.
 
-forward_tx(ToId, FromId, Partition, WS, VC) ->
-    send_raw_framed_causal(ToId, Partition,
-                           grb_dc_messages:frame(grb_dc_messages:forward_transaction(FromId, WS, VC))).
+forward_tx(ToId, FromId, Partition, Sequence, WS, VC) ->
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:forward_transaction(FromId, Sequence, WS, VC))).
 
 -spec send_clocks(ToId :: replica_id(),
                   Partition :: partition_id(),
+                  Sequence :: non_neg_integer(),
                   KnownVC :: vclock(),
                   StableVC :: vclock()) -> ok | {error, term()}.
 
 -ifdef(STABLE_SNAPSHOT).
-send_clocks(ToId, Partition, KnownVC, _StableVC) ->
-    send_raw_framed_causal(ToId, Partition,
-                           grb_dc_messages:frame(grb_dc_messages:clocks(KnownVC))).
+send_clocks(ToId, Partition, Sequence, KnownVC, _StableVC) ->
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:clocks(Sequence, KnownVC))).
 -else.
-send_clocks(ToId, Partition, KnownVC, StableVC) ->
-    send_raw_framed_causal(ToId, Partition,
-                           grb_dc_messages:frame(grb_dc_messages:clocks(KnownVC, StableVC))).
+send_clocks(ToId, Partition, Sequence, KnownVC, StableVC) ->
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:clocks(Sequence, KnownVC, StableVC))).
 -endif.
 
 %% @doc Same as send_clocks/5, but let the remote node to use knownVC as a heartbeat
 -spec send_clocks_heartbeat(ToId :: replica_id(),
                             Partition :: partition_id(),
+                            Sequence :: non_neg_integer(),
                             KnownVC :: vclock(),
                             StableVC :: vclock()) -> ok | {error, term()}.
 -ifdef(STABLE_SNAPSHOT).
-send_clocks_heartbeat(ToId, Partition, KnownVC, _StableVC) ->
-    send_raw_framed_causal(ToId, Partition,
-                           grb_dc_messages:frame(grb_dc_messages:clocks_heartbeat(KnownVC))).
+send_clocks_heartbeat(ToId, Partition, Sequence, KnownVC, _StableVC) ->
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:clocks_heartbeat(Sequence, KnownVC))).
 -else.
-send_clocks_heartbeat(ToId, Partition, KnownVC, StableVC) ->
-    send_raw_framed_causal(ToId, Partition,
-                           grb_dc_messages:frame(grb_dc_messages:clocks_heartbeat(KnownVC, StableVC))).
+send_clocks_heartbeat(ToId, Partition, Sequence, KnownVC, StableVC) ->
+    send_raw_framed(ToId, Partition,
+                    grb_dc_messages:frame(grb_dc_messages:clocks_heartbeat(Sequence, KnownVC, StableVC))).
 -endif.
 
 -spec send_red_prepare(ToId :: replica_id(),
@@ -239,22 +251,8 @@ send_red_heartbeat_ack(ToId, Partition, Ballot, Id, Time) ->
 -spec send_raw_framed(replica_id(), partition_id(), iolist()) -> ok | {error, term()}.
 send_raw_framed(ToId, Partition, IOList) ->
     try
-        Connection = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId, rand:uniform(sender_pool_size() - 1)}, 2),
-        ?SENDER_MODULE:send_process_framed(Connection, IOList)
-    catch _:_  ->
-        {error, gone}
-    end.
-
--spec send_raw_framed_causal(ToId :: replica_id(),
-                             Partition :: partition_id(),
-                             IOList :: iolist()) -> ok | {error, term()}.
-
-send_raw_framed_causal(ToId, Partition, IOList) ->
-    try
-        %% Funnel all causal messages through the same TCP connection
-        %% This is so we don't worry about FIFO order for causal messages.
-        Connection = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId, sender_pool_size()}, 2),
-        ?SENDER_MODULE:send_process_framed(Connection, IOList)
+        Connection = ets:lookup_element(?CONN_POOL_TABLE, {Partition, ToId, rand:uniform(sender_pool_size())}, 2),
+        ?SENDER_MODULE:send_msg(Connection, IOList)
     catch _:_  ->
         {error, gone}
     end.

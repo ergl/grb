@@ -34,6 +34,8 @@ init(_Args) ->
     OpLogVnode = ?VNODE(grb_oplog_vnode_master, grb_oplog_vnode),
 
     VnodeProxySup = ?CHILD(grb_vnode_proxy_sup, supervisor, []),
+    CausalSequencer = ?CHILD(grb_causal_sequencer_sup, supervisor, []),
+
     InterDCSenderSup = ?CHILD(grb_dc_connection_sender_sup, supervisor, []),
     InterDCConnManager = ?CHILD(grb_dc_connection_manager, worker, []),
     LocalBroadcast = ?CHILD(grb_local_broadcast, worker, []),
@@ -41,6 +43,7 @@ init(_Args) ->
     ChildSpecs = add_red_processes([RuntimeStats,
                                     PropagationVnode,
                                     OpLogVnode,
+                                    CausalSequencer,
                                     VnodeProxySup,
                                     LocalBroadcast,
                                     InterDCSenderSup,

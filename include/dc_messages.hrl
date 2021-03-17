@@ -49,15 +49,18 @@
 -define(UPDATE_CLOCK_CURE_HEARTBEAT_KIND, 23).
 
 -record(blue_heartbeat, {
+    sequence_number :: non_neg_integer(),
     timestamp :: grb_time:ts()
 }).
 
 -record(replicate_tx, {
+    sequence_number :: non_neg_integer(),
     writeset :: #{},
     commit_vc :: vclock()
 }).
 
 -record(replicate_tx_4, {
+    sequence_number :: non_neg_integer(),
     tx_1 :: {#{}, vclock()},
     tx_2 :: {#{}, vclock()},
     tx_3 :: {#{}, vclock()},
@@ -65,6 +68,7 @@
 }).
 
 -record(replicate_tx_8, {
+    sequence_number :: non_neg_integer(),
     tx_1 :: {#{}, vclock()},
     tx_2 :: {#{}, vclock()},
     tx_3 :: {#{}, vclock()},
@@ -76,29 +80,35 @@
 }).
 
 -record(update_clocks, {
+    sequence_number :: non_neg_integer(),
     known_vc :: vclock(),
     stable_vc :: vclock()
 }).
 
 -record(update_clocks_heartbeat, {
+    sequence_number :: non_neg_integer(),
     known_vc :: vclock(),
     stable_vc :: vclock()
 }).
 
 -record(update_clocks_cure, {
+    sequence_number :: non_neg_integer(),
     known_vc :: vclock()
 }).
 
 -record(update_clocks_cure_heartbeat, {
+    sequence_number :: non_neg_integer(),
     known_vc :: vclock()
 }).
 
 -record(forward_heartbeat, {
+    sequence_number :: non_neg_integer(),
     replica :: replica_id(),
     timestamp :: grb_time:ts()
 }).
 
 -record(forward_transaction, {
+    sequence_number :: non_neg_integer(),
     replica :: replica_id(),
     writeset :: #{},
     commit_vc :: vclock()
