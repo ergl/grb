@@ -259,7 +259,7 @@ sync_key_operation(Partition, TxId, Key, Operation, VC) ->
             Result
     end.
 
--spec sync_commit_red(partition_id(), term(), tx_label(), vclock(), [{partition_id(), readset(), writeset()}]) -> ok.
+-spec sync_commit_red(partition_id(), term(), tx_label(), vclock(), [{partition_id(), readset(), writeset()}]) -> {ok, vclock()} | {abort, term()}.
 sync_commit_red(Partition, TxId, Label, VC, Prepares) ->
     Ref = make_ref(),
     ok = grb:commit_red(grb_promise:new(self(), Ref), Partition, TxId, Label, VC, Prepares),

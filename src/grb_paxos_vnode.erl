@@ -600,7 +600,7 @@ handle_command({deliver_transactions, Ballot, Timestamp, TransactionIds}, _Sende
             ),
 
             %% We won't receive more transactions with this (or less) timestamp, so we can perform a heartbeat
-            ok = grb_propagation_vnode:handle_red_heartbeat(Partition, Timestamp),
+            ok = grb_oplog_vnode:handle_red_heartbeat(Partition, Timestamp),
             S1#state{last_delivered=Timestamp};
 
         true ->
@@ -651,7 +651,7 @@ handle_info(?deliver_event, S=#state{synod_role=?leader,
     if
         LastDelivered > LastDelivered0 ->
             ?LOG_DEBUG("~p DELIVER_HB(~b)", [Partition, LastDelivered]),
-            ok = grb_propagation_vnode:handle_red_heartbeat(Partition, LastDelivered);
+            ok = grb_oplog_vnode:handle_red_heartbeat(Partition, LastDelivered);
         true ->
             ok
     end,

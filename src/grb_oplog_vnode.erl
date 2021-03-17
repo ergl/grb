@@ -36,7 +36,8 @@
          handle_replicate/4,
          handle_replicate_array/6,
          handle_replicate_array/10,
-         handle_red_transaction/5]).
+         handle_red_transaction/5,
+         handle_red_heartbeat/2]).
 
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
@@ -402,6 +403,14 @@ handle_red_transaction(Partition, TxId, Label, WS, VC) ->
                                {handle_red_tx, TxId, Label, WS, VC},
                                ?master).
 
+-spec handle_red_heartbeat(partition_id(), grb_time:ts()) -> ok.
+handle_red_heartbeat(Partition, Ts) ->
+    %% Route through oplog vnode to preserve causality with previous handle_red_tx messages
+    %% If we call grb_propagation_vnode:handle_red_heartbeat/2 directly we could violate
+    %% causality, since the latter updates an ETS table, which is made visible to other
+    %% processes immediately.
+    grb_dc_utils:vnode_command(Partition, {red_tx_done, Ts}, ?master).
+
 %%%===================================================================
 %%% api riak_core callbacks
 %%%===================================================================
@@ -586,6 +595,10 @@ handle_command({handle_red_tx, TxId, Label, WS, VC}, _From, S=#state{all_replica
                                                                      pending_client_ops=PendingOpsTable}) ->
     ok = clean_transaction_ops_with_table(PendingOpsTable, TxId),
     ok = append_red_writeset(AllReplicas, Label, WS, VC, OperationLog, LogSize, LastVC),
+    {noreply, S};
+
+handle_command({red_tx_done, Ts}, _From, S=#state{partition=Partition}) ->
+    grb_propagation_vnode:handle_red_heartbeat(Partition, Ts),
     {noreply, S};
 
 handle_command(Message, _Sender, State) ->
