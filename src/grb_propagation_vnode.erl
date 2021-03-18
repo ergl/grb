@@ -649,7 +649,7 @@ stop_propagation_timers(State) -> stop_propagation_timers_internal(State).
 
 -spec start_sequencer_process(#state{}) -> {ok, #state{}} | {error, term()}.
 start_sequencer_process(S=#state{partition=Partition, sequencer_pid=Proc}) when not is_pid(Proc) ->
-    case grb_causal_sequencer_sup:start_sequencer(Partition, grb_dc_manager:remote_replicas()) of
+    case grb_causal_sequencer_sup:start_sequencer(Partition) of
         {ok, Pid} ->
             {ok, S#state{sequencer_pid=Pid}};
         {error, {already_started, Pid}} ->

@@ -4,19 +4,19 @@
 -include_lib("kernel/include/logger.hrl").
 
 %% supervision tree
--export([start_link/2]).
--ignore_xref([start_link/2]).
+-export([start_link/1]).
+-ignore_xref([start_link/1]).
 
 -export([sequence/3]).
 
 %% internal / sys functions
--export([init/3,
+-export([init/2,
          system_continue/3,
          system_terminate/4,
          system_get_state/1]).
 
 %% called from proc_lib / sys
--ignore_xref([init/3,
+-ignore_xref([init/2,
               system_continue/3,
               system_terminate/4,
               system_get_state/1]).
@@ -40,8 +40,8 @@
     replica_pending_messages = #{} :: #{ replica_id() => replica_pending() }
 }).
 
-start_link(Partition, RemoteReplicas) ->
-    proc_lib:start_link(?MODULE, init, [self(), Partition, RemoteReplicas]).
+start_link(Partition) ->
+    proc_lib:start_link(?MODULE, init, [self(), Partition]).
 
 -spec sequence(partition_id(), replica_id(), pending_message()) -> ok.
 sequence(Partition, ConnReplica, Msg) ->
@@ -49,25 +49,13 @@ sequence(Partition, ConnReplica, Msg) ->
     Pid ! {sequence, ConnReplica, Msg},
     ok.
 
--spec init(pid(), partition_id(), [replica_id()]) -> no_return().
-init(Parent, Partition, RemoteReplicas) ->
+-spec init(pid(), partition_id()) -> no_return().
+init(Parent, Partition) ->
     process_flag(trap_exit, true),
     ok = persistent_term:put({?MODULE, Partition}, self()),
     Debug = sys:debug_options([]),
     proc_lib:init_ack(Parent, {ok, self()}),
-    {Sequence, Pending} = lists:foldl(
-        fun(R, {S, P}) ->
-            {
-                S#{R => 0},
-                P#{R => #{}}
-            }
-        end,
-        {#{}, #{}},
-        RemoteReplicas
-    ),
-    sequencer_loop(#state{partition=Partition,
-                          next_replica_sequence=Sequence,
-                          replica_pending_messages=Pending}, Parent, Debug).
+    sequencer_loop(#state{partition=Partition}, Parent, Debug).
 
 -spec sequencer_loop(#state{}, pid(), [term()]) -> no_return().
 sequencer_loop(State, Parent, Debug) ->
@@ -91,7 +79,7 @@ sequence_internal(FromReplica, Msg, State=#state{partition=Partition,
                                                  next_replica_sequence=NextMap,
                                                  replica_pending_messages=PendingMessages}) ->
     SeqNumber = seq_number(Msg),
-    case maps:get(FromReplica, NextMap) of
+    case maps:get(FromReplica, NextMap, 0) of
         SeqNumber ->
             %% process message, advance seq, re-process pending
             ok = execute_command(FromReplica, Partition, Msg),
@@ -102,13 +90,15 @@ sequence_internal(FromReplica, Msg, State=#state{partition=Partition,
 
         _ ->
             %% Not ready, buffer for later
+            ReplicaPending =
+                case PendingMessages of
+                    #{ FromReplica := ReplicaPending0 } ->
+                        ReplicaPending0#{SeqNumber => Msg};
+                    #{} ->
+                        #{SeqNumber => Msg}
+                end,
             State#state{
-                replica_pending_messages =
-                    maps:update_with(
-                        FromReplica,
-                        fun(M) -> M#{SeqNumber => Msg} end,
-                        PendingMessages
-                    )
+                replica_pending_messages=PendingMessages#{FromReplica => ReplicaPending}
             }
     end.
 
@@ -158,13 +148,23 @@ reprocess_pending(FromReplica, S=#state{partition=Partition,
                                         next_replica_sequence=NextMap,
                                         replica_pending_messages=Pending}) ->
 
-    #{ FromReplica := N0 } = NextMap,
-    #{ FromReplica := ReplicaMessages0 } = Pending,
-    {N, ReplicaMessages} = reprocess_pending(FromReplica, Partition, N0, ReplicaMessages0),
-    S#state{
-        next_replica_sequence=NextMap#{FromReplica => N},
-        replica_pending_messages=Pending#{FromReplica => ReplicaMessages}
-    }.
+    case Pending of
+        #{ FromReplica := PendingMessages } ->
+            {N, ReplicaMessages} =
+                reprocess_pending(
+                    FromReplica,
+                    Partition,
+                    maps:get(FromReplica, NextMap),
+                    PendingMessages
+                ),
+            S#state{
+                next_replica_sequence=NextMap#{FromReplica => N},
+                replica_pending_messages=Pending#{FromReplica => ReplicaMessages}
+            };
+
+        #{} ->
+            S
+    end.
 
 -spec reprocess_pending(FromReplica :: replica_id(),
                         Partition :: partition_id(),
