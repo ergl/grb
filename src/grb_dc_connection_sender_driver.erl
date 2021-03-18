@@ -119,11 +119,17 @@ establish_connection(Pid, Partition) ->
 %% This will eventually settle in a stable state if the sndbuf stops changing.
 -spec expand_snd_buf(gen_tcp:socket()) -> ok.
 expand_snd_buf(Socket) ->
-    {ok, [{sndbuf, SndBuf}]} = inet:getopts(Socket, [sndbuf]),
-    case inet:setopts(Socket, [{sndbuf, SndBuf * 2}]) of
+    case inet:getopts(Socket, [sndbuf]) of
         {error, _} ->
-            %% Perhaps there's no room to continue to expand, keep it the way it was
-            inet:setopts(Socket, [{sndbuf, SndBuf}]);
-        ok ->
-            ok
+            %% Socket might have closed
+            ok;
+
+        {ok, [{sndbuf, SndBuf}]} ->
+            case inet:setopts(Socket, [{sndbuf, SndBuf * 2}]) of
+                {error, _} ->
+                    %% Perhaps there's no room to continue to expand, keep it the way it was
+                    inet:setopts(Socket, [{sndbuf, SndBuf}]);
+                ok ->
+                    ok
+            end
     end.

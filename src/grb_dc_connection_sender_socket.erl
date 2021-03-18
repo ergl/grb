@@ -245,11 +245,17 @@ socket_send(State=#state{socket=Socket,
 %% This will eventually settle in a stable state if the sndbuf stops changing.
 -spec expand_snd_buf(socket:socket()) -> ok.
 expand_snd_buf(Socket) ->
-    {ok, SndBuf} = socket:getopt(Socket, socket, sndbuf),
-    case socket:setopt(Socket, socket, sndbuf, SndBuf * 2) of
+    case socket:getopt(Socket, socket, sndbuf) of
         {error, _} ->
-            %% Perhaps there's no room to continue to expand, keep it the way it was
-            ok = socket:setopt(Socket, socket, sndbuf, SndBuf);
-        ok ->
-            ok
+            %% Socket might have closed
+            ok;
+
+        {ok, SndBuf} ->
+            case socket:setopt(Socket, socket, sndbuf, SndBuf * 2) of
+                {error, _} ->
+                    %% Perhaps there's no room to continue to expand, keep it the way it was
+                    ok = socket:setopt(Socket, socket, sndbuf, SndBuf);
+                ok ->
+                    ok
+            end
     end.

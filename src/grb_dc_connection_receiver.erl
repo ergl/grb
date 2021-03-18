@@ -175,16 +175,23 @@ handle_info(E, S) ->
 %% This will eventually settle in a stable state if the recbuf stops changing.
 -spec expand_drv_buffer(module(), gen_tcp:socket()) -> ok.
 expand_drv_buffer(Transport, Socket) ->
-    {ok, Proplist} = Transport:getopts(Socket, [recbuf, buffer]),
-    {recbuf, RecBuffer} = lists:keyfind(recbuf, 1, Proplist),
-    {buffer, DrvBuffer0} = lists:keyfind(buffer, 1, Proplist),
-    DrvBuffer = erlang:max(RecBuffer * 2, DrvBuffer0),
-    case Transport:setopts(Socket, [{buffer, DrvBuffer}]) of
+    case Transport:getopts(Socket, [recbuf, buffer]) of
         {error, _} ->
-            %% No room to expand, keep it the same
-            ok = Transport:setopts(Socket, [{buffer, DrvBuffer0}]);
-        ok ->
-            ok
+            %% socket might have closed, nothing we can do
+            ok;
+
+        {ok, Proplist} ->
+            {recbuf, RecBuffer} = lists:keyfind(recbuf, 1, Proplist),
+            {buffer, DrvBuffer0} = lists:keyfind(buffer, 1, Proplist),
+            DrvBuffer = erlang:max(RecBuffer * 2, DrvBuffer0),
+            case Transport:setopts(Socket, [{buffer, DrvBuffer}]) of
+                {error, _} ->
+                    %% No room to expand, keep it the same
+                    %% (if there's an error again, the socket might have been closed)
+                    Transport:setopts(Socket, [{buffer, DrvBuffer0}]);
+                ok ->
+                    ok
+            end
     end.
 
 -spec handle_request(replica_id(), partition_id(), replica_message()) -> ok.
