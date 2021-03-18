@@ -51,7 +51,7 @@
     end).
 
 -define(ADD_ACK_TS(__Replica, __Partition, __Id),
-    begin
+    try
         __Now = grb_time:timestamp(),
         __TRef = grb_red_manager:metrics_table(),
         __PTS = ets:lookup_element(__TRef, {__Id, sent_ts}, 2),
@@ -67,39 +67,17 @@
         ok = grb_measurements:log_stat({?MODULE, __Partition, __Replica, sent_to_ack},
                                         grb_time:diff_native(__Now, __PTS)),
         ok
+    catch _:_ ->
+        ok
     end).
 
 -define(ADD_DECISION_TS(__Id),
-    begin
+    try
         __Now = grb_time:timestamp(),
         __TRef = grb_red_manager:metrics_table(),
         __Partition = ets:lookup_element(__TRef, {__Id, partition}, 2),
         __PTS = ets:lookup_element(__TRef, {__Id, sent_ts}, 2),
         grb_measurements:log_stat({?MODULE, __Partition, sent_to_decision}, grb_time:diff_native(__Now, __PTS)),
-        ok
-    end).
-
--define(REPORT_TS(__Id),
-    try
-        __TRef = grb_red_manager:metrics_table(),
-        __Partition = ets:lookup_element(__TRef, {__Id, partition}, 2),
-
-        __PTS = ets:lookup_element(__TRef, {__Id, sent_ts}, 2),
-        __ACK = ets:lookup_element(__TRef, {__Id, first_ack}, 2),
-
-        grb_measurements:log_stat({?MODULE, __Partition, sent_to_first_ack}, grb_time:diff_native(__ACK, __PTS)),
-
-        [
-            begin
-                grb_measurements:log_stat({?MODULE, __Partition, __Repl, sent_to_ack},
-                                           grb_time:diff_native(__Ts, __PTS))
-            end
-            || {__Repl, __Ts} <- ets:select(__TRef, [{ {{__Id, __Partition, '$1'}, '$2'}, [], [{{'$1', '$2'}}] }])
-        ],
-
-        ets:select_delete(__TRef, [{ {{__Id, '_'}, '_'}, [], [true] },
-                                   { {{__Id, '_', '_'}, '_'}, [], [true] }]),
-
         ok
     catch _:_ ->
         ok
