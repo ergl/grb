@@ -16,6 +16,7 @@
          empty_read_test/1,
          read_your_writes_test/1,
          read_your_writes_red_test/1,
+         monotonic_red_commit_timestamp/1,
          propagate_updates_test/1,
          replication_queue_flush_test/1,
          uniform_barrier_flush_test/1,
@@ -58,6 +59,7 @@ groups() ->
             [sequence, {repeat_until_ok, 100}],
             [
                 read_your_writes_red_test,
+                monotonic_red_commit_timestamp,
                 transaction_ops_flush_test,
                 abort_ops_flush_test
             ]},
@@ -198,6 +200,37 @@ read_your_writes_red_test(C) ->
     {Val, _} = read_only_transaction(Node, Partition, tx_2, Key, grb_lww, CVC).
 -else.
 read_your_writes_red_test(_C) ->
+    %% No red transactions
+    ok.
+-endif.
+
+-ifndef(BLUE_KNOWN_VC).
+monotonic_red_commit_timestamp(C) ->
+    ClusterMap = ?config(cluster_info, C),
+    {_, Conflicts} = ?config(red_conflicts, C),
+    Label = ?random_key_map(Conflicts),
+    Replica = random_replica(ClusterMap),
+    Key = ?random_key,
+    Val = ?random_val,
+    {Partition, Node} = key_location(Key, Replica, ClusterMap),
+
+    TxId = {?FUNCTION_NAME, os:timestamp()},
+    %% Commit time is 5 seconds into the future
+    FakeTs = (grb_time:timestamp() + (5 * 1000000)),
+    {ok, Val, #{ ?RED_REPLICA := CommitTs }} =
+        update_red_transaction(
+            Node,
+            Partition,
+            TxId,
+            Label,
+            Key,
+            grb_crdt:make_op(grb_lww, Val),
+            #{ ?RED_REPLICA => FakeTs }
+        ),
+    true = CommitTs > FakeTs,
+    ok.
+-else.
+monotonic_red_commit_timestamp(C) ->
     %% No red transactions
     ok.
 -endif.

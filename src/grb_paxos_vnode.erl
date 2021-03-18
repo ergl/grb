@@ -186,6 +186,7 @@
     fifo_sequence_number = 0 :: non_neg_integer(),
     pending_fifo_messages = #{} :: #{ non_neg_integer() => pending_message() },
     pending_abort_messages = #{} :: #{ {term(), ballot()} => {atom(), grb_time:ts()} },
+    pending_prepares = #{} :: #{ term() => {tx_label(), readset(), writeset(), vclock(), red_coord_location()} },
     timing_table :: cache_id()
 }).
 -else.
@@ -249,7 +250,12 @@
     %% Store any pending abort messages here. Since these messages are batched, it doesn't
     %% make sense to assign them sequence numbers, as they are delivered later. If we receive
     %% an abort for a transaction before we receive an accept, buffer it here.
-    pending_abort_messages = #{} :: #{ {term(), ballot()} => { {abort, atom()}, grb_time:ts()} }
+    pending_abort_messages = #{} :: #{ {term(), ballot()} => { {abort, atom()}, grb_time:ts()} },
+
+    %% Store any pending prepares here. This is only used at the leader if the incoming prepare
+    %% timestamp is higher than the current time. This usually shouldn't happen unless clock skew
+    %% is too noticeable.
+    pending_prepares = #{} :: #{ term() => {tx_label(), readset(), writeset(), vclock(), red_coord_location()} }
 }).
 -endif.
 
@@ -512,36 +518,26 @@ handle_command({prepare_hb, Id}, _Sender, S0=#state{synod_role=?leader,
     end,
     {noreply, S#state{synod_state=LeaderState, fifo_sequence_number=SequenceNumber+1}};
 
-handle_command({prepare, TxId, Label, RS, WS, SnapshotVC},
-               Coordinator, S0=#state{synod_role=?leader,
-                                      replica_id=LocalId,
-                                      partition=Partition,
-                                      synod_state=LeaderState0,
-                                      conflict_relations=Conflicts,
-                                      op_log_last_vc_replica=LastRed,
-                                      fifo_sequence_number=SequenceNumber}) ->
-
-    ?MARK_SEEN_TX_TS(TxId, grb_time:timestamp(), S0),
-
-    %% Cancel and resubmit any pending heartbeats for this partition.
-    S1 = reschedule_heartbeat(S0),
+handle_command({prepare, TxId, Label, RS, WS, SnapshotVC}, Coordinator,
+               S0=#state{synod_role=?leader, partition=Partition, pending_prepares=PendingPrepares}) ->
 
     ?LOG_QUEUE_LEN(Partition),
+    Now = grb_time:timestamp(),
+    ?MARK_SEEN_TX_TS(TxId, Now, S0),
+    PrepareTs = grb_vclock:get_time(?RED_REPLICA, SnapshotVC),
 
-    {Result, LeaderState} = grb_paxos_state:prepare(TxId, Label, RS, WS, SnapshotVC, LastRed, Conflicts, LeaderState0),
-    ?LOG_DEBUG("~p: ~p prepared as ~p, reply to coordinator ~p", [Partition, TxId, Result, Coordinator]),
-    S2 = case Result of
-        {already_decided, Decision, CommitVC} ->
-            %% skip replicas, this is enough to reply to the client
-            reply_already_decided(Coordinator, LocalId, Partition, TxId, Decision, CommitVC),
-            S1#state{synod_state=LeaderState};
-        {Vote, Ballot, PrepareVC} ->
-            PrepareTs = grb_vclock:get_time(?RED_REPLICA, PrepareVC),
-            ok = reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareTs),
-            ok = send_accepts(Partition, Coordinator, SequenceNumber, Ballot, TxId, Label, Vote, RS, WS, PrepareVC),
-            S1#state{synod_state=LeaderState, fifo_sequence_number=SequenceNumber + 1}
+    S = if
+        Now =< PrepareTs ->
+            %% If we're below the snapshot, wait until our local clock catches up.
+            ok = grb_measurements:log_counter({?MODULE, Partition, prepare_not_ready}),
+            erlang:send_after(grb_time:diff_ms(PrepareTs, Now), self(), {retry_prepare, TxId}),
+            %% Store all data for later to avoid copying again on message send.
+            S0#state{pending_prepares=PendingPrepares#{TxId => {Label, RS, WS, SnapshotVC, Coordinator}}};
+
+        true ->
+            prepare_internal(TxId, Label, RS, WS, SnapshotVC, Coordinator, S0)
     end,
-    {noreply, S2};
+    {noreply, S};
 
 handle_command({decide_hb, Ballot, Id, Ts}, _Sender, S0=#state{synod_role=?leader,
                                                                partition=Partition}) ->
@@ -689,6 +685,18 @@ execute_follower_command({deliver_transactions, Ballot, Timestamp, TransactionId
             S0
     end.
 
+handle_info({retry_prepare, TxId}, S0=#state{pending_prepares=PendingPrepares0}) ->
+    S = case maps:take(TxId, PendingPrepares0) of
+        error ->
+            %% Shouldn't happen, but who knows (someone could send us a rogue message)
+            ?LOG_ERROR("RETRY_PREPARE(~p) not found", [TxId]),
+            S0;
+
+        {{Label, RS, WS, SnapshotVC, Coordinator}, PendingPrepares} ->
+            prepare_internal(TxId, Label, RS, WS, SnapshotVC, Coordinator, S0=#state{pending_prepares=PendingPrepares})
+    end,
+    {ok, S};
+
 handle_info({retry_decide_hb, Ballot, Id, Ts}, S0) ->
     S = case decide_hb_internal(Ballot, Id, Ts, S0) of
         {not_ready, Ms} ->
@@ -777,6 +785,29 @@ start_timers(S=#state{synod_role=?leader, deliver_interval=DeliverInt,
 
 start_timers(S=#state{synod_role=?follower, prune_interval=PruneInt}) ->
     S#state{prune_timer=grb_dc_utils:maybe_send_after(PruneInt, ?prune_event)}.
+
+-spec prepare_internal(term(), tx_label(), readset(), writeset(), vclock(), red_coord_location(), #state{}) -> #state{}.
+prepare_internal(TxId, Label, RS, WS, SnapshotVC, Coordinator,
+                 S0=#state{replica_id=LocalId, partition=Partition,
+                           synod_state=LeaderState0, conflict_relations=Conflicts,
+                           op_log_last_vc_replica=LastRed, fifo_sequence_number=SequenceNumber}) ->
+
+    %% Cancel and resubmit any pending heartbeats for this partition.
+    S1 = reschedule_heartbeat(S0),
+    {Result, LeaderState} = grb_paxos_state:prepare(TxId, Label, RS, WS, SnapshotVC, LastRed, Conflicts, LeaderState0),
+    ?LOG_DEBUG("~p: ~p prepared as ~p, reply to coordinator ~p", [Partition, TxId, Result, Coordinator]),
+    case Result of
+        {already_decided, Decision, CommitVC} ->
+            %% skip replicas, this is enough to reply to the client
+            reply_already_decided(Coordinator, LocalId, Partition, TxId, Decision, CommitVC),
+            S1#state{synod_state=LeaderState};
+
+        {Vote, Ballot, PrepareVC} ->
+            PrepareTs = grb_vclock:get_time(?RED_REPLICA, PrepareVC),
+            ok = reply_accept_ack(Coordinator, LocalId, Partition, Ballot, TxId, Vote, PrepareTs),
+            ok = send_accepts(Partition, Coordinator, SequenceNumber, Ballot, TxId, Label, Vote, RS, WS, PrepareVC),
+            S1#state{synod_state=LeaderState, fifo_sequence_number=SequenceNumber + 1}
+    end.
 
 -spec reply_accept_ack(red_coord_location(), replica_id(), partition_id(), ballot(), term(), red_vote(), grb_time:ts()) -> ok.
 -ifndef(ENABLE_METRICS).
