@@ -290,6 +290,8 @@ start_background_processes(ClusterName) ->
 
     ok = grb_oplog_vnode:start_readers_all(),
 
+    ok = grb_propagation_vnode:start_sequencer_all(),
+
     %% if we're not in red mode, this won't do anything
     ok = grb_paxos_vnode:all_fetch_lastvc_table(),
 

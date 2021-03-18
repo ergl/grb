@@ -12,7 +12,8 @@
 -endif.
 
 %% Management API
--export([start_propagate_timer_all/0,
+-export([start_sequencer_all/0,
+         start_propagate_timer_all/0,
          stop_propagate_timer_all/0]).
 
 %% Common public API
@@ -178,6 +179,15 @@ get_commit_log(Replica, Partition) ->
 %%%===================================================================
 %%% common public api
 %%%===================================================================
+
+-spec start_sequencer_all() -> ok.
+start_sequencer_all() ->
+    [try
+        riak_core_vnode_master:command(N, start_sequencer_process, ?master)
+     catch
+         _:_ -> ok
+     end  || N <- grb_dc_utils:get_index_nodes() ],
+    ok.
 
 -spec start_propagate_timer_all() -> ok.
 start_propagate_timer_all() ->
@@ -490,8 +500,11 @@ handle_command({learn_dc_groups, MyGroups}, _From, S) ->
 handle_command(populate_logs, _From, State) ->
     {reply, ok, populate_logs_internal(State)};
 
-handle_command(start_propagate_timer, _From, S0) ->
+handle_command(start_sequencer_process, _From, S0) ->
     {ok, S} = start_sequencer_process(S0),
+    {noreply, S};
+
+handle_command(start_propagate_timer, _From, S) ->
     {noreply, start_propagation_timers(S)};
 
 handle_command(stop_propagate_timer, _From, State) ->
