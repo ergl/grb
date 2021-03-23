@@ -573,6 +573,7 @@ handle_info(?replication_req, State=#state{replication_timer=Timer,
                                            replication_interval=Interval}) ->
 
     ?CANCEL_TIMER_FAST(Timer),
+    %% fixme(borja): Don't update globalKnownMatrix on replicate
     NewState = replicate_internal(State),
     {ok, NewState#state{replication_timer=erlang:send_after(Interval, self(), ?replication_req)}};
 
@@ -582,6 +583,7 @@ handle_info(?uniform_req, State=#state{partition=P,
 
     ?CANCEL_TIMER_FAST(Timer),
     ?LOG_DEBUG("starting uniform replication at ~p", [P]),
+    %% fixme(borja): Don't update globalKnownMatrix on forwarding
     GlobalMatrix = uniform_replicate_internal(State),
     {ok, State#state{global_known_matrix=GlobalMatrix,
                      uniform_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
