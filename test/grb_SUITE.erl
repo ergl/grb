@@ -230,7 +230,7 @@ monotonic_red_commit_timestamp(C) ->
     true = CommitTs > FakeTs,
     ok.
 -else.
-monotonic_red_commit_timestamp(C) ->
+monotonic_red_commit_timestamp(_C) ->
     %% No red transactions
     ok.
 -endif.
