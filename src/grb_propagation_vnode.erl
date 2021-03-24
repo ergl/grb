@@ -573,7 +573,6 @@ handle_info(?replication_req, State=#state{replication_timer=Timer,
                                            replication_interval=Interval}) ->
 
     ?CANCEL_TIMER_FAST(Timer),
-    %% fixme(borja): Don't update globalKnownMatrix on replicate
     NewState = replicate_internal(State),
     {ok, NewState#state{replication_timer=erlang:send_after(Interval, self(), ?replication_req)}};
 
@@ -583,10 +582,8 @@ handle_info(?uniform_req, State=#state{partition=P,
 
     ?CANCEL_TIMER_FAST(Timer),
     ?LOG_DEBUG("starting uniform replication at ~p", [P]),
-    %% fixme(borja): Don't update globalKnownMatrix on forwarding
-    GlobalMatrix = uniform_replicate_internal(State),
-    {ok, State#state{global_known_matrix=GlobalMatrix,
-                     uniform_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
+    ok = uniform_replicate_internal(State),
+    {ok, State#state{uniform_timer=erlang:send_after(Interval, self(), ?uniform_req)}};
 
 handle_info(?prune_req, S0=#state{prune_timer=Timer,
                                   prune_interval=Interval}) ->
@@ -895,11 +892,11 @@ replicate_internal(S=#state{self_log=LocalLog,
                             partition=Partition,
                             local_replica=LocalId,
                             clock_cache=ClockTable,
-                            global_known_matrix=Matrix0}) ->
+                            global_known_matrix=Matrix}) ->
 
     LocalTime = known_time_internal(LocalId, ClockTable),
-    Matrix = lists:foldl(fun(Target, AccMatrix) ->
-        ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
+    lists:foreach(fun(Target) ->
+        ThresholdTime = maps:get({Target, LocalId}, Matrix, 0),
         ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
         case ToSend of
             [] ->
@@ -918,11 +915,10 @@ replicate_internal(S=#state{self_log=LocalLog,
                 ?LOG_DEBUG("send transactions ~p: ~p~n", [Target, SendRes]),
                 ok = update_fifo_counter(Target, NextSeq),
                 ok
-        end,
-        AccMatrix#{{Target, LocalId} => LocalTime}
-    end, Matrix0, grb_dc_connection_manager:connected_replicas()),
+        end
+    end, grb_dc_connection_manager:connected_replicas()),
 
-    S#state{global_known_matrix=Matrix}.
+    S.
 
 -else.
 
@@ -930,14 +926,13 @@ replicate_internal(S=#state{self_log=LocalLog,
                             partition=Partition,
                             local_replica=LocalId,
                             clock_cache=ClockTable,
-                            global_known_matrix=Matrix0}) ->
+                            global_known_matrix=Matrix}) ->
 
     KnownVC = known_vc_internal(ClockTable),
-    LocalTime = grb_vclock:get_time(LocalId, KnownVC),
     StableVC = ets:lookup_element(ClockTable, ?stable_key, 2),
 
-    Matrix = lists:foldl(fun(Target, AccMatrix) ->
-        ThresholdTime = maps:get({Target, LocalId}, AccMatrix, 0),
+    lists:foreach(fun(Target) ->
+        ThresholdTime = maps:get({Target, LocalId}, Matrix, 0),
         ToSend = grb_blue_commit_log:get_bigger(ThresholdTime, LocalLog),
         case ToSend of
             [] ->
@@ -959,11 +954,10 @@ replicate_internal(S=#state{self_log=LocalLog,
                 ?LOG_DEBUG("send clocks / transactions ~p: ~p~n", [Target, SendRes]),
                 ok = update_fifo_counter(Target, NextSeq),
                 ok
-        end,
-        AccMatrix#{{Target, LocalId} => LocalTime}
-    end, Matrix0, grb_dc_connection_manager:connected_replicas()),
+        end
+    end, grb_dc_connection_manager:connected_replicas()),
 
-    S#state{global_known_matrix=Matrix}.
+    S.
 
 -endif.
 -endif.
@@ -988,7 +982,7 @@ encode_transactions(Seq, [Tx1, Tx2, Tx3, Tx4 | Rest], Acc) ->
 encode_transactions(Seq, [{WS, VC} | Rest], Acc) ->
     encode_transactions(Seq + 1, Rest, [Acc, grb_dc_messages:frame(grb_dc_messages:transaction(Seq, WS, VC))]).
 
--spec uniform_replicate_internal(state()) -> global_known_matrix().
+-spec uniform_replicate_internal(state()) -> ok.
 uniform_replicate_internal(#state{remote_logs=Logs,
                                   partition=Partition,
                                   clock_cache=ClockTable,
@@ -996,9 +990,9 @@ uniform_replicate_internal(#state{remote_logs=Logs,
 
     RemoteReplicas = grb_dc_manager:remote_replicas(),
     ConnectedReplicas = grb_dc_connection_manager:connected_replicas(),
-    lists:foldl(fun(TargetReplica, GlobalMatrix) ->
-        ureplicate_to(TargetReplica, RemoteReplicas, Partition, Logs, ClockTable, GlobalMatrix)
-    end, Matrix, ConnectedReplicas).
+    lists:foreach(fun(TargetReplica) ->
+        ureplicate_to(TargetReplica, RemoteReplicas, Partition, Logs, ClockTable, Matrix)
+    end, ConnectedReplicas).
 
 %% @doc Replicate other's transactions / heartbeats to the target replica.
 %%
@@ -1013,25 +1007,24 @@ uniform_replicate_internal(#state{remote_logs=Logs,
                     LocalPartition :: partition_id(),
                     Logs :: remote_commit_logs(),
                     ClockTable :: clock_cache(),
-                    Matrix :: global_known_matrix()) -> global_known_matrix().
+                    Matrix :: global_known_matrix()) -> ok.
 
-ureplicate_to(_TargetReplica, [], _Partition, _Logs, _ClockTable, MatrixAcc) ->
-    MatrixAcc;
+ureplicate_to(_TargetReplica, [], _Partition, _Logs, _ClockTable, _Matrix) ->
+    ok;
 
-ureplicate_to(TargetReplica, [TargetReplica | Rest], Partition, Logs, ClockTable, MatrixAcc) ->
+ureplicate_to(TargetReplica, [TargetReplica | Rest], Partition, Logs, ClockTable, Matrix) ->
     %% don't send back transactions to the sender, skip
-    ureplicate_to(TargetReplica, Rest, Partition, Logs, ClockTable, MatrixAcc);
+    ureplicate_to(TargetReplica, Rest, Partition, Logs, ClockTable, Matrix);
 
-ureplicate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, ClockTable, MatrixAcc) ->
+ureplicate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, ClockTable, Matrix) ->
     %% tx <- { <_, _, VC> \in log[relay] | VC[relay] > globalMatrix[target, relay] }
     %% if tx =/= \emptyset
     %%     for all t \in tx (in t.VC[relay] order)
     %%         send REPLICATE(relay, t) to target
     %% else
     %%     send HEARTBEAT(relay, knownVC[relay]) to target
-    %% globalMatrix[target, relay] <- knownVC[relay]
     HeartBeatTime = known_time_internal(RelayReplica, ClockTable),
-    ThresholdTime = maps:get({TargetReplica, RelayReplica}, MatrixAcc, 0),
+    ThresholdTime = maps:get({TargetReplica, RelayReplica}, Matrix, 0),
     ToSend = grb_remote_commit_log:get_bigger(ThresholdTime, maps:get(RelayReplica, Logs)),
     case ToSend of
         [] ->
@@ -1049,8 +1042,7 @@ ureplicate_to(TargetReplica, [RelayReplica | Rest], Partition, Logs, ClockTable,
                 ok
             end, Txs)
     end,
-    NewMatrix = MatrixAcc#{{TargetReplica, RelayReplica} => HeartBeatTime},
-    ureplicate_to(TargetReplica, Rest, Partition, Logs, ClockTable, NewMatrix).
+    ureplicate_to(TargetReplica, Rest, Partition, Logs, ClockTable, Matrix).
 
 %% @doc Set knownVC[ReplicaId] <-max- Time
 -spec update_known_vc((replica_id() | ?RED_REPLICA), grb_time:ts(), clock_cache()) -> ok.
