@@ -463,8 +463,9 @@ update_red_transaction(Node, Partition, TxId, Label, Key, Operation, Clock) ->
             {error, Reason, Value}
     end.
 -else.
-update_red_transaction(_Node, _Partition, _TxId, _Label, _Key, _Operation, Clock) ->
-    {ok, <<>>, Clock}.
+update_red_transaction(_Node, _Partition, _TxId, _Label, _Key, Operation, Clock) ->
+    Value = grb_crdt:value(grb_crdt:apply_op_raw(Operation, grb_crdt:new(grb_crdt:op_type(Operation)))),
+    {ok, Value, Clock}.
 -endif.
 
 -spec random_replica(#{}) -> replica_id().
