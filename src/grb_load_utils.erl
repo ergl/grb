@@ -12,7 +12,18 @@
 -ignore_xref([preload_micro_sync/1,
               preload_rubis_sync/1]).
 
--define(global_indices, <<"global_index">>).
+-define(global_indices, [
+    <<"global_index_0">>,
+    <<"global_index_1">>,
+    <<"global_index_2">>,
+    <<"global_index_3">>,
+    <<"global_index_4">>,
+    <<"global_index_5">>,
+    <<"global_index_6">>,
+    <<"global_index_7">>,
+    <<"global_index_8">>,
+    <<"global_index_9">>
+]).
 
 %% Negative so it always wins. Empty binary so we can filter out later
 -define(base_maxtuple, {-1, <<>>}).
@@ -114,12 +125,24 @@ preload_rubis_sync(Properties) ->
 
 -spec load_regions(Regions :: [binary()]) -> ok.
 load_regions(Regions) ->
-    ok = pfor(fun store_region/1, Regions),
+    ok = pfor(
+        fun(Index) ->
+            [ store_region(Index, R) || R <- Regions ],
+            ok
+        end,
+        ?global_indices
+    ),
     ok.
 
 -spec load_categories(Categories :: [binary()]) -> ok.
 load_categories(Categories) ->
-    ok = pfor(fun store_category/1, Categories),
+    ok = pfor(
+        fun(Index) ->
+            [ store_category(Index, C) || C <- Categories ],
+            ok
+        end,
+        ?global_indices
+    ),
     ok.
 
 -spec load_users(Regions :: [binary()], PerRegion :: non_neg_integer()) -> ok.
@@ -180,23 +203,23 @@ load_items(Regions, UsersPerRegion, CategoriesAndItems, Properties) ->
     ),
     ok.
 
--spec store_region(binary()) -> ok.
-store_region(Region) ->
+-spec store_region(binary(), binary()) -> ok.
+store_region(Index, Region) ->
     ok = grb_oplog_vnode:append_direct_vnode(
         sync,
-        grb_dc_utils:key_location(?global_indices),
+        grb_dc_utils:key_location(Index),
         #{
-            {?global_indices, all_regions} => grb_crdt:make_op(grb_gset, Region)
+            {Index, all_regions} => grb_crdt:make_op(grb_gset, Region)
         }
     ).
 
--spec store_category(binary()) -> ok.
-store_category(Category) ->
+-spec store_category(binary(), binary()) -> ok.
+store_category(Index, Category) ->
     ok = grb_oplog_vnode:append_direct_vnode(
         sync,
-        grb_dc_utils:key_location(?global_indices),
+        grb_dc_utils:key_location(Index),
         #{
-            {?global_indices, all_categories} => grb_crdt:make_op(grb_gset, Category)
+            {Index, all_categories} => grb_crdt:make_op(grb_gset, Category)
         }
     ).
 
