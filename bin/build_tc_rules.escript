@@ -38,7 +38,8 @@ main(Args) ->
             _ = erlang:put(dry_run, DryRun),
             {ok, SelfCluster} = safe_get_value(cluster, PropList),
             {ok, ConfigFile} = safe_get_value(config, PropList),
-            run(SelfCluster, ConfigFile)
+            Command = proplists:get_value(command, PropList, run),
+            run(SelfCluster, ConfigFile, Command)
     end.
 
 -spec usage() -> ok.
@@ -46,7 +47,11 @@ usage() ->
     Name = filename:basename(escript:script_name()),
     ok = io:fwrite(standard_error, "~s [-d] -c <cluster-name> -f <config_file>~n", [Name]).
 
-run(Self, ConfigFile) ->
+run(_Self, _ConfigFile, cleanup) ->
+    reset_tc_rules(),
+    ok;
+
+run(Self, ConfigFile, run) ->
     {ok, Terms} = file:consult(ConfigFile),
     {latencies, LatencyMap} = lists:keyfind(latencies, 1, Terms),
     {clusters, ClusterDef} = lists:keyfind(clusters, 1, Terms),
@@ -193,6 +198,13 @@ parse_args([[$- | Flag] | Args], Acc) ->
                 _ ->
                     {error, {noarg, Flag}}
             end;
+      [$r] ->
+          case Args of
+              [FlagArg | Rest] ->
+                  parse_args(Rest, [{command, list_to_atom(FlagArg)} | Acc]);
+              _ ->
+                {error, {noarg, Flag}}
+          end;
         _ ->
             {error, {option, Flag}}
     end;
