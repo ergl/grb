@@ -10,7 +10,7 @@ indent_style = space
 indent_size = 2
 
 # 4 space indentation
-[*.{erl,src,hrl}]
+[*.{erl,src,hrl,escript}]
 indent_style = space
 indent_size = 4
 
