@@ -70,31 +70,43 @@
 -type role() :: ?leader | ?follower.
 
 -ifdef(ENABLE_METRICS).
+-define(TIMING_TABLE_KEY(__P), {?MODULE, __P, timing_data}).
 -define(INIT_TIMING_TABLE(__S),
     begin
         __Tref = ets:new(timing_data, [ordered_set]),
-        ok = persistent_term:put({?MODULE, __S#state.partition, timing_data}, __Tref),
-        __S#state{timing_table=__Tref}
+        ok = persistent_term:put(?TIMING_TABLE_KEY(__S#state.partition), __Tref)
     end).
 
 -define(MARK_SEEN_TX_TS(__Id, __Now, __S),
     begin
-        ets:insert(__S#state.timing_table, {{__Id, first_seen}, __Now}),
+        ets:insert(persistent_term:get(?TIMING_TABLE_KEY(__S#state.partition)), {{__Id, first_seen}, __Now}),
         ok
     end).
 
 -define(ADD_COMMIT_TS(__Id, __S),
-    begin true = ets:insert(__S#state.timing_table, {{__Id, commit}, grb_time:timestamp()}), __S end).
+    begin
+        true =
+            ets:insert(
+                persistent_term:get(?TIMING_TABLE_KEY(__S#state.partition)),
+                {{__Id, commit}, grb_time:timestamp()}
+            ),
+        __S
+    end).
 
 -define(REPORT_ABORT_TS(__Id, __S),
     try
         __Now = grb_time:timestamp(),
-        __PrepTime = ets:lookup_element(__S#state.timing_table, {__Id, first_seen}, 2),
+        __PrepTime =
+            ets:lookup_element(
+                persistent_term:get(?TIMING_TABLE_KEY(__S#state.partition)),
+                {__Id, first_seen},
+                2
+            ),
 
         ok = grb_measurements:log_stat(?TO_ABORT_TS_KEY(__S#state.partition),
                                        grb_time:diff_native(__Now, __PrepTime)),
 
-        _ = ets:select_delete(__S#state.timing_table,
+        _ = ets:select_delete(persistent_term:get(?TIMING_TABLE_KEY(__S#state.partition)),
                               [{ {{__Id, '_'}, '_'}, [], [true]} ]),
 
         __S
@@ -148,7 +160,7 @@
     end).
 -else.
 
--define(INIT_TIMING_TABLE(__S), __S).
+-define(INIT_TIMING_TABLE(__S), begin _ = __S, ok end).
 -define(MARK_SEEN_TX_TS(__Id, __Now, __S), begin _ = __Id, _ = __Now, __S end).
 
 -define(ADD_COMMIT_TS(__Id, __S), begin _ = __Id, __S end).
@@ -164,32 +176,6 @@
                          | {accept_hb, replica_id(), ballot(), red_heartbeat_id(), grb_time:ts()}
                          | {deliver_transactions, ballot(), grb_time:ts(), [ red_heartbeat_id() | {term(), tx_label()} ]}.
 
--ifdef(ENABLE_METRICS).
--record(state, {
-    partition :: partition_id(),
-    replica_id = undefined :: replica_id() | undefined,
-    heartbeat_process = undefined :: pid() | undefined,
-    heartbeat_schedule_ms :: non_neg_integer(),
-    heartbeat_schedule_timer = undefined :: reference() | undefined,
-    last_delivered = 0 :: grb_time:ts(),
-    deliver_timer = undefined :: reference() | undefined,
-    deliver_interval :: non_neg_integer(),
-    prune_timer = undefined :: reference() | undefined,
-    prune_interval :: non_neg_integer(),
-    send_aborts_timer = undefined :: reference() | undefined,
-    send_aborts_interval_ms :: non_neg_integer(),
-    op_log_last_vc_replica :: grb_oplog_vnode:last_vc() | undefined,
-    synod_role = undefined :: role() | undefined,
-    synod_state = undefined :: grb_paxos_state:t() | undefined,
-    conflict_relations :: conflict_relations(),
-    abort_buffer_io = [] :: iodata(),
-    fifo_sequence_number = 0 :: non_neg_integer(),
-    pending_fifo_messages = #{} :: #{ non_neg_integer() => pending_message() },
-    pending_abort_messages = #{} :: #{ {term(), ballot()} => {atom(), grb_time:ts()} },
-    pending_prepares = #{} :: #{ term() => {tx_label(), readset(), writeset(), vclock(), red_coord_location()} },
-    timing_table :: cache_id()
-}).
--else.
 -record(state, {
     partition :: partition_id(),
     replica_id = undefined :: replica_id() | undefined,
@@ -257,7 +243,6 @@
     %% is too noticeable.
     pending_prepares = #{} :: #{ term() => {tx_label(), readset(), writeset(), vclock(), red_coord_location()} }
 }).
--endif.
 
 -spec all_fetch_lastvc_table() -> ok.
 -ifdef(BLUE_KNOWN_VC).
@@ -431,7 +416,8 @@ init([Partition]) ->
                    synod_state=undefined,
                    conflict_relations=Conflicts},
 
-    {ok, ?INIT_TIMING_TABLE(State)}.
+    ?INIT_TIMING_TABLE(State),
+    {ok, State}.
 
 terminate(_Reason, #state{synod_state=undefined}) ->
     ok;
