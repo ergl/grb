@@ -189,7 +189,7 @@ convert_key(Key) ->
     if
         is_integer(Key) -> convert_key_int(Key);
         is_binary(Key) -> convert_key_binary(Key);
-        is_tuple(Key) -> convert_key_hash(element(1, Key));
+        is_tuple(Key) -> convert_key(element(1, Key));
         true -> convert_key_hash(Key)
     end.
 

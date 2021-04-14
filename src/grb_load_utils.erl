@@ -12,19 +12,6 @@
 -ignore_xref([preload_micro_sync/1,
               preload_rubis_sync/1]).
 
--define(global_indices, [
-    <<"global_index_0">>,
-    <<"global_index_1">>,
-    <<"global_index_2">>,
-    <<"global_index_3">>,
-    <<"global_index_4">>,
-    <<"global_index_5">>,
-    <<"global_index_6">>,
-    <<"global_index_7">>,
-    <<"global_index_8">>,
-    <<"global_index_9">>
-]).
-
 %% Negative so it always wins. Empty binary so we can filter out later
 -define(base_maxtuple, {-1, <<>>}).
 
@@ -125,23 +112,25 @@ preload_rubis_sync(Properties) ->
 
 -spec load_regions(Regions :: [binary()]) -> ok.
 load_regions(Regions) ->
+    AllIdx = grb_dc_utils:get_index_nodes(),
     ok = pfor(
         fun(Index) ->
             [ store_region(Index, R) || R <- Regions ],
             ok
         end,
-        ?global_indices
+        lists:seq(1, length(AllIdx))
     ),
     ok.
 
 -spec load_categories(Categories :: [binary()]) -> ok.
 load_categories(Categories) ->
+    AllIdx = grb_dc_utils:get_index_nodes(),
     ok = pfor(
         fun(Index) ->
             [ store_category(Index, C) || C <- Categories ],
             ok
         end,
-        ?global_indices
+        lists:seq(1, length(AllIdx))
     ),
     ok.
 
@@ -209,7 +198,7 @@ store_region(Index, Region) ->
         sync,
         grb_dc_utils:key_location(Index),
         #{
-            {Index, all_regions} => grb_crdt:make_op(grb_gset, Region)
+            {{Index, global_index}, all_regions} => grb_crdt:make_op(grb_gset, Region)
         }
     ).
 
@@ -219,7 +208,7 @@ store_category(Index, Category) ->
         sync,
         grb_dc_utils:key_location(Index),
         #{
-            {Index, all_categories} => grb_crdt:make_op(grb_gset, Category)
+            {{Index, global_index}, all_categories} => grb_crdt:make_op(grb_gset, Category)
         }
     ).
 
