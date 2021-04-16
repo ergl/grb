@@ -141,6 +141,7 @@ commit_send(Coordinator, TxId) ->
 
 -spec already_decided(term(), red_vote(), vclock()) -> ok.
 already_decided(TxId, Vote, VoteVC) ->
+    grb_measurements:log_counter({?MODULE, ?FUNCTION_NAME}),
     case grb_red_manager:transaction_coordinator(TxId) of
         error -> ok;
         {ok, Coordinator} ->
@@ -217,7 +218,7 @@ handle_cast({commit_init, Promise, Partition, TxId, Label, SnapshotVC, Prepares}
             init_tx_and_send(Promise, TxId, Label, SnapshotVC, Prepares, S0);
         false ->
             ?LOG_DEBUG("registering barrier for ~w", [TxId]),
-            ok = grb_measurements:log_counter({?MODULE, pre_commit_barrier}),
+            ok = grb_measurements:log_counter({?MODULE, Partition, pre_commit_barrier}),
             grb_propagation_vnode:register_red_uniform_barrier(Partition, Timestamp, Pid, TxId),
             init_tx(Promise, TxId, Label, SnapshotVC, Prepares, S0)
     end,

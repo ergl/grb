@@ -870,13 +870,13 @@ decide_hb_internal(Ballot, Id, Ts, S=#state{synod_role=Role,
                     {ok, S#state{synod_state=SynodState}};
 
                 bad_ballot ->
-                    ok = grb_measurements:log_counter({?MODULE, bad_ballot}),
+                    ok = grb_measurements:log_counter({?MODULE, S#state.partition, bad_ballot}),
                     %% fixme(borja, red): should this initiate a leader recovery, or ignore?
                     ?LOG_ERROR("~p: bad heartbeat ballot ~b", [S#state.partition, Ballot]),
                     {ok, S};
 
                 not_prepared ->
-                    ok = grb_measurements:log_counter({?MODULE, out_of_order_decision_hb}),
+                    ok = grb_measurements:log_counter({?MODULE, S#state.partition, out_of_order_decision_hb}),
                     %% fixme(borja, red): something very wrong happened due to FIFO, leader might have changed
                     ?LOG_ERROR("~p: out-of-order decision (~b) for a not prepared transaction ~p", [S#state.partition, Ballot, Id]),
                     {ok, S}
@@ -898,11 +898,11 @@ decide_internal(Ballot, TxId, Decision, CommitTs, S=#state{synod_role=Role,
                     {ok, S#state{synod_state=SynodState}};
 
                 not_prepared ->
-                    ok = grb_measurements:log_counter({?MODULE, out_of_order_decision}),
+                    ok = grb_measurements:log_counter({?MODULE, S#state.partition, out_of_order_decision}),
                     not_prepared;
 
                 bad_ballot ->
-                    ok = grb_measurements:log_counter({?MODULE, bad_ballot}),
+                    ok = grb_measurements:log_counter({?MODULE, S#state.partition, bad_ballot}),
                     %% fixme(borja, red): should this initiate a leader recovery, or ignore?
                     ?LOG_ERROR("~p: bad ballot ~b for ~p", [S#state.partition, Ballot, TxId]),
                     {ok, S}
