@@ -416,7 +416,15 @@ hashed_reader(Partition, Key) ->
 
 -spec num_readers(partition_id()) -> non_neg_integer().
 num_readers(Partition) ->
-    persistent_term:get({?MODULE, Partition, ?NUM_READERS_KEY}, ?OPLOG_READER_NUM).
+    case erlang:get({?MODULE, Partition, ?NUM_READERS_KEY}) of
+        undefined ->
+            N = persistent_term:get({?MODULE, Partition, ?NUM_READERS_KEY}, ?OPLOG_READER_NUM),
+            erlang:put({?MODULE, Partition, ?NUM_READERS_KEY}, N),
+            N;
+
+        Value ->
+            Value
+    end.
 
 -spec persist_num_readers(partition_id(), non_neg_integer()) -> ok.
 persist_num_readers(Partition, N) ->
