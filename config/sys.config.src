@@ -129,6 +129,8 @@
     %% critical.
     {red_abort_interval_ms, ${RED_ABORT_INTERVAL_MS}},
 
+    {strong_stuck_timer, ${STRONG_STUCK_INTERVAL}},
+
     %% Conflicts file for red transactions.
     {red_conflicts_config, #{
         <<"default">> => <<"default">>,

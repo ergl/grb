@@ -52,8 +52,9 @@
 -type t() :: #state{}.
 
 -type ready_tx() :: [ red_heartbeat_id() | {term(), tx_label(), writeset(), vclock()}, ... ].
+-type stuck_tx() :: {term(), tx_label(), vclock()} | empty.
 
--export_type([t/0, prepare_result/0, prepare_hb_result/0, decision_error/0, ready_tx/0]).
+-export_type([t/0, prepare_result/0, prepare_hb_result/0, decision_error/0, ready_tx/0, stuck_tx/0]).
 
 %% constructors
 -export([new/0,
@@ -127,7 +128,7 @@ get_decided_data(Id, #state{entries=EntryMap}) ->
 %%%===================================================================
 
 -spec get_next_ready(LastDelivered :: grb_time:ts(),
-                     State :: t()) -> false | {grb_time:ts(), ready_tx()}.
+                     State :: t()) -> {false, stuck_tx()} | {grb_time:ts(), ready_tx()}.
 
 get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx}) ->
     %% We use an empty list here, since we know that record ids are tuples,
@@ -140,17 +141,18 @@ get_next_ready(LastDelivered, #state{entries=EntryMap, index=Idx}) ->
 
 -spec get_next_ready_continue(Key :: {grb_time:ts(), record_id()} | '$end_of_table',
                               IdxTable ::  cache_id(),
-                              EntryMap :: #{record_id() => tx_data()}) -> false | {grb_time:ts(), ready_tx()}.
+                              EntryMap :: #{record_id() => tx_data()}) -> {false, stuck_tx()} | {grb_time:ts(), ready_tx()}.
 
 get_next_ready_continue('$end_of_table', _IdxTable, _EntryMap) ->
-    false;
+    {false, empty};
 
 get_next_ready_continue(Key={CommitTime, Id}, IdxTable, EntryMap) ->
     case ets:lookup(IdxTable, Key) of
-        [#index_entry{state=prepared, vote=ok}] ->
+        [#index_entry{state=prepared, vote=ok, key={_, TxId}}] ->
             %% We have found a prepared commit before we ever reached a matching transaction,
             %% which means we're not ready to deliver
-            false;
+            #tx_data{label=Label, clock=VClock} = maps:get(TxId, EntryMap),
+            {false, {Id, Label, VClock}};
         [#index_entry{state=decided, vote=ok}] ->
             %% Found a commit with no previous prepares,
             %% continue with this commit time.
@@ -169,9 +171,10 @@ get_next_ready_continue(Key={CommitTime, Id}, IdxTable, EntryMap) ->
 
 get_next_ready_continue(Key={CommitTime, Id}, CommitTime, IdxTable, EntryMap, Acc) ->
     case ets:lookup(IdxTable, Key) of
-        [#index_entry{state=prepared, vote=ok}] ->
+        [#index_entry{state=prepared, vote=ok, key={_, TxId}}] ->
             %% Found a prepared transaction with our commit time, we're not ready
-            false;
+            #tx_data{label=Label, clock=VClock} = maps:get(TxId, EntryMap),
+            {false, {Id, Label, VClock}};
         [#index_entry{state=decided, vote=ok}] ->
             %% Good transaction, add it to the pile
             get_next_ready_continue(ets:next(IdxTable, Key), CommitTime, IdxTable, EntryMap, [data_for_id(Id, EntryMap) | Acc]);

@@ -99,6 +99,10 @@ if [ -z "$RED_COORD_POOL_SIZE" ]; then
   export RED_COORD_POOL_SIZE=50
 fi
 
+if [ -z "$STRONG_STUCK_INTERVAL" ]; then
+  export STRONG_STUCK_INTERVAL=200
+fi
+
 # Node config
 
 if [ -z "$IP" ]; then

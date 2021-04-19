@@ -42,6 +42,9 @@
          handle_exit/3,
          handle_info/2]).
 
+-export([all_get_next_ready_status/0,
+         get_next_ready_status/1]).
+
 %% Called by vnode proxy
 -ignore_xref([start_vnode/1,
               handle_info/2]).
@@ -243,6 +246,14 @@
     %% is too noticeable.
     pending_prepares = #{} :: #{ term() => {tx_label(), readset(), writeset(), vclock(), red_coord_location()} }
 }).
+
+all_get_next_ready_status() ->
+    grb_dc_utils:bcast_vnode_sync(?master, get_next_ready_status).
+
+get_next_ready_status({_, _}=Idx) ->
+    riak_core_vnode_master:sync_command(Idx, get_next_ready_status, ?master);
+get_next_ready_status(Partition) ->
+    riak_core_vnode_master:sync_command({Partition, node()}, get_next_ready_status, ?master).
 
 -spec all_fetch_lastvc_table() -> ok.
 -ifdef(BLUE_KNOWN_VC).
@@ -456,6 +467,8 @@ handle_command(init_leader, _Sender, S=#state{partition=Partition, synod_role=un
 
     ok = grb_measurements:create_stat(?DELIVER_CALLED_N(Partition)),
 
+    ok = init_stuck_timer(),
+
     ReplicaId = grb_dc_manager:replica_id(),
     {ok, Pid} = grb_red_heartbeat:new(ReplicaId, Partition),
     {reply, ok, start_timers(S#state{replica_id=ReplicaId,
@@ -579,6 +592,15 @@ handle_command({learn_abort, Ballot, TxId, Reason, CommitTs}, _Sender,
             S0#state{pending_abort_messages=Pending#{ {TxId, Ballot} => {AbortDecision, CommitTs} }}
     end,
     {noreply, ?REPORT_ABORT_TS(TxId, S)};
+
+handle_command(get_next_ready_status, _, S0=#state{synod_state=PaxosState, last_delivered=LastDelivered}) ->
+    IsStuck = case grb_paxos_state:get_next_ready(LastDelivered, PaxosState) of
+        {false, StuckTx} ->
+            {stuck, StuckTx};
+        {Time, _} ->
+            {not_stuck, Time}
+    end,
+    {reply, IsStuck, S0};
 
 handle_command(Message, _Sender, State) ->
     ?LOG_WARNING("~p unhandled_command ~p", [?MODULE, Message]),
@@ -752,6 +774,10 @@ handle_info(?send_aborts_event, S=#state{synod_role=?leader,
     ok = send_abort_buffer(Partition, AbortBuffer),
     {ok, S#state{abort_buffer_io=[],
                  send_aborts_timer=erlang:send_after(Interval, self(), ?send_aborts_event)}};
+
+handle_info(red_strong_stuck_check, S0=#state{partition=Partition, synod_state=PaxosState, last_delivered=LastDelivered}) ->
+    ok = stuck_timer_eval(Partition, LastDelivered, grb_paxos_state:get_next_ready(LastDelivered, PaxosState)),
+    {ok, S0};
 
 handle_info(Msg, State) ->
     ?LOG_WARNING("~p unhandled_info ~p", [?MODULE, Msg]),
@@ -951,7 +977,7 @@ deliver_updates(Partition, SequenceNumber, Ballot, From, SynodState) ->
 
 deliver_updates_1(Partition, SequenceNumber, Ballot, From, SynodState, IOAcc) ->
     case grb_paxos_state:get_next_ready(From, SynodState) of
-        false ->
+        {false, _} ->
             {From, SequenceNumber, IOAcc};
 
         {NextFrom, Entries} ->
@@ -996,7 +1022,7 @@ deliver_updates(Partition, SequenceNumber, Ballot, From, SynodState, IOAcc) ->
     {Took, Res} = timer:tc(grb_paxos_state, get_next_ready, [From, SynodState]),
     grb_measurements:log_stat(?NEXT_READY_DURATION(Partition), Took),
     case Res of
-        false ->
+        {false, _} ->
             {From, SequenceNumber, IOAcc};
 
         {NextFrom, Entries} ->
@@ -1091,3 +1117,34 @@ handle_overload_command(_, _, _) ->
 
 handle_overload_info(_, _Idx) ->
     ok.
+
+-ifdef(ENABLE_METRICS).
+init_stuck_timer() ->
+    StuckInterval = application:get_env(grb, strong_stuck_timer, 200),
+    undefined = erlang:put({?MODULE, stuck_timer, timer_interval}, StuckInterval),
+    undefined = erlang:put({?MODULE, stuck_timer, last_seen_timestamp}, 0),
+    _ = erlang:send_after(StuckInterval, self(), red_strong_stuck_check),
+    ok.
+-else.
+init_stuck_timer() -> ok.
+-endif.
+
+-ifdef(ENABLE_METRICS).
+stuck_timer_eval(Partition, LastDelivered, {false, StuckTx}) ->
+    case erlang:put({?MODULE, stuck_timer, last_seen_timestamp}, LastDelivered) of
+        LastDelivered ->
+            %% The timestamp is still the same, log the transaction if we have information
+            Now = grb_time:timestamp(),
+            grb_measurements:log_counter({?MODULE, Partition, red_stuck, Now, LastDelivered, StuckTx});
+        _ ->
+            ok
+    end,
+    erlang:send_after(erlang:get({?MODULE, stuck_timer, timer_interval}), self(), red_strong_stuck_check),
+    ok;
+stuck_timer_eval(_, _, {NextDelivered, _}) ->
+    erlang:put({?MODULE, stuck_timer, last_seen_timestamp}, NextDelivered),
+    erlang:send_after(erlang:get({?MODULE, stuck_timer, timer_interval}), self(), red_strong_stuck_check),
+    ok.
+-else.
+stuck_timer_eval(_, _, _) -> ok.
+-endif.
