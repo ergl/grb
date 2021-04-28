@@ -15,6 +15,7 @@
          handle_info/2]).
 
 -define(red_hb, red_heartbeat).
+-define(red_fixed_hb, red_fixed_heartbeat).
 
 -record(active_hb, {
     timestamp = undefined :: grb_time:ts() | undefined,
@@ -30,7 +31,11 @@
     next_hb_id = {?red_heartbeat_marker, 0} :: red_heartbeat_id(),
 
     %% Active heartbeats accumulator
-    active_heartbeats = #{} :: active_heartbeats()
+    active_heartbeats = #{} :: active_heartbeats(),
+
+    %% For the fixed-schedule heartbeat
+    fixed_interval :: non_neg_integer(),
+    fixed_timer :: reference()
 }).
 
 -spec new(replica_id(), partition_id()) -> {ok, pid()} | ignore | {error, term()}.
@@ -59,9 +64,13 @@ handle_accept_ack(Partition, Ballot, Id, Ts) ->
 
 init([ReplicaId, Partition]) ->
     QuorumSize = grb_red_manager:quorum_size(),
+    %% Peg heartbeat schedule to 1ms, we don't want the user to be able to set something smaller.
+    FixedInterval = max(application:get_env(grb, red_heartbeat_fixed_schedule_ms, 1), 1),
     State = #state{replica=ReplicaId,
                    partition=Partition,
-                   quorum_size=QuorumSize},
+                   quorum_size=QuorumSize,
+                   fixed_interval=FixedInterval,
+                   fixed_timer=erlang:send_after(FixedInterval, self(), ?red_fixed_hb)},
     {ok, State}.
 
 handle_call(E, _From, S) ->
@@ -89,18 +98,25 @@ handle_cast(E, S) ->
     ?LOG_WARNING("~p unexpected cast: ~p~n", [?MODULE, E]),
     {noreply, S}.
 
-handle_info(?red_hb, State=#state{partition=Partition,
-                                  quorum_size=QuorumSize,
-                                  next_hb_id=HeartbeatId,
-                                  active_heartbeats=Heartbeats}) ->
+handle_info(?red_hb, State) ->
+    {noreply, send_heartbeat(State)};
 
-    ok = grb_paxos_vnode:prepare_heartbeat(Partition, HeartbeatId),
-    {noreply, State#state{next_hb_id=next_heartbeat_id(HeartbeatId),
-                          active_heartbeats=Heartbeats#{HeartbeatId => #active_hb{to_ack=QuorumSize}}}};
+handle_info(?red_fixed_hb, S0=#state{fixed_timer=FixedTimer,
+                                     fixed_interval=FixedInterval}) ->
+    ?CANCEL_TIMER_FAST(FixedTimer),
+    S = send_heartbeat(S0),
+    {noreply, S#state{fixed_timer=erlang:send_after(FixedInterval, self(), ?red_fixed_hb)}};
 
 handle_info(E, S) ->
     ?LOG_WARNING("~p unexpected info: ~p~n", [?MODULE, E]),
     {noreply, S}.
+
+-spec send_heartbeat(#state{}) -> #state{}.
+send_heartbeat(S=#state{partition=Partition, quorum_size=QuorumSize,
+                        next_hb_id=HeartbeatId, active_heartbeats=Heartbeats}) ->
+    ok = grb_paxos_vnode:prepare_heartbeat(Partition, HeartbeatId),
+    S#state{next_hb_id=next_heartbeat_id(HeartbeatId),
+            active_heartbeats=Heartbeats#{HeartbeatId => #active_hb{to_ack=QuorumSize}}}.
 
 -spec next_heartbeat_id(red_heartbeat_id()) -> red_heartbeat_id().
 next_heartbeat_id({?red_heartbeat_marker, N}) -> {?red_heartbeat_marker, N + 1}.

@@ -73,6 +73,10 @@ if [ -z "$RED_HB_SCHEDULE_MS" ]; then
   export RED_HB_SCHEDULE_MS=5
 fi
 
+if [ -z "$RED_HB_FIXED_SCHEDULE_MS" ]; then
+  export RED_HB_FIXED_SCHEDULE_MS=250
+fi
+
 if [ -z "$RED_DELIVER_INTERVAL_MS" ]; then
   export RED_DELIVER_INTERVAL_MS=5
 fi

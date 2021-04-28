@@ -114,6 +114,9 @@
     %% Set this value to 0 to never schedule a heartbeat.
     {red_heartbeat_schedule_ms, ${RED_HB_SCHEDULE_MS}},
 
+    %% How often do we run a red heartbeat, no matter how busy the partition
+    {red_heartbeat_fixed_schedule_ms, ${RED_HB_FIXED_SCHEDULE_MS}},
+
     %% How often do we check for ready transactions/heartbeats in decidedRed
     {red_delivery_interval, ${RED_DELIVER_INTERVAL_MS}},
 
