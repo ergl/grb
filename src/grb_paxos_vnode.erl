@@ -876,7 +876,7 @@ decide_hb_internal(Ballot, Id, Ts, S=#state{synod_role=Role,
                     {ok, S};
 
                 not_prepared ->
-                    ok = grb_measurements:log_counter({?MODULE, out_of_order_decision}),
+                    ok = grb_measurements:log_counter({?MODULE, out_of_order_decision_hb}),
                     %% fixme(borja, red): something very wrong happened due to FIFO, leader might have changed
                     ?LOG_ERROR("~p: out-of-order decision (~b) for a not prepared transaction ~p", [S#state.partition, Ballot, Id]),
                     {ok, S}
