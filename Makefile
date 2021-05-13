@@ -92,7 +92,7 @@ test:
 	${REBAR} as uniform_blue eunit skip_deps=true
 
 ct:
-	$(REBAR) ct --fail_fast
+	$(REBAR) as $(BASIC_PROFILE) ct --fail_fast
 
 full_ct: ct
 	$(REBAR) as cure ct --fail_fast
