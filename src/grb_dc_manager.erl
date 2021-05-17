@@ -241,7 +241,7 @@ start_red_processes({nodes, Leader, All}) ->
     ok = lists:foreach(fun({ok, ok}) -> ok end, Res),
 
     ok = erpc:call(Leader, ?MODULE, start_paxos_leader, []),
-    ?LOG_INFO("started red processes, leader cluster: ~p", [LeaderId]),
+    ?LOG_INFO("started paxos leader and followers, leader cluster: ~p", [LeaderId]),
     ok;
 
 start_red_processes({sockets, Socks}) ->
@@ -537,7 +537,6 @@ connect_nodes_to_descriptor(Nodes, Desc=#replica_descriptor{replica_id=RemoteId}
                 end
         end
     end, ok, lists:zip(Returns, Nodes)).
-
 
 %% @doc Compute all groups of f+1 replicas including the given replica
 %%
