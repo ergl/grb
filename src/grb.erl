@@ -71,8 +71,13 @@ put_direct(Partition, WS) ->
     grb_oplog_vnode:put_direct(Partition, WS).
 
 -spec put_conflicts(conflict_relations()) -> ok.
+-ifndef(USE_REDBLUE_SEQUENCER).
 put_conflicts(Conflicts) ->
     grb_paxos_vnode:put_conflicts_all(Conflicts).
+-else.
+put_conflicts(Conflicts) ->
+    grb_redblue_connection:send_conflicts(Conflicts).
+-endif.
 
 -spec uniform_barrier(grb_promise:t(), partition_id(), vclock()) -> ok.
 -ifdef(UBARRIER_NOOP).
@@ -207,9 +212,21 @@ decide_blue(Partition, TxId, VC) ->
 -ifdef(NO_STRONG_ENTRY_VC).
 commit_red(Promise, _, _, _, VC, _) -> grb_promise:resolve({ok, VC}, Promise).
 -else.
+-ifdef(USE_REDBLUE_SEQUENCER).
+commit_red(Promise, Partition, TxId, Label, VC, Prepares) ->
+    %% Forward the message to the sequencer, who will be responsible
+    %% for coordinating this transaction.
+    %% We register the promise with the sequencer manager, and
+    %% when the transaction is done, we will receive a message to
+    %% grb_redblue_connection, who will look up the promise, and
+    %% reply back to the client.
+    ok = grb_redblue_manager:register_promise(Promise, TxId),
+    grb_redblue_connection:send_red_commit(Partition, TxId, Label, VC, Prepares).
+-else.
 commit_red(Promise, TargetPartition, TxId, Label, SnapshotVC, Prepares) ->
     Coordinator = grb_red_manager:register_coordinator(TxId),
     grb_red_coordinator:commit(Coordinator, Promise, TargetPartition, TxId, Label, SnapshotVC, Prepares).
+-endif.
 -endif.
 
 %%%===================================================================

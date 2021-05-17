@@ -89,6 +89,14 @@ if [ -z "$RED_ABORT_INTERVAL_MS" ]; then
   export RED_ABORT_INTERVAL_MS=100
 fi
 
+if [ -z "$REDBLUE_SEQUENCER_IP" ]; then
+  export REDBLUE_SEQUENCER_IP="127.0.0.1"
+fi
+
+if [ -z "$REDBLUE_SEQUENCER_PORT" ]; then
+  export REDBLUE_SEQUENCER_PORT=7878
+fi
+
 # Pool config
 
 if [ -z "$INTER_DC_SENDER_POOL_SIZE" ]; then
@@ -97,6 +105,11 @@ fi
 
 if [ -z "$RED_COORD_POOL_SIZE" ]; then
   export RED_COORD_POOL_SIZE=50
+fi
+
+if [ -z "$REDBLUE_SEQUENCER_POOL_SIZE" ]; then
+  # One per AWS core
+  export REDBLUE_SEQUENCER_POOL_SIZE=8
 fi
 
 # Node config

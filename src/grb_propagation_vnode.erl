@@ -826,13 +826,22 @@ lift_pending_uniform_barriers(_, []) -> [];
 
 lift_pending_uniform_barriers(Cutoff, [{Ts, DataList} | Rest]) when Ts =< Cutoff ->
     lists:foreach(fun
-        ({red, Pid, TxId}) -> grb_red_coordinator:commit_send(Pid, TxId);
+        ({red, Pid, TxId}) -> notify_uniform_barrier_requester(Pid, TxId);
         (Promise) -> grb_promise:resolve(ok, Promise)
     end, DataList),
     lift_pending_uniform_barriers(Cutoff, Rest);
 
 lift_pending_uniform_barriers(Cutoff, [{Ts, _} | _]=Remaining) when Ts > Cutoff ->
     Remaining.
+
+-spec notify_uniform_barrier_requester(red_coordinator(), term()) -> ok.
+-ifndef(USE_REDBLUE_SEQUENCER).
+notify_uniform_barrier_requester(Pid, TxId) ->
+    grb_red_coordinator:commit_send(Pid, TxId).
+-else.
+notify_uniform_barrier_requester(Pid, TxId) ->
+    grb_redblue_connection:notify_uniform_barrier(Pid, TxId).
+-endif.
 
 %% For FT-CURE only
 -spec update_clocks(replica_id(), vclock(), state()) -> state().

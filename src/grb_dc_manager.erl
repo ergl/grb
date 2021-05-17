@@ -33,6 +33,11 @@
          start_paxos_leader/0,
          start_paxos_follower/1]).
 
+-ifdef(USE_REDBLUE_SEQUENCER).
+-export([start_redblue_connections_internal/0]).
+-ignore_xref([start_redblue_connections_internal/0]).
+-endif.
+
 %% All functions here are called through erpc
 -ignore_xref([create_replica_groups/1,
               start_background_processes/1,
@@ -295,8 +300,20 @@ start_background_processes(ClusterName) ->
     %% if we're not in red mode, this won't do anything
     ok = grb_paxos_vnode:all_fetch_lastvc_table(),
 
+    %% if we're not in redblue mode, this won't do anything
+    ok = start_redblue_connections(LocalNodes),
+
     ?LOG_INFO("~p:~p", [?MODULE, ?FUNCTION_NAME]),
     ok.
+
+-ifndef(USE_REDBLUE_SEQUENCER).
+start_redblue_connections(_) ->
+    ok.
+-else.
+start_redblue_connections(LocalNodes) ->
+    Res = erpc:multicall(LocalNodes, ?MODULE, start_redblue_connections_internal, []),
+    ok = lists:foreach(fun({_, ok}) -> ok end, Res).
+-endif.
 
 %% @doc Enable partitions appending transactions to committedBlue (enabled by default)
 %%      Should only be called at the master node (and only be called when the cluster is only one node)
@@ -315,6 +332,21 @@ disable_blue_append() ->
     Res = grb_dc_utils:bcast_vnode_sync(grb_oplog_vnode_master, disable_blue_append),
     ok = lists:foreach(fun({_, ok}) -> ok end, Res),
     ok.
+
+-ifdef(USE_REDBLUE_SEQUENCER).
+-spec start_redblue_connections_internal() -> ok.
+start_redblue_connections_internal() ->
+    ok = case
+        grb_redblue_manager:start_sequencer_connections()
+    of
+        ok ->
+            ?LOG_DEBUG("Connected to local sequencer");
+
+        {error, Reason} ->
+            ?LOG_ERROR("Couldn't connect to sequencer: ~p", [Reason]),
+            {error, Reason}
+    end.
+-endif.
 
 %% @doc Call if this cluster is the only replica in town
 -spec single_replica_processes() -> ok.

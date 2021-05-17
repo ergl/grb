@@ -164,7 +164,7 @@ handle_request('OpRequestPartition', Args = #{reads := Reads}, Context, _State) 
     try_multikey_read(grb_promise:new(self(), Context), Partition, TxId, SVC, ReadAgain, Reads);
 
 handle_request('OpRequestPartition', _Args = #{read_ops := _ReadOps}, Context, State) ->
-    %% todo(borja, crdt): Implement
+    %% todo(borja, crdt): Implement OpRequestPartition
     reply_to_client(#{}, Context, State);
 
 handle_request('OpRequestPartition', Args = #{operations := Ops}, Context, _State) ->

@@ -40,24 +40,32 @@ init(_Args) ->
     InterDCConnManager = ?CHILD(grb_dc_connection_manager, worker, []),
     LocalBroadcast = ?CHILD(grb_local_broadcast, worker, []),
 
-    ChildSpecs = add_red_processes([RuntimeStats,
-                                    PropagationVnode,
-                                    OpLogVnode,
-                                    CausalSequencer,
-                                    VnodeProxySup,
-                                    LocalBroadcast,
-                                    InterDCSenderSup,
-                                    InterDCConnManager]),
+    ChildSpecs = add_profile_specific_processes([RuntimeStats,
+                                                 PropagationVnode,
+                                                 OpLogVnode,
+                                                 CausalSequencer,
+                                                 VnodeProxySup,
+                                                 LocalBroadcast,
+                                                 InterDCSenderSup,
+                                                 InterDCConnManager]),
 
     {ok, {{one_for_one, 5, 10}, ChildSpecs}}.
 
--spec add_red_processes([supervisor:child_spec()]) -> [supervisor:child_spec()].
--ifdef(DISABLE_STRONG_SERVICE).
-add_red_processes(ChildSpecs) -> ChildSpecs.
+-spec add_profile_specific_processes([supervisor:child_spec()]) -> [supervisor:child_spec()].
+-ifdef(NO_STRONG_ENTRY_VC).
+add_profile_specific_processes(ChildSpecs) ->
+    ChildSpecs.
 -else.
-add_red_processes(ChildSpecs) ->
+-ifdef(USE_REDBLUE_SEQUENCER).
+add_profile_specific_processes(ChildSpecs) ->
+    RedBlueConnectionSup = ?CHILD(grb_redblue_connection_sup, supervisor, []),
+    RedBlueManager = ?CHILD(grb_redblue_manager, worker, []),
+    [ RedBlueManager, RedBlueConnectionSup | ChildSpecs ].
+-else.
+add_profile_specific_processes(ChildSpecs) ->
     RedCoordManager = ?CHILD(grb_red_manager, worker, []),
     RedCoordSup = ?CHILD(grb_red_coordinator_sup, supervisor, []),
     PaxosVnode = ?VNODE(grb_paxos_vnode_master, grb_paxos_vnode),
     [RedCoordManager, RedCoordSup, PaxosVnode | ChildSpecs].
+-endif.
 -endif.

@@ -90,6 +90,7 @@ test:
 	${REBAR} as cure eunit skip_deps=true
 	${REBAR} as ft_cure eunit skip_deps=true
 	${REBAR} as uniform_blue eunit skip_deps=true
+	${REBAR} as redblue eunit skip_deps=true
 
 ct:
 	$(REBAR) as $(BASIC_PROFILE) ct --fail_fast
@@ -98,6 +99,7 @@ full_ct: ct
 	$(REBAR) as cure ct --fail_fast
 	$(REBAR) as ft_cure ct --fail_fast
 	$(REBAR) as uniform_blue ct --fail_fast
+	$(REBAR) as redblue ct --fail_fast
 
 ct_clean:
 	rm -rf $(BASEDIR)/_build/test/logs

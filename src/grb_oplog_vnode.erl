@@ -39,6 +39,8 @@
          handle_red_transaction/5,
          handle_red_heartbeat/2]).
 
+-export([handle_red_transaction_redblue/4]).
+
 %% riak_core_vnode callbacks
 -export([start_vnode/1,
          init/1,
@@ -403,6 +405,12 @@ handle_red_transaction(Partition, TxId, Label, WS, VC) ->
                                {handle_red_tx, TxId, Label, WS, VC},
                                ?master).
 
+-spec handle_red_transaction_redblue(partition_id(), term(), writeset(), vclock()) -> ok.
+handle_red_transaction_redblue(Partition, TxId, WS, VC) ->
+    grb_dc_utils:vnode_command(Partition,
+                               {handle_red_tx_redblue, TxId, WS, VC},
+                               ?master).
+
 -spec handle_red_heartbeat(partition_id(), grb_time:ts()) -> ok.
 handle_red_heartbeat(Partition, Ts) ->
     %% Route through oplog vnode to preserve causality with previous handle_red_tx messages
@@ -594,7 +602,16 @@ handle_command({handle_red_tx, TxId, Label, WS, VC}, _From, S=#state{all_replica
                                                                      op_last_vc=LastVC,
                                                                      pending_client_ops=PendingOpsTable}) ->
     ok = clean_transaction_ops_with_table(PendingOpsTable, TxId),
+    %% We don't accumulate on LastVC on redblue, the DC sequencer will do it for us
     ok = append_red_writeset(AllReplicas, Label, WS, VC, OperationLog, LogSize, LastVC),
+    {noreply, S};
+
+handle_command({handle_red_tx_redblue, TxId, WS, VC}, _From, S=#state{all_replicas=AllReplicas,
+                                                                      op_log=OperationLog,
+                                                                      op_log_size=LogSize,
+                                                                      pending_client_ops=PendingOpsTable}) ->
+    ok = clean_transaction_ops_with_table(PendingOpsTable, TxId),
+    ok = append_writeset(AllReplicas, WS, VC, OperationLog, LogSize),
     {noreply, S};
 
 handle_command({red_tx_done, Ts}, _From, S=#state{partition=Partition}) ->

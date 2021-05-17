@@ -136,6 +136,10 @@
         <<"rubis/storeBuyNow">> => <<"rubis/storeBuyNow">>,
         <<"rubis/placeBid">> => <<"rubis/closeAuction">>,
         <<"rubis/closeAuction">> => <<"rubis/placeBid">>
-    }}
+    }},
+
+    {redblue_sequencer_ip, "${REDBLUE_SEQUENCER_IP}"},
+    {redblue_sequencer_port, ${REDBLUE_SEQUENCER_PORT}},
+    {redblue_sequencer_connection_pool, ${REDBLUE_SEQUENCER_POOL_SIZE}}
   ]}
 ].
