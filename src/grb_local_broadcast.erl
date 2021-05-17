@@ -303,7 +303,7 @@ compute_svc(AllReplicas, VCs, AccSVC) ->
     end, AccSVC, VCs).
 
 -spec aggregate_known_vcs(vclock(), vclock(), [replica_id()]) -> vclock().
--ifdef(BLUE_KNOWN_VC).
+-ifdef(NO_STRONG_ENTRY_VC).
 aggregate_known_vcs(KnownVC, AccKnownVC, AllReplicas) ->
     grb_vclock:min_at(AllReplicas, KnownVC, AccKnownVC).
 -else.
@@ -337,7 +337,7 @@ send_to_children(Self, Children, StableVC) ->
     end, Children).
 
 -ifdef(TEST).
--ifdef(BLUE_KNOWN_VC).
+-ifdef(NO_STRONG_ENTRY_VC).
 grb_local_broadcast_compute_stable_vc_test() ->
     Replicas = [dc_id1, dc_id2, dc_id3],
     SVCs = [

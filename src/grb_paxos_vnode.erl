@@ -245,7 +245,7 @@
 }).
 
 -spec all_fetch_lastvc_table() -> ok.
--ifdef(BLUE_KNOWN_VC).
+-ifdef(DISABLE_STRONG_SERVICE).
 all_fetch_lastvc_table() ->
     ok.
 -else.

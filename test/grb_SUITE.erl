@@ -187,7 +187,7 @@ read_your_writes_test(C) ->
     CVC = update_transaction(Replica, Node, Partition, tx_1, Key, grb_crdt:make_op(grb_lww, Val), #{}),
     {Val, _} = read_only_transaction(Node, Partition, tx_2, Key, grb_lww, CVC).
 
--ifndef(BLUE_KNOWN_VC).
+-ifndef(DISABLE_STRONG_SERVICE).
 read_your_writes_red_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     {_, Conflicts} = ?config(red_conflicts, C),
@@ -204,7 +204,7 @@ read_your_writes_red_test(_C) ->
     ok.
 -endif.
 
--ifndef(BLUE_KNOWN_VC).
+-ifndef(DISABLE_STRONG_SERVICE).
 monotonic_red_commit_timestamp(C) ->
     ClusterMap = ?config(cluster_info, C),
     {_, Conflicts} = ?config(red_conflicts, C),
@@ -282,7 +282,7 @@ transaction_ops_flush_test(C) ->
         ok
     end).
 
--ifndef(BLUE_KNOWN_VC).
+-ifndef(DISABLE_STRONG_SERVICE).
 abort_ops_flush_test(C) ->
     ClusterMap = ?config(cluster_info, C),
     {_, Conflicts} = ?config(red_conflicts, C),
@@ -442,7 +442,7 @@ update_transaction(Replica, Node, Partition, TxId, Key, Operation, Clock) ->
     CVC.
 
 -spec put_conflicts(node(), conflict_relations()) -> ok.
--ifndef(BLUE_KNOWN_VC).
+-ifndef(DISABLE_STRONG_SERVICE).
 put_conflicts(Node, Conflicts) ->
     erpc:call(Node, grb, put_conflicts, [Conflicts]).
 -else.
@@ -451,7 +451,7 @@ put_conflicts(_Node, _Conflicts) ->
 -endif.
 
 -spec update_red_transaction(node(), partition_id(), term(), tx_label(), key(), operation(), vclock()) -> {ok, term(), vclock()} | {error, term(), term()}.
--ifndef(BLUE_KNOWN_VC).
+-ifndef(DISABLE_STRONG_SERVICE).
 update_red_transaction(Node, Partition, TxId, Label, Key, Operation, Clock) ->
     SVC = erpc:call(Node, grb, start_transaction, [Partition, Clock]),
     ok = erpc:call(Node, grb, update, [Partition, TxId, Key, Operation]),

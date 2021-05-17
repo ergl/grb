@@ -61,7 +61,7 @@ all_replicas() ->
     persistent_term:get({?MODULE, ?ALL_REPLICAS}, [replica_id()]).
 
 -spec all_replicas_red() -> [all_replica_id()].
--ifdef(BLUE_KNOWN_VC).
+-ifdef(NO_STRONG_ENTRY_VC).
 all_replicas_red() -> all_replicas().
 -else.
 all_replicas_red() -> [?RED_REPLICA | all_replicas()].
@@ -229,7 +229,7 @@ create_replica_groups_start_propagation_processes({sockets, Socks}) ->
     end, start_propagation_processes(), Socks).
 
 -spec start_red_processes(replica_groups_state()) -> ok | {error, term()}.
--ifdef(BLUE_KNOWN_VC).
+-ifdef(DISABLE_STRONG_SERVICE).
 start_red_processes(_) ->
     ok.
 -else.
@@ -367,7 +367,7 @@ start_propagation_processes() ->
     ok.
 
 -spec start_paxos_unique_leader() -> ok.
--ifdef(BLUE_KNOWN_VC).
+-ifdef(DISABLE_STRONG_SERVICE).
 start_paxos_unique_leader() -> ok.
 -else.
 start_paxos_unique_leader() ->

@@ -23,7 +23,7 @@ start(_StartType, _StartArgs) ->
     end.
 
 -spec register_vnodes() -> ok.
--ifdef(BLUE_KNOWN_VC).
+-ifdef(DISABLE_STRONG_SERVICE).
 register_vnodes() ->
     ok = riak_core:register([{vnode_module, grb_propagation_vnode}]),
     ok = riak_core_node_watcher:service_up(grb_propagation, self()),

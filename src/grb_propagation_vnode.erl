@@ -212,7 +212,7 @@ partition_ready(Partition, SnapshotVC) ->
     partition_ready(Partition, grb_dc_manager:replica_id(), SnapshotVC).
 
 -spec partition_ready(partition_id(), replica_id(), vclock()) -> ready | not_ready.
--ifdef(BLUE_KNOWN_VC).
+-ifdef(NO_STRONG_ENTRY_VC).
 partition_ready(Partition, ReplicaId, SnapshotVC) ->
     SnapshotTime = grb_vclock:get_time(ReplicaId, SnapshotVC),
     PartitionTime = known_time(Partition, ReplicaId),
@@ -245,7 +245,7 @@ partition_ready(Partition, ReplicaId, SnapshotVC) ->
 -endif.
 
 -spec known_vc(partition_id()) -> vclock().
--ifdef(BLUE_KNOWN_VC).
+-ifdef(NO_STRONG_ENTRY_VC).
 known_vc(Partition) ->
     known_vc_internal(clock_table(Partition)).
 -else.
@@ -759,7 +759,7 @@ prune_remote_commit_logs(RemoteReplicas, Logs, Matrix) ->
     end, maps:to_list(Logs)).
 
 -spec recompute_stable_vc(vclock(), clock_cache()) -> vclock().
--ifdef(BLUE_KNOWN_VC).
+-ifdef(NO_STRONG_ENTRY_VC).
 recompute_stable_vc(NewStableVC, ClockTable) ->
     OldSVC = ets:lookup_element(ClockTable, ?stable_key, 2),
     %% Safe to update everywhere, caller has already ensured to not update the current replica

@@ -204,7 +204,7 @@ decide_blue(Partition, TxId, VC) ->
                  SnapshotVC :: vclock(),
                  Prepares :: [{partition_id(), readset(), writeset()}]) -> ok.
 
--ifdef(BLUE_KNOWN_VC).
+-ifdef(NO_STRONG_ENTRY_VC).
 commit_red(Promise, _, _, _, VC, _) -> grb_promise:resolve({ok, VC}, Promise).
 -else.
 commit_red(Promise, TargetPartition, TxId, Label, SnapshotVC, Prepares) ->

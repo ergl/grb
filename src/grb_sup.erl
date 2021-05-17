@@ -52,7 +52,7 @@ init(_Args) ->
     {ok, {{one_for_one, 5, 10}, ChildSpecs}}.
 
 -spec add_red_processes([supervisor:child_spec()]) -> [supervisor:child_spec()].
--ifdef(BLUE_KNOWN_VC).
+-ifdef(DISABLE_STRONG_SERVICE).
 add_red_processes(ChildSpecs) -> ChildSpecs.
 -else.
 add_red_processes(ChildSpecs) ->

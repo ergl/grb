@@ -393,7 +393,7 @@ check_ready(Node) ->
 
     NodeReady.
 
--ifdef(BLUE_KNOWN_VC).
+-ifdef(DISABLE_STRONG_SERVICE).
 check_vnodes(Node) ->
     ?LOG_INFO("[vnodes ready] Checking ~p~n", [Node]),
 
