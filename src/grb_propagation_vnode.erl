@@ -784,18 +784,28 @@ recompute_stable_vc(NewStableVC, ClockTable) ->
 -spec recompute_local_uniform_vc(vclock(), state()) -> state().
 -ifdef(STABLE_SNAPSHOT).
 
-recompute_local_uniform_vc(_, State) -> State.
+recompute_local_uniform_vc(StableVC, State=#state{local_replica=LocalId, partition=Partition}) ->
+    [
+        grb_oplog_vnode:check_visible(Partition, From, Ts)
+        || {From, Ts} <- grb_vclock:to_list(StableVC), From =/= LocalId
+    ],
+    State.
 
 -else.
 
 recompute_local_uniform_vc(StableVC, S=#state{local_replica=LocalId,
-                                        clock_cache=ClockTable,
-                                        stable_matrix=StableMatrix0,
-                                        fault_tolerant_groups=Groups,
-                                        pending_barriers=PendingBarriers0}) ->
+                                              partition=Partition,
+                                              clock_cache=ClockTable,
+                                              stable_matrix=StableMatrix0,
+                                              fault_tolerant_groups=Groups,
+                                              pending_barriers=PendingBarriers0}) ->
 
     StableMatrix = StableMatrix0#{LocalId => StableVC},
     UniformVC = update_uniform_vc(StableMatrix, ClockTable, Groups),
+    [
+        grb_oplog_vnode:check_visible(Partition, From, Ts)
+        || {From, Ts} <- grb_vclock:to_list(UniformVC), From =/= LocalId
+    ],
     PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
     S#state{stable_matrix=StableMatrix, pending_barriers=PendingBarriers}.
 
@@ -842,6 +852,7 @@ update_clocks(FromReplicaId, KnownVC, S=#state{global_known_matrix=KnownMatrix0}
 
 -spec update_clocks(replica_id(), vclock(), vclock(), state()) -> state().
 update_clocks(FromReplicaId, KnownVC, StableVC, S=#state{local_replica=LocalId,
+                                                         partition=Partition,
                                                          clock_cache=ClockCache,
                                                          stable_matrix=StableMatrix0,
                                                          fault_tolerant_groups=Groups,
@@ -851,6 +862,10 @@ update_clocks(FromReplicaId, KnownVC, StableVC, S=#state{local_replica=LocalId,
     KnownMatrix = update_known_matrix(FromReplicaId, KnownVC, KnownMatrix0),
     StableMatrix = StableMatrix0#{FromReplicaId => StableVC},
     UniformVC = update_uniform_vc(StableMatrix, ClockCache, Groups),
+    [
+        grb_oplog_vnode:check_visible(Partition, From, Ts)
+        || {From, Ts} <- grb_vclock:to_list(UniformVC), From =/= LocalId
+    ],
     PendingBarriers = lift_pending_uniform_barriers(LocalId, UniformVC, PendingBarriers0),
     S#state{global_known_matrix=KnownMatrix,
             stable_matrix=StableMatrix,

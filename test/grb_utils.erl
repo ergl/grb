@@ -140,6 +140,7 @@ start_node(Name, Config) ->
 
             ok = erpc:call(Node, application, set_env, [grb, basic_replication_interval, 1]),
             ok = erpc:call(Node, application, set_env, [grb, uniform_replication_interval, 5000]),
+            ok = erpc:call(Node, application, set_env, [grb, visibility_sample_rate, 100]),
             ok = erpc:call(Node, application, set_env, [grb, remote_clock_broadcast_interval, 10000]),
 
             ok = erpc:call(Node, application, set_env, [grb, prune_committed_blue_interval, 50]),

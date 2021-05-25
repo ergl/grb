@@ -19,6 +19,11 @@
          put_direct_vnode/3,
          append_direct_vnode/3]).
 
+%% Visibility API
+-export([check_visible/3,
+         visibility_metrics/0]).
+-ignore_xref([visibility_metrics/0]).
+
 %% ETS table API
 -export([op_log_table/1,
          last_vc_table/1,
@@ -72,6 +77,7 @@
 -define(PREPARED_TABLE, prepared_blue_table).
 -define(PREPARED_TABLE_IDX, prepared_blue_table_idx).
 -define(PENDING_TX_OPS, pending_tx_ops).
+-define(VISIBILITY_TABLE, visibility_table).
 
 -type op_log() :: cache(key(), grb_version_log:t()).
 -type pending_tx_ops() :: cache({term(), key()}, operation()).
@@ -101,7 +107,12 @@
     pending_client_ops :: pending_tx_ops(),
 
     %% It doesn't make sense to append it if we're not connected to other clusters
-    should_append_commit = true :: boolean()
+    should_append_commit = true :: boolean(),
+
+    %% Keep track of a sample of transactions to measure visibility
+    visibility_table :: ets:tab(),
+    visibility_sample_every :: non_neg_integer(),
+    visibility_sample_count :: non_neg_integer()
 }).
 
 -type state() :: #state{}.
@@ -196,6 +207,56 @@ clean_transaction_ops(Partition, TxId) ->
 clean_transaction_ops_with_table(PendingOps, TxId) ->
     _ = ets:select_delete(PendingOps, [{ {{TxId, '_'}, '_'}, [], [true] }]),
     ok.
+
+%%%===================================================================
+%%% Visibility API
+%%%===================================================================
+
+-spec check_visible(partition_id(), replica_id(), grb_time:ts()) -> ok.
+check_visible(Partition, Replica, Time) ->
+    check_visible_internal(Replica, Time, visibility_table(Partition)).
+
+-spec visibility_metrics() -> #{replica_id() := [non_neg_integer()]}.
+visibility_metrics() ->
+    RemoteReplicas = grb_dc_manager:remote_replicas(),
+    lists:foldl(
+        fun(Replica, Acc) ->
+            ReplicaValues =
+                lists:foldl(
+                    fun(Partition, InnerAcc) ->
+                        partition_visibility(Partition, Replica, InnerAcc)
+                    end,
+                    [],
+                    grb_dc_utils:my_partitions()
+                ),
+            case ReplicaValues of
+                [] -> Acc;
+                Values-> Acc#{Replica => Values}
+            end
+        end,
+        #{},
+        RemoteReplicas
+    ).
+
+-spec partition_visibility(partition_id(), replica_id(), [non_neg_integer()]) -> [non_neg_integer()].
+partition_visibility(Partition, Replica, Acc) ->
+    Table = visibility_table(Partition),
+    case
+        ets:select(Table, [{ {{Replica, '_', '_'}, '$1'}, [], ['$1'] }])
+    of
+        [] ->
+            Acc;
+        All ->
+            lists:foldl(
+                fun(Elt, Vs) -> [Elt | Vs] end,
+                Acc,
+                All
+            )
+    end.
+
+-spec visibility_table(partition_id()) -> ets:tab().
+visibility_table(Partition) ->
+    persistent_term:get({?MODULE, Partition, ?VISIBILITY_TABLE}).
 
 %%%===================================================================
 %%% Load API (unsafe)
@@ -457,6 +518,10 @@ init([Partition]) ->
 
     {ok, CheckStalledInterval} = application:get_env(grb, prepared_blue_stale_check_ms),
 
+    {ok, SampleVisibilityEvery} = application:get_env(grb, visibility_sample_rate),
+    VisibilityTable = ets:new(?VISIBILITY_TABLE, [ordered_set, public, {read_concurrency, true}, {write_concurrency, true}]),
+    ok = persistent_term:put({?MODULE, Partition, ?VISIBILITY_TABLE}, VisibilityTable),
+
     State = #state{partition = Partition,
                    all_replicas=[], %% ok to do this, we'll overwrite it later
                    replicas_n=NumReaders,
@@ -467,7 +532,10 @@ init([Partition]) ->
                    op_log_size = KeyLogSize,
                    op_log = OpLogTable,
                    op_last_vc = LastKeyVC,
-                   pending_client_ops = PendingOps},
+                   pending_client_ops = PendingOps,
+                   visibility_table=VisibilityTable,
+                   visibility_sample_every=SampleVisibilityEvery,
+                   visibility_sample_count=0},
 
     {ok, State}.
 
@@ -582,11 +650,11 @@ handle_command({learn_all_replicas, Replicas}, _From, S) ->
 
 handle_command({handle_remote_tx, SourceReplica, WS, CommitTime, VC}, _From, State) ->
     ok = handle_remote_tx_internal(SourceReplica, WS, CommitTime, VC, State),
-    {noreply, State};
+    {noreply, sample_transaction(SourceReplica, CommitTime, 1, State)};
 
-handle_command({handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4}, _From, State) ->
+handle_command({handle_remote_tx_array, SourceReplica, Tx1, Tx2, Tx3, Tx4={_, VC4}}, _From, State) ->
     ok = handle_remote_tx_array_internal(SourceReplica, Tx1, Tx2, Tx3, Tx4, State),
-    {noreply, State};
+    {noreply, sample_transaction(SourceReplica, grb_vclock:get_time(SourceReplica, VC4), 4, State)};
 
 handle_command({handle_red_tx, TxId, Label, WS, VC}, _From, S=#state{all_replicas=AllReplicas,
                                                                      op_log=OperationLog,
@@ -621,6 +689,38 @@ handle_info(?blue_stall_check, State=#state{partition=Partition,
 handle_info(Msg, State) ->
     ?LOG_WARNING("~p unhandled_info ~p", [?MODULE, Msg]),
     {ok, State}.
+
+%%%===================================================================
+%%% Visibility functions
+%%%===================================================================
+
+-spec check_visible_internal(replica_id(), grb_time:ts(), ets:tab()) -> ok.
+check_visible_internal(ReplicaId, Time, VisibilityTable) ->
+    Now = grb_time:timestamp(),
+    Match = [{
+        %% For all entries coming from this replica ...
+        {{ReplicaId, '$1', '$2'}},
+        %% ... with a commit time lower than the given one (that is, they're already visible) ...
+        [{'=<', '$1', Time}],
+        %% ... add the difference in time as the value, excluding them from future checks
+        %% we add cosnt here, since ReplicaId is a tuple, it might be mistaken for a matchspec
+        [{{ {{{const, ReplicaId}, '$1', '$2'}}, {'-', Now, '$2'} }}]
+    }],
+    _ = ets:select_replace(VisibilityTable, Match),
+    ok.
+
+-spec sample_transaction(replica_id(), grb_time:ts(), non_neg_integer(), state()) -> state().
+sample_transaction(SourceReplica, CommitTime, Incr, S=#state{visibility_sample_count=N0,
+                                                             visibility_sample_every=Every,
+                                                             visibility_table=Table}) ->
+    N = N0 + Incr,
+    if
+        N >= Every ->
+            true = ets:insert(Table, {{SourceReplica, CommitTime, grb_time:timestamp()}});
+        true ->
+            ok
+    end,
+    S#state{visibility_sample_count=(N rem Every)}.
 
 %%%===================================================================
 %%% Internal functions

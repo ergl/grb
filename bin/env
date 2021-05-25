@@ -99,6 +99,12 @@ if [ -z "$RED_COORD_POOL_SIZE" ]; then
   export RED_COORD_POOL_SIZE=50
 fi
 
+# Visibility
+
+if [ -z "$UNIFORM_VISIBILITY_RATE" ]; then
+  export UNIFORM_VISIBILITY_RATE=1000
+fi
+
 # Node config
 
 if [ -z "$IP" ]; then

@@ -136,6 +136,9 @@
         <<"rubis/storeBuyNow">> => <<"rubis/storeBuyNow">>,
         <<"rubis/placeBid">> => <<"rubis/closeAuction">>,
         <<"rubis/closeAuction">> => <<"rubis/placeBid">>
-    }}
+    }},
+
+    %% How often does the system check for visibility information
+    {visibility_sample_rate, ${UNIFORM_VISIBILITY_RATE}}
   ]}
 ].
