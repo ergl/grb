@@ -1,55 +1,67 @@
-grb
-===========
+# UniStore
 
-A riak_core application
+For more information, consult our paper [UniStore: A fault-tolerant marriage of causal and strong consistency (ATC ‘21).](https://www.usenix.org/system/files/atc21-bravo.pdf)
 
-Build
------
+## Build
 
-::
+UniStore is written in Erlang. It has been tested up to OTP 24.3.3. You can download it here: https://www.erlang-solutions.com/downloads/
 
-    rebar3 release
+```
+make # Downloads and caches dependencies, compiles the code
+make rel # Builds an release, which can be ran using the console
+```
 
-Test
-----
+## Test
 
-::
+```
+make test # Unit tests
+make ct # Common Tests
+```
 
-    rebar3 ct
+## Run
 
-Run
----
+```
+make rel # If you haven't done it before
+make start
+```
 
-::
+To stop the server, run `make stop`. To attach to the running server, run `make attach`.
 
-    ./_build/default/rel/grb/bin/grb console
+## Try
 
-Try
----
+There are two ways of poking the system: using the Erlang shell, or by running a local deployment.
 
-::
+### Erlang Shell
 
-    1> grb:ping().
-    {pong,'grb1@127.0.0.1', 9...8}
+If you haven't built a release, do it first by running `make rel`. Then, run and connect to a local test server by running `make console`. Check out the API on the [grb.erl](./src/grb.erl) file to know what you can do.
 
-Quit
-----
+To quit, you can run the following:
 
-::
+```erlang
+q().
+```
 
-    2> q().
+### Local Cluster
 
-More information:
+You can perform a local deployment of four replicas by running the following:
 
-* `Getting Started Guide <https://riak-core-lite.github.io/blog/pages/getting-started/>`_
-* `Riak Core Lite Site <https://riak-core-lite.github.io/>`_
+```
+# Creates a release for every server.
+# You should run this _even_ if you have already run `make rel`
+make devrel
 
-TODO
-----
+# Start the servers
+make devstart
 
-* define license and create LICENSE file
+# Verify that the servers are running
+make devping
 
-License
--------
+# Join the four servers as four different replicas
+make devreplicas
+```
 
-TODO
+To stop the servers, run `make devstop`.
+
+## License
+
+Licensed under Apache License, Version 2.0.
